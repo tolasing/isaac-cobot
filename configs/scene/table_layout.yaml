@@ -185,3 +185,109 @@ cr5_mount:
     default_drive_strength: 1047.19751
     default_position_drive_damping: 52.35988
     motion_gen_robot_cfg: franka.yml
+
+teleop_target:
+  # Draggable target the operator moves in the GUI viewport; the mounted
+  # robot (CR5 or, temporarily, the Franka override above) follows it via
+  # cuRobo's MotionGen.plan_single(), matching
+  # examples/curobo_reference/motion_gen_reacher.py's pattern (see that
+  # file's own do-not-modify note in CLAUDE.md -- this is our own,
+  # config-driven adaptation of the same idea, not a copy of that script).
+  #
+  # Rather than a plain colored cuboid (the reference example's own target),
+  # this is a *ghost copy of the robot's actual end-effector visual mesh*
+  # (see build_teleop_target() in scripts/build_scene.py) -- confirmed live
+  # that CopyPrim correctly preserves the instanceable mesh reference
+  # (Isaac Sim's URDF importer marks per-link visual meshes as
+  # `instanceable`, sharing one prototype across links that reuse the same
+  # geometry; plain Usd.PrimRange traversal doesn't show this content by
+  # default, which is why the copy has to be verified with
+  # Usd.TraverseInstanceProxies() rather than assumed).
+  prim_path: /World/target
+
+  # World position (meters). Confirmed live: cuRobo's kinematics/IK operate
+  # in the robot's own base-link frame (run_teleop_loop transforms the
+  # dragged world pose into that frame via Pose.compute_local_pose() before
+  # calling plan_single()), NOT USD world space -- unlike
+  # examples/curobo_reference/motion_gen_reacher.py, whose robot happens to
+  # sit at the world origin, so the two frames are numerically identical
+  # there. An earlier placeholder here (same x,y as cr5_mount, 1.2m up)
+  # mapped to base-frame (0, 0, 0.43) -- almost directly above the robot's
+  # own base at low height -- and reliably failed IK
+  # (MotionGenStatus.IK_FAIL). This value is instead the robot's own
+  # retract_config end-effector pose (confirmed reachable -- it's a trivial
+  # identity plan) converted to world frame via cr5_mount.position, so the
+  # ghost target starts out exactly coincident with the real end-effector.
+  position: [1.5605, -3.3400, 1.3604]
+  # Matches examples/curobo_reference/motion_gen_reacher.py's own default
+  # goal orientation (a 180deg flip about X -- end-effector pointing down
+  # at the workspace rather than straight up).
+  orientation_wxyz: [0.0, 1.0, 0.0, 0.0]
+
+  # Debounce thresholds gating when plan_single() actually runs (see
+  # run_teleop_loop() in scripts/build_scene.py) -- ported verbatim from
+  # examples/curobo_reference/motion_gen_reacher.py's own hardcoded
+  # constants (cuRobo's own tuned defaults, not values re-derived for this
+  # robot specifically). Kept as named config values so they're tunable
+  # without a code change if dragging feels laggy or over-eager once tested
+  # live in the GUI.
+  pose_delta_threshold: 1.0e-3
+  static_joint_velocity_threshold: 0.5
+
+assembly_parts:
+  # Assembly parts for the robot to (eventually) pick/place -- SolidWorks
+  # CAD, exported to STEP and converted to USD via Isaac Sim's bundled
+  # CAD Converter extension (omni.kit.converter.cad). Source CAD files live
+  # under the repo root ("mantra scanner/", user's own uploaded content,
+  # not vendored/tracked project infrastructure) -- only referenced here by
+  # path, same as factory.backdrop_usd.
+  instances:
+    - name: pcb_assembly
+      # The _color_fixed copy, not the CAD Converter's raw output -- see
+      # scripts/fix_cad_import_colors.py's own module comment for the real
+      # color-space bug it corrects (STEP's sRGB COLOUR_RGB values written
+      # verbatim into USD's linear-expected diffuseColor, unconverted).
+      usd_path: "mantra scanner/STEP_Mantra_Scanner/PCB Assembly_color_fixed.usd"
+      prim_path: /World/PCB_Assembly
+      # NOT [0.001, 0.001, 0.001] -- correction from an earlier wrong
+      # assumption here, caught by verifying instead of trusting it. The
+      # STEP source declares SI_UNIT(.MILLI.,.METRE.) and the converted
+      # USD's own metersPerUnit=0.001 matches it correctly (self-consistent,
+      # not a conversion bug), and this scene is meters-native
+      # (metersPerUnit=1.0, same as factory.backdrop_usd). The wrong
+      # assumption was that USD/isaacsim.core.utils.stage.add_reference_to_
+      # stage() never reconciles a metersPerUnit mismatch across a
+      # reference, requiring a manual 1000x compensating scale here --
+      # confirmed live that's false for this environment:
+      # add_reference_to_stage() already yields the exact correct
+      # real-world size (0.1055 x 0.12655 x 0.0186, matching the true
+      # ~105mm x 126mm board) with NO scale applied at all, and
+      # SingleXFormPrim.get_local_scale() reports [0.001, 0.001, 0.001] is
+      # already being applied automatically. Adding another manual 0.001
+      # here stacked on top of that, shrinking the part 1000x *too small*
+      # instead. See factory.backdrop_usd's own x100-scale comment for a
+      # case where a manual scale genuinely is needed (CopyPrim of a prim
+      # already living under a scaled parent, not add_reference_to_stage of
+      # a standalone file with its own metersPerUnit) -- the two are not
+      # the same situation, despite both being cm/mm-vs-m mismatches.
+      scale: [1.0, 1.0, 1.0]
+      # World position (meters), placed flush on ErgoTable_1's top surface.
+      # Confirmed live via UsdGeom.BBoxCache: ErgoTable_1's world bbox top
+      # is z=1.2600, center xy=(2.2776, -3.2870); this part's own local
+      # bbox (in its native mm units) has its lowest point 2.5mm *below*
+      # its origin (small mounting-pin protrusions), i.e. -0.0025m once
+      # scaled -- so origin z = table_top_z - part_local_min_z = 1.2600 -
+      # (-0.0025) = 1.2625 sits the part's actual lowest point exactly on
+      # the table surface, not floating above or clipped through it.
+      position: [2.2776, -3.2870, 1.2625]
+      orientation_wxyz: [1.0, 0.0, 0.0, 0.0]
+      # Dynamic rigid body (not kinematic/static): this is a part meant to
+      # be picked up and moved by the robot, not a fixed prop like the
+      # table/pedestal. build_assembly_parts() applies this via
+      # omni.physx.scripts.utils.setRigidBody(), the same PhysX helper
+      # behind the GUI's own Add > Physics > Rigid Body action -- confirmed
+      # that action isn't reachable from this stage's right-click menu at
+      # all (the physics UI extension's menu contribution isn't loaded
+      # here), so this is set up in code instead, which also means it
+      # survives a scene rebuild rather than being a one-off manual click.
+      rigid_body: true

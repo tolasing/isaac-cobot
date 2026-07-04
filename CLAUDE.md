@@ -127,6 +127,9 @@ illustrative, not validated against real hardware.
   pedestal, cuRobo `MotionGen`) before trusting the CR5's own
   not-yet-fully-verified kinematics config (see `configs/curobo/cr5.yml`
   below). Set `enabled: false` (or delete the block) to revert to the CR5.
+  Also carries `teleop_target` (the interactive cuRobo teleop target's
+  prim path, pose, and debounce thresholds) — see `scripts/build_scene.py`'s
+  entry above for what was verified and the bugs found positioning it.
 - `configs/curobo/cr5.yml`, `cr5_collision_spheres.yml` — cuRobo robot
   config for the CR5. **Partially verified**: config *loading* (via
   `MotionGenConfig.load_from_robot_config()`) now works against the pinned
@@ -149,6 +152,87 @@ illustrative, not validated against real hardware.
   imports it as a library after already starting one — fixed by guarding
   that line behind `if __name__ == "__main__":`, same pattern as
   `import_cr5.py`.
+  Also builds an interactive cuRobo teleop target (`teleop_target` in
+  `table_layout.yaml`): drag it in the GUI viewport and the mounted robot
+  follows via `MotionGen.plan_single()`, a from-scratch adaptation of
+  `examples/curobo_reference/motion_gen_reacher.py`'s pattern into this
+  repo's own config-driven, robot-agnostic scene (not a copy of that
+  file — see its own do-not-modify note below). The target itself
+  (`build_teleop_target()`) is a detached `CopyPrim` of the robot's own
+  end-effector visual mesh, not a plain marker, so it shows exactly what
+  will arrive at that pose. **Verified headlessly** with real evidence, not
+  just "no crash": obstacle scan scoped to just the ergo tables + pedestal
+  (81 mesh objects, 0.18s — not the thousands a whole-factory scan would
+  hit), `motion_gen.update_world()` succeeds in <0.01s, and a scripted
+  fake-drag (`target.get_world_pose()` monkeypatched to simulate a real
+  mid-loop mouse-drag) produces `plan_single success=True` and a real
+  ~1.2 rad joint-position change — proof the whole chain (debounce → plan →
+  interpolate → apply via the articulation controller) actually drives the
+  robot. Four more real, non-obvious bugs found and fixed in the process:
+    - `MotionGenConfig.load_from_robot_config()` leaves
+      `motion_gen.world_coll_checker` as `None` unless a real, *non-empty*
+      world is passed in at construction time — passing none at all makes
+      `update_world()` later crash with `AttributeError: 'NoneType' object
+      has no attribute 'load_collision_model'`, and passing an *empty*
+      `WorldConfig()` at construction still makes `warmup()` itself fail
+      (`"Primitive Collision has no obstacles"` — the MESH collision
+      checker needs at least one real obstacle the first time it traces).
+      Fixed by calling `get_teleop_obstacles()` (the same scoped scan used
+      for later rescans) *before* constructing `MotionGenConfig` and
+      passing its result as `world_model`.
+    - `isaacsim.core.prims.SingleArticulation.initialize()` needs an actual
+      PhysX simulation view, which only gets created once a `PhysicsScene`
+      prim exists on the stage — `import_cr5()` imports with
+      `create_physics_scene=False` (it only authors joint/drive/collider
+      schemas), so nothing here had created one, and `.initialize()` failed
+      deep inside `isaacsim.core.prims` even after `timeline.play()`.
+      Fixed with a one-line `UsdPhysics.Scene.Define(stage, "/physicsScene")`
+      at the top of `run_teleop_loop()` — well short of introducing
+      `isaacsim.core.api.World`'s heavier machinery just for this.
+    - cuRobo's kinematics/IK/trajopt all operate in the **robot's own
+      base-link frame**, not USD world space. `examples/curobo_reference/
+      motion_gen_reacher.py`'s robot happens to sit at the world origin, so
+      passing a dragged cuboid's raw world pose straight into
+      `plan_single()` works there by coincidence — the two frames are
+      numerically identical. This repo's robot is mounted away from the
+      origin (`cr5_mount.position`), so the same code reliably failed with
+      `MotionGenStatus.IK_FAIL` on every attempt. Fixed by transforming the
+      target's world pose into the robot's base frame via
+      `Pose.compute_local_pose()` before planning (see `run_teleop_loop()`
+      — `robot_base_pose` is built once from `cr5_mount.position`/
+      `orientation_wxyz`, since the mount is static).
+    - `teleop_target.position`'s original placeholder ([1.45, -3.34, 1.2],
+      "same x,y as cr5_mount, 1.2m up") mapped to base-frame `(0, 0, 0.43)`
+      — almost directly above the robot's own base at low height, which is
+      kinematically unreachable for this arm (confirmed via
+      `MotionGenStatus.IK_FAIL` even with a valid, reachable orientation).
+      Replaced with the robot's own retract-config end-effector pose
+      converted to world frame, which is reachable by construction (it's a
+      trivial identity plan) and starts the ghost target exactly coincident
+      with the real end-effector.
+    - A fifth bug, found only once actually run non-headless: the
+      `/physicsScene` fix above is necessary but not sufficient --
+      `SingleArticulation.initialize()` also needs physics to have actually
+      *stepped* at least once (`timeline.play()` plus a few
+      `simulation_app.update()` calls), which confirmed live doesn't happen
+      until the user clicks Play. An earlier version of `run_teleop_loop()`
+      called `robot.initialize()` unconditionally before its own
+      `while`/`is_playing()` loop even started, so it crashed with the same
+      `AttributeError` immediately on launch, before the user got a chance
+      to press Play. Separately, its `step_index` counter (gating the
+      init/settle-frame phases and used as the obstacle-rescan cadence)
+      incremented on *every* frame including while waiting for Play, so a
+      user who took more than an instant to click Play would blow past
+      `_TELEOP_INIT_FRAMES`/`_TELEOP_SETTLE_FRAMES` before physics ever
+      started. Fixed to match the reference example's own structure:
+      `robot.initialize()` is deferred until inside the "is playing"
+      branch (once, via an `idx_list is None` check), and `step_index`
+      only advances on frames where the timeline is actually playing (a
+      separate `not_playing_frames` counter drives the "Click Play to
+      start" print instead). Verified with a headless test that fakes
+      `timeline.is_playing()` returning `False` for the loop's first 50
+      calls before flipping to the real state -- confirms no crash while
+      "waiting for Play" and a successful `plan_single` once it starts.
 - `scripts/import_cr5.py` — **verified**, both standalone and imported as
   a library. Real bug found and fixed: Isaac Sim 5.1.0's
   `isaacsim.asset.importer.urdf` doesn't export a directly-constructible
@@ -171,6 +255,74 @@ illustrative, not validated against real hardware.
   so `ninja` had to be fetched as a static binary instead of
   `pip install ninja` — anything relying on pip inside the container is
   currently dead and worth fixing separately.
+- `assembly_parts` in `table_layout.yaml` + `build_assembly_parts()` in
+  `build_scene.py` — **verified**. References external assembly-part USD
+  files (the `mantra scanner/` CAD, converted via the CAD Converter
+  extension and color-corrected -- see `fix_cad_import_colors.py` below)
+  onto a work surface, via `add_reference_to_stage` (like `build_factory`),
+  not `CopyPrim` (like `build_ergo_tables`) -- these are standalone external
+  files, not prims already living on this stage. **Real bug found and
+  fixed, caught by verifying instead of trusting an assumption**: the first
+  version of this config set `scale: [0.001, 0.001, 0.001]` on the
+  `pcb_assembly` instance, reasoning that USD/`add_reference_to_stage()`
+  would never reconcile a `metersPerUnit` mismatch between the referenced
+  file (mm-native, `metersPerUnit=0.001`) and this meters-native scene
+  (`metersPerUnit=1.0`) -- the same reasoning already correctly documented
+  for `factory.backdrop_usd`'s own analogous cm-vs-m mismatch. That
+  assumption was wrong for this specific case: confirmed live via
+  `UsdGeom.BBoxCache` that `add_reference_to_stage()` **already** yields
+  the exact correct real-world size (0.1055 x 0.12655 x 0.0186, matching
+  the true ~105mm x 126mm PCB board) with **no** scale applied at all --
+  `SingleXFormPrim.get_local_scale()` reports `[0.001, 0.001, 0.001]` is
+  already being applied automatically in this case. Adding another manual
+  0.001 on top shrank the part 1000x too small instead of 1000x too large.
+  Fixed by setting `scale: [1.0, 1.0, 1.0]` — confirmed via the same
+  `BBoxCache` check that the part now sits at the correct size, flush on
+  `ErgoTable_1`'s top surface (both bboxes' z values match exactly:
+  `1.2600000187754627`), centered on the table (within ~3mm, from the
+  part's own local bbox not being perfectly centered on its origin).
+  **Open question, not yet resolved**: exactly *why* `add_reference_to_
+  stage()` auto-reconciles `metersPerUnit` here but `CopyPrim`-based
+  `build_ergo_tables()`/`mount_cr5_pedestal()` don't get the same
+  treatment for `factory.backdrop_usd`'s cm-vs-m mismatch (that one still
+  needs its own manual scale, confirmed still correct) -- the working
+  theory is that `add_reference_to_stage()` references a *standalone* file
+  with its own root-layer `metersPerUnit`, while `CopyPrim` duplicates a
+  prim that's already composed *inside* `/World/Factory`'s own already-
+  established hierarchy and scale, which is a structurally different
+  situation despite both superficially being "cm/mm-vs-m mismatches" — not
+  confirmed against Kit/USD source or docs, just consistent with what was
+  observed. Verify empirically again (don't trust this theory blindly
+  either) before assuming it generalizes to a third differently-scaled
+  asset.
+- `scripts/fix_cad_import_colors.py` — **verified**, both the bug and the
+  fix. Isaac Sim's bundled CAD Converter extension (`omni.kit.converter.cad`,
+  HOOPS Exchange-based -- not otherwise part of this repo's own pipeline,
+  but needed for importing vendor/SolidWorks-authored assembly-part CAD
+  files as scene props) has a real color-space bug: STEP's `COLOUR_RGB`
+  entities are sRGB (display-referred) values, but the converter writes
+  them verbatim into the resulting USD material's `diffuseColor`/
+  `emissiveColor` inputs, which USD/Hydra convention treats as *linear*
+  (scene-referred) color for PBR rendering -- skipping the sRGB->linear
+  decode. Confirmed by diffing a converted file's `diffuseColor` values
+  against the raw `COLOUR_RGB` entities in its source STEP file: they
+  matched bit-for-bit (mod float32/float64 precision), proving zero
+  colorspace conversion happens. Symptom: colors read washed-out/lighter
+  than the source CAD tool's own viewport, most visible on dark colors
+  (a near-black 0.102 gray renders as a visibly light gray; corrected, it's
+  0.0103 -- an order of magnitude darker, matching the source's intent).
+  Pure endpoint colors (0.0 or 1.0 per channel) are unaffected, since sRGB
+  gamma is a fixed point at both ends. The fix applies the standard sRGB
+  EOTF (IEC 61966-2-1) per channel to every `diffuseColor`/`emissiveColor`
+  on a `UsdPreviewSurface` in a given USD file, writing to a new
+  `*_color_fixed.usd` by default (never overwrites the input) so the
+  result can be reviewed before replacing anything; `--in-place` overwrites
+  the input directly once confirmed. Not yet confirmed whether this bug is
+  STEP-input-specific or affects every format the CAD Converter handles --
+  treat as a general post-import fixup until proven otherwise. Matters more
+  than a cosmetic nice-to-have here: scene renders are intended as VLA
+  training data, where color accuracy affects vision-language grounding
+  and sim-to-real transfer, not just visual polish.
 - `scripts/` (remaining) — `setup_curobo.py`, `waypoints.py`,
   `teach_waypoint.py`, `playback_waypoints.py`.
 - `data/waypoints/` — recorded waypoint JSON (joint-space, not Cartesian);
@@ -194,7 +346,13 @@ above). Still open:
   first. Turn it off (`enabled: false`) and confirm the CR5 branch of both
   `mount_cr5()` and `setup_curobo_motion_gen()` in `build_scene.py` still
   works — the CR5 branch of the latter in particular has never actually
-  been exercised (see `configs/curobo/cr5.yml`'s entry above).
+  been exercised (see `configs/curobo/cr5.yml`'s entry above). The teleop
+  target's current `position`/`orientation_wxyz` in `table_layout.yaml`
+  were derived from the *Franka's* retract-config end-effector pose (see
+  `scripts/build_scene.py`'s teleop entry above) — re-derive them for the
+  CR5's own retract config/reach envelope once the swap is reverted, the
+  same way (a value that happens to work for one robot's geometry has no
+  reason to be reachable for another's).
 - **`scripts/setup_curobo.py`** — still first-draft/unverified, and now
   known (not just guessed) to be broken as written: it passes
   `configs/curobo/cr5.yml`'s path straight to
@@ -202,13 +360,16 @@ above). Still open:
   patching that turned out to be required (see the yml's own module
   comment) — will fail the same way the unpatched version did during this
   investigation.
-- **A CR5-specific interactive teleop script** (analogous to
-  `examples/curobo_reference/motion_gen_reacher.py`, but importing the CR5
-  via `scripts/import_cr5.py`'s own correct drive tuning instead of
-  `helper.py`'s Franka-tuned one) was attempted but never completed — the
-  agent doing it was stopped mid-task. Not started from scratch; whoever
-  picks this up should re-derive the plan rather than assume partial work
-  exists on disk.
+- **Interactive teleop's real-time/GUI behavior isn't verified** — only
+  what a headless run can prove (see `scripts/build_scene.py`'s entry
+  above: obstacle scan scope/timing, `update_world()`, and a scripted
+  fake-drag all confirmed with the temporary Franka). Still needs at least
+  one manual GUI smoke test to confirm: real-time mouse-drag feel/
+  responsiveness (the headless test simulates a drag by monkeypatching
+  `get_world_pose()`, not an actual mouse), whether the ghost end-effector
+  copy visually reads as intended next to the real robot, and the
+  `timeline.is_playing()` Press-Play-to-start branch (no Play button exists
+  without a display).
 - `scripts/teach_waypoint.py`, `playback_waypoints.py` — each flags this in
   its own module docstring. (`scripts/waypoints.py` is plain Python with no
   Isaac Sim dependency and is covered by `tests/test_waypoints.py`.)
@@ -271,6 +432,23 @@ above). Still open:
   local Translate; a reused prim's own large native local-space offset
   baked into the vendored asset). When in doubt, verify by reading back
   `get_world_pose()`/`get_local_pose()` rather than assuming.
+- cuRobo's `MotionGen` (kinematics/IK/trajopt, `compute_kinematics()`,
+  `plan_single()`) operates entirely in the **robot's own base-link
+  frame**, never USD world space — any USD world pose (e.g. a dragged
+  teleop target) must be transformed into that frame first via
+  `robot_base_pose.compute_local_pose(world_pose)` (both
+  `curobo.types.math.Pose` objects), where `robot_base_pose` comes from
+  wherever the robot was actually mounted (`cr5_mount.position`/
+  `orientation_wxyz`), not assumed to be the origin.
+- `isaacsim.core.prims.SingleArticulation.initialize()` (and anything else
+  that needs a PhysX simulation view) silently does nothing useful without
+  an actual `PhysicsScene` prim on the stage — `import_cr5()` doesn't
+  create one (`create_physics_scene=False`), and neither does anything
+  else in this repo's scripts. `isaacsim.core.api.World()` would create one
+  automatically, but this repo deliberately avoids `World` for scripts that
+  don't otherwise need it (see `run_teleop_loop()`'s own module comment) —
+  where physics *is* needed, define one explicitly and minimally:
+  `UsdPhysics.Scene.Define(stage, "/physicsScene")`.
 
 ## Provenance / licensing
 

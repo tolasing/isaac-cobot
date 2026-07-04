@@ -14,14 +14,19 @@ in-sim and played back through `motion_gen.plan_single_js()`. See
 **Status**: both Docker images (`base`, `curobo`) and both devcontainers
 build and run against a live RTX PRO 4000 Blackwell GPU — torch, cuRobo,
 and `scripts/build_scene.py` (factory + work surfaces + robot mount + a
-warmed-up cuRobo `MotionGen`) all verified end-to-end. `build_scene.py`
-currently mounts cuRobo's own bundled Franka Panda instead of the CR5, as a
-temporary stand-in to validate the pipeline (see
-`cr5_mount.robot_override` in `configs/scene/table_layout.yaml`) — the CR5
-config itself (`configs/curobo/cr5.yml`) is only partially verified, and
-the remaining CR5-specific scripts are still a first draft not yet run
-against a live install. See CLAUDE.md's "Needs verification" section for
-the current, specific list.
+warmed-up cuRobo `MotionGen`, plus an interactive teleop target you drag in
+the GUI to command the robot via `MotionGen.plan_single()`) all verified
+end-to-end, including a scripted fake-drag that produces a real,
+successful plan and robot motion. `build_scene.py` currently mounts
+cuRobo's own bundled Franka Panda instead of the CR5, as a temporary
+stand-in to validate the pipeline (see `cr5_mount.robot_override` in
+`configs/scene/table_layout.yaml`) — the CR5 config itself
+(`configs/curobo/cr5.yml`) is only partially verified, and the remaining
+CR5-specific scripts are still a first draft not yet run against a live
+install. Live GUI mouse-drag feel and the ghost end-effector target's
+visual appearance next to the real robot still need a manual smoke test.
+See CLAUDE.md's "Needs verification" section for the current, specific
+list.
 
 ## Prerequisites
 

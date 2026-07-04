@@ -15,6 +15,9 @@ def test_scene_config_has_required_keys():
     assert set(cfg["ergo_tables"]) >= {"source_prim_path", "instances"}
     for instance in cfg["ergo_tables"]["instances"]:
         assert set(instance) >= {"prim_path", "position_xy", "orientation_wxyz"}
+    assert set(cfg["teleop_target"]) >= {"prim_path", "position", "orientation_wxyz"}
+    for instance in cfg["assembly_parts"]["instances"]:
+        assert set(instance) >= {"name", "usd_path", "prim_path", "scale", "position", "orientation_wxyz"}
 
 
 def test_curobo_config_has_required_keys():
