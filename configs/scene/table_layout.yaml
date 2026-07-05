@@ -185,3 +185,15 @@ cr5_mount:
     default_drive_strength: 1047.19751
     default_position_drive_damping: 52.35988
     motion_gen_robot_cfg: franka.yml
+
+physics_backend:
+  # NVIDIA's Newton physics engine (isaacsim.physics.newton), bundled with
+  # Isaac Sim 6.0+ but not enabled by default outside NVIDIA's own
+  # isaac-sim.newton.sh launcher -- see scripts/newton_backend.py. NVIDIA
+  # calls this integration "experimental" and not a drop-in PhysX
+  # replacement. Defaults to enabled here; set to false to fall back to
+  # Isaac Sim's default PhysX backend if Newton causes problems with this
+  # scene's assets (the vendored Factory.usd in particular is unaudited
+  # against Newton's known limitations -- closed kinematic chains,
+  # negative-scale collision shapes, etc.).
+  enabled: true

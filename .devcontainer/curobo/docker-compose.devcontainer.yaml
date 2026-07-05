@@ -1,9 +1,13 @@
-name: isaac-cobot-curobo-devcontainer
+name: isaac-cobot-curobo-newton-devcontainer
 
 services:
   isaac-cobot-curobo:
-    image: isaac-cobot-curobo
-    container_name: isaac-cobot-curobo
+    # -601 = Isaac Sim 6.0.1 (this branch's pin, docker/.env.base) with dots
+    # stripped, matching build-images.sh's IMAGE_SUFFIX -- NOT a bare tag,
+    # since that would collide with main's own (differently-pinned) image
+    # of the same bare name (docker image tags are global, not per-branch).
+    image: isaac-cobot-curobo-601
+    container_name: isaac-cobot-curobo-601
     environment:
       - ISAACSIM_PATH=/isaac-sim
       - OMNI_KIT_ALLOW_ROOT=1

@@ -1,0 +1,15 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Factory" (
+        prepend references = @../assets/factory/Factory.usd@
+    )
+    {
+    }
+}

@@ -31,8 +31,28 @@ illustrative, not validated against real hardware.
   `Dobot-Arm/TCP-IP-ROS-6AXis`; provenance in `robots/cr5/SOURCE.md`). Mesh
   URIs were rewritten from `package://dobot_description/...` to relative
   `../meshes/...` paths so the URDF resolves standalone.
-- `docker/.env.base` — Isaac Sim 5.1.0 image + path env vars.
+- `docker/.env.base` — Isaac Sim image + path env vars. Pin bumped to
+  `6.0.1` (from `5.1.0`) to pick up Isaac Sim's new Newton physics backend.
+  **Verified**: rebuilt side-by-side (not overwriting the working `:latest`
+  5.1.0 images) via `docker/container.py build curobo --suffix 601`,
+  producing `isaac-cobot-base-601`/`isaac-cobot-curobo-601`; GPU/torch/CUDA
+  confirmed live inside the new container (`NVIDIA RTX PRO 4000 Blackwell`,
+  torch `2.11.0+cu128`, real `cuda:0` matmul), and Isaac Sim's own
+  `/isaac-sim/VERSION` confirms `6.0.1-rc.7`. Bonus finding: the
+  `pip._vendor.packaging._structures` bug that broke `pip` inside the
+  5.1.0 image (see the `ninja`/pip Conventions bullet) appears **fixed
+  upstream** in 6.0.1 — `python.sh -m pip --version` now reports cleanly.
 - `docker/.env.curobo` — pinned cuRobo commit hash.
+- `docker/.env.newton` — pin for *standalone* NVIDIA Newton
+  (`newton-physics/newton` on GitHub; GPU physics built on Warp, no Isaac
+  Sim dependency) — a fast way to smoke-test Newton/Warp/CUDA on this GPU
+  without waiting on a full Isaac Sim image rebuild. Recorded for
+  visibility only; nothing under `docker/` actually consumes this file
+  (Newton isn't installed in any Docker image). Not to be confused with
+  Isaac Sim 6.0+'s own *bundled* Newton physics backend (a separate
+  integration, see `scripts/newton_backend.py` below), which ships inside
+  the `isaac-cobot-*` images themselves and is pinned via
+  `docker/.env.base`'s `ISAACSIM_VERSION` instead.
 - `docker/container.py` — container management CLI (build/start/enter/stop).
 - `docker/utils/` — Isaac Lab BSD-3-Clause container tooling (vendored from
   `tolasing/groot`): `ContainerInterface`, `StateFile`, `x11_utils`. Renamed
@@ -72,23 +92,56 @@ illustrative, not validated against real hardware.
   xauth file (to `/root/.Xauthority`) and sets `DISPLAY`/`XAUTHORITY`/
   `QT_X11_NO_MITSHM` env vars. Requires `xauth` installed on the **host**
   (not the container) and a full devcontainer rebuild (not just reopen) to
-  pick up the new mounts. Not yet re-verified end-to-end with a live GUI
-  launch after this fix — do that before relying on it.
+  pick up the new mounts. **Now verified end-to-end with a live GUI
+  launch**: opened the `cuRobo` devcontainer through VS Code's picker and
+  got a real Isaac Sim 6.0.1 window showing the built scene (factory,
+  ergo tables, mounted robot) — this X11 forwarding genuinely works, not
+  just configured-but-untested.
+
+  **Second bug found and fixed the same session, unrelated to X11**: both
+  `build-images.sh`/`docker-compose.devcontainer.yaml` pairs originally
+  built/referenced bare image tags (`isaac-cobot-base`, `isaac-cobot-curobo`)
+  — but Docker image tags are global on this machine, **not git-branch-
+  scoped**. Since `newton` pins a different Isaac Sim version than `main`
+  (`docker/.env.base`: `6.0.1` vs. `main`'s `5.1.0`) but both branches'
+  devcontainer files used the same bare tag names, opening one branch's
+  devcontainer after the other's could silently reuse or overwrite the
+  wrong Isaac Sim version's image — confirmed as a real, not hypothetical,
+  risk (it happened this session: promoting `newton`'s rebuilt images to
+  `:latest` for convenience briefly meant `main`'s own devcontainer would
+  have silently picked up 6.0.1 instead of its pinned 5.1.0). Fixed by
+  suffixing every image tag this branch's devcontainer files build/reference
+  with the Isaac Sim version pin, dots stripped (`-601`, derived from
+  `ISAACSIM_VERSION` in `build-images.sh`, hardcoded to match in the
+  compose files since compose has no easy access to that shell variable at
+  the point VS Code evaluates it) — `main`'s devcontainer files are
+  untouched and still build/reference the bare tags, so the two branches
+  can no longer collide. Keep the compose files' hardcoded suffix in sync
+  with `docker/.env.base` if `ISAACSIM_VERSION` is bumped again on this
+  branch.
 - `assets/factory/` — vendored factory-floor scene (NVIDIA USD Explorer
   Sample Assets Pack; NVIDIA Omniverse License Agreement, not open source).
   The ~404MB `Factory.usd` + `SubUSDs/` payload is gitignored — only
   `assets/factory/SOURCE.md` (provenance + re-fetch instructions) is
   tracked.
 - `configs/scene/table_layout.yaml` — factory backdrop path + pruning
-  rules, `ergo_tables` (the two reused work-surface copies), and
-  `cr5_mount` (robot pose/scale + its reused pedestal). **Verified**:
+  rules, `ergo_tables` (the two reused work-surface copies), `cr5_mount`
+  (robot pose/scale + its reused pedestal), and `physics_backend` (Newton
+  toggle, see `scripts/newton_backend.py` below). **Verified**:
   `scripts/build_scene.py` builds this end-to-end against a live Isaac Sim
-  5.1.0 install (real GPU) — `/World/Factory` composes with 8 children,
-  both `ErgoTable_1`/`ErgoTable_2` copies render with real geometry,
-  `/World/CR5` imports with 18 children (currently the temporary Franka —
-  see `cr5_mount.robot_override` below), and the reused `RobotPedestal`
-  keeps its geometry. Three real, non-obvious findings baked into this
-  config, each with its own inline comment at the point of use:
+  6.0.1 install (real GPU), Newton physics backend enabled by default —
+  `/World/Factory` composes with 8 children, both `ErgoTable_1`/
+  `ErgoTable_2` copies render with real geometry, `/World/CR5` imports
+  (currently the temporary Franka — see `cr5_mount.robot_override` below),
+  and the reused `RobotPedestal` keeps its geometry. Previously verified
+  against 5.1.0, where `/World/CR5` reported 18 children directly —
+  re-verifying against 6.0.1 found this is now 4 (`Geometry`/`Physics`/
+  `Materials`/`VisualMaterials` scopes), a deliberate reorganization in
+  Isaac Sim 6.0.1's redesigned URDF importer (see `scripts/import_cr5.py`
+  below), not a lost-content regression: the full subtree still has 54
+  prims and all 6 joints, confirmed by walking it with `Usd.PrimRange`.
+  Three real, non-obvious findings baked into this config, each with its
+  own inline comment at the point of use:
     - `factory.prune_name_startswith`/`prune_exact_paths` don't just
       remove unwanted *static* dressing (the welding line's rail, its
       duplicate pedestals, a leftover Kuka arm, ErgoTable's monitor/
@@ -139,40 +192,185 @@ illustrative, not validated against real hardware.
   code until that override is turned off.
 - `configs/rmpflow/` — deferred by design (cuRobo is the primary
   IK/motion-gen path); contains only a README explaining why.
-- `scripts/build_scene.py` — **verified** (see above). Also warms up a
-  cuRobo `MotionGen` matching whichever robot is mounted
-  (`setup_curobo_motion_gen()`) — best-effort, skipped with a printed
-  message if cuRobo isn't installed (the `base` Docker profile). Real bug
-  found and fixed: this script (like every other standalone script here)
-  creates a `SimulationApp` at import time; it originally did this
-  unconditionally, which segfaults instead of raising if something else
-  imports it as a library after already starting one — fixed by guarding
-  that line behind `if __name__ == "__main__":`, same pattern as
-  `import_cr5.py`.
-- `scripts/import_cr5.py` — **verified**, both standalone and imported as
-  a library. Real bug found and fixed: Isaac Sim 5.1.0's
-  `isaacsim.asset.importer.urdf` doesn't export a directly-constructible
-  `URDFImporterConfig` class (contradicts this file's own former
-  Conventions entry, now corrected below) — the only way to get a
-  properly-initialized import config is
-  `omni.kit.commands.execute("URDFCreateImportConfig")[1]`.
+- `scripts/build_scene.py` — **verified** (see above), including against
+  6.0.1 with Newton enabled by default. Also warms up a cuRobo `MotionGen`
+  matching whichever robot is mounted (`setup_curobo_motion_gen()`) —
+  best-effort, skipped with a printed message if cuRobo isn't installed
+  (the `base` Docker profile). Two real bugs found and fixed: (1) this
+  script (like every other standalone script here) creates a
+  `SimulationApp` at import time; it originally did this unconditionally,
+  which segfaults instead of raising if something else imports it as a
+  library after already starting one — fixed by guarding that line behind
+  `if __name__ == "__main__":`, same pattern as `import_cr5.py`; (2) under
+  Isaac Sim 6.0.1 with Newton enabled, `world.reset()`/physics
+  initialization crashed outright (`cannot access local variable
+  'cmp_i_diag'`, inside Isaac Sim's own bundled
+  `isaacsim.pip.newton/pip_prebundle/newton/_src/sim/builder.py`) as soon
+  as the mounted robot's articulation was actually stepped — root-caused
+  to `import_cr5.py`'s `link_density` fix, see that entry below.
+- `scripts/import_cr5.py` — **verified** against a live Isaac Sim 6.0.1
+  install, both standalone and imported as a library. Previously verified
+  against 5.1.0. Two real bugs found and fixed while re-verifying against
+  6.0.1:
+    - Isaac Sim 6.0.1 no longer registers the `"URDFCreateImportConfig"`/
+      `"URDFParseAndImportFile"` kit commands this file used to rely on at
+      all (`Can't execute command... it wasn't registered`) — they now live
+      behind the `isaacsim.asset.importer.urdf.ui` extension and are
+      themselves deprecated in favor of a directly-constructible
+      `isaacsim.asset.importer.urdf.URDFImporterConfig` dataclass +
+      `URDFImporter` class (confirmed by reading
+      `/isaac-sim/exts/isaacsim.asset.importer.urdf/` inside the
+      container). That importer now converts the URDF to a standalone USD
+      *file* on disk (`URDFImporter.import_urdf()`) rather than importing
+      directly into the current stage, so a separate
+      `add_reference_to_stage()` call is now needed too. Several config
+      fields were also renamed or removed outright: `self_collision` →
+      `allow_self_collision`; `default_drive_strength`/
+      `default_position_drive_damping` → `override_joint_stiffness`/
+      `override_joint_damping` (same Nm/rad units, just converted
+      internally to USD's Nm/deg drive convention — not a weaker value);
+      `distance_scale` and `import_inertia_tensor` removed entirely. This
+      is the second time Isaac Sim's URDF-import API has changed between
+      versions in this repo's own history — don't assume it's stable going
+      forward either.
+    - A **Newton-specific crash**, found while re-verifying
+      `build_scene.py` end-to-end (not caught by `import_cr5.py`'s own
+      isolated check, which never steps physics): cuRobo's bundled Franka
+      Panda URDF (`robot/franka_description/franka_panda.urdf`) has a
+      physically invalid inertia tensor on `panda_link3` (off-diagonal
+      terms larger than the diagonal — a known real-world URDF-quality
+      defect in that widely-used file, not something specific to this
+      repo's own assets). Isaac Sim 6.0.1's Newton backend detects this
+      (`authored diagonal inertia contains negative values. Falling back
+      to mass-computer result.`) but its own fallback path has a bug of
+      its own (`cmp_i_diag` referenced before assignment,
+      `isaacsim.pip.newton/pip_prebundle/newton/_src/sim/builder.py:2601`)
+      that crashes physics initialization outright instead — PhysX
+      tolerates the same authored tensor silently. Reproduced 2/2 times
+      without a fix, 2/2 successes with: `import_cr5()` now passes
+      `link_density=1000.0` (kg/m³, an arbitrary-but-reasonable
+      placeholder, not measured — consistent with this repo's existing
+      "illustrative" stance on sim physics) to force geometry-based
+      inertia computation instead of trusting authored URDF values. Applied
+      unconditionally (CR5 included, not just the Franka override) since
+      `physics_backend` now defaults to Newton and the CR5's own URDF has
+      no more claim to trustworthy authored inertia than the Franka's
+      (same SolidWorks-exporter provenance concerns already noted for its
+      degenerate joints, below) — untested either way, since
+      `robot_override.enabled: true` means the CR5 branch itself still
+      hasn't actually been exercised (see "Needs verification").
+- `scripts/newton_backend.py` — enables Isaac Sim 6.0+'s bundled Newton
+  physics backend (`isaacsim.physics.newton`) as an alternative to the
+  default PhysX backend, gated by `configs/scene/table_layout.yaml`'s
+  `physics_backend.enabled` (defaults to `true`). **Verified** against a
+  live Isaac Sim 6.0.1 install two ways: (1) an isolated Tier-1 check (this
+  file's own `__main__`) — a lone dynamic cube over a ground plane, no CR5,
+  no vendored factory assets — actually falls under gravity (z: 2.0 →
+  1.715 after 120 steps) confirming Newton really steps physics on this
+  GPU; (2) the full `build_scene.py` scene (factory + ergo tables + mounted
+  Franka + cuRobo `MotionGen`) builds and steps cleanly with Newton active,
+  after the `link_density` fix above — joint positions confirmed finite
+  after 180 steps. Real bug found and fixed (via independent research
+  agents cross-checking Isaac Sim's actual 6.0.1 source before the live
+  test, not just docs): `SimulationManager.switch_physics_engine("newton")`
+  returns `bool` and never raises — the first draft discarded that return
+  value, so a failed switch could have silently reported success while
+  still running on PhysX. Also confirmed live: `isaacsim.physics.newton`
+  auto-switches the active engine to Newton on its own extension startup
+  (logged as `Auto-switched to newton on startup via SimulationManager`),
+  making the explicit `switch_physics_engine()` call somewhat redundant in
+  practice but still correct defensive belt-and-suspenders given that
+  auto-switch behavior isn't documented as guaranteed.
 - `examples/curobo_reference/` — `motion_gen_reacher.py` + `helper.py`,
   fetched verbatim from cuRobo's own GitHub repo at the exact pinned
   commit (`docker/.env.curobo`). A pristine reference copy of cuRobo's
   official interactive teleop demo (drag a target cuboid, robot follows
   via `MotionGen`) — **do not modify these two files**; if a CR5-specific
   variant is needed, write a separate script instead (see "Needs
-  verification" below). **Verified it runs** on this install with two
-  environment fixes: (1) the prebuilt `kinematics_fused_cu` kernel has a
-  torch ABI mismatch here, and cuRobo's JIT-compile fallback needs `ninja`,
-  which `Dockerfile.curobo` doesn't install — worth adding; (2) `pip` is
-  itself broken in this Isaac Sim install
+  verification" below). **Verified it runs against Isaac Sim 5.1.0** with
+  two environment fixes: (1) the prebuilt `kinematics_fused_cu` kernel has
+  a torch ABI mismatch here, and cuRobo's JIT-compile fallback needs
+  `ninja`, which `Dockerfile.curobo` didn't install at the time — now fixed
+  at the image level (see `docker/Dockerfile.curobo`'s own comment); (2)
+  `pip` was itself broken in the 5.1.0 Isaac Sim install
   (`ModuleNotFoundError: No module named 'pip._vendor.packaging._structures'`),
   so `ninja` had to be fetched as a static binary instead of
-  `pip install ninja` — anything relying on pip inside the container is
-  currently dead and worth fixing separately.
+  `pip install ninja` at the time — confirmed fixed upstream in 6.0.1 (see
+  `docker/.env.base`'s entry above). **BROKEN against Isaac Sim 6.0.1,
+  not re-verified further — see "Needs verification".**
+- `scripts/motion_gen_teleop.py` — a from-scratch, CR5-cell-specific
+  interactive drag-target teleop demo, written to replace
+  `examples/curobo_reference/motion_gen_reacher.py` for actual use now that
+  the latter is broken under 6.0.1 (see its own entry above) — this is the
+  "CR5-specific interactive teleop script" previously tracked as attempted
+  but never completed (see "Needs verification"'s old entry, now resolved).
+  Builds this repo's real scene via `build_scene.py`'s own functions
+  (factory + ergo tables + mounted robot + pedestal) rather than a
+  synthetic world, and uses `isaacsim.core.api`/`isaacsim.core.utils`
+  instead of the removed `omni.isaac.*` namespace. **Verified** against a
+  live Isaac Sim 6.0.1 install (real GPU, Newton enabled, Franka via
+  `cr5_mount.robot_override`) via `--headless` mode (which also drives the
+  target cuboid programmatically once, for automated testing, since
+  there's no GUI to drag it in): builds the full scene, warms up cuRobo
+  against 74 real obstacles synced from the two ergo tables, and
+  successfully plans and executes a reach to the moved target — confirmed
+  via a real `MotionGenResult.success`, not just "no exception raised."
+  Four real, non-obvious bugs found and fixed along the way, each also
+  documented in the script's own module docstring:
+    - cuRobo's collision-world sync (`UsdHelper.get_obstacles_from_stage()`)
+      was first tried scoped to the entire `/World` tree, matching the
+      pristine script's intent to reflect "the real scene" — this pulled
+      in the whole ~13,500-object factory backdrop and made cuRobo's
+      warmup take minutes, unusable for an interactive loop. Rescoped to
+      just the two ergo tables (`only_paths=[...]`), which is both fast
+      (74 objects) and actually relevant to this cell's real workspace.
+    - The reused `RobotPedestal` (`cr5_mount.pedestal`) must be excluded
+      from the obstacle sync explicitly, even though it's already outside
+      the ergo-tables-only scope above — omitting this makes cuRobo see
+      the robot colliding with its own mounting stand and refuse to plan
+      at all (`MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION`).
+    - Under Newton, `SimulationManager` forces articulation state onto a
+      torch backend. Two consequences: `robot.get_joints_state()`'s
+      `.positions`/`.velocities` come back as CUDA torch tensors (need
+      `.cpu().numpy()` before any `np.*` call); and
+      `robot.set_joint_positions()`'s own wrapper
+      (`isaacsim.core.prims.impl.single_articulation.SingleArticulation`)
+      silently coerces a torch tensor back to numpy via its own stale
+      `self._backend_utils.expand_dims()` before handing off to
+      `self._articulation_view`, which then crashes on a mismatched
+      backend (`'numpy.ndarray' object has no attribute 'to'`) — fixed by
+      calling `robot._articulation_view.set_joint_positions()` directly,
+      bypassing the wrapper (the pristine reference script already reaches
+      into `_articulation_view` for other calls, so this isn't an
+      unprecedented pattern). Unclear whether this is fixed in a later
+      Isaac Sim point release or a standing Newton/deprecated-Core-API
+      interaction — worth rechecking on a future version bump.
+    - cuRobo's `WorldMeshCollision` calls `wp.torch.device_from_torch()`,
+      an older nested-submodule warp API path absent from the actually-
+      installed `warp-lang` 1.14.0 (pip auto-resolved the newest release
+      when `Dockerfile.curobo` installed cuRobo from source — confirmed
+      this is the *only* `wp.torch.*` call site in the whole installed
+      cuRobo package). Shimmed a fake `warp.torch` namespace at module load
+      time rather than re-pinning `warp-lang` (which risks reopening
+      Newton's own warp-version questions) or patching cuRobo's vendored
+      source.
+  **NOT verified** in interactive GUI mode with a human actually dragging
+  the cube (no X11 forwarding configured for this host's
+  `docker/container.py` container path — see the devcontainer X11 entry
+  above), and **NOT verified against the CR5 itself** (only Franka, since
+  `robot_override.enabled` is still `true`).
 - `scripts/` (remaining) — `setup_curobo.py`, `waypoints.py`,
   `teach_waypoint.py`, `playback_waypoints.py`.
+- `scripts/newton_standalone_smoketest.py` — standalone smoke test for
+  NVIDIA's standalone Newton physics engine (`newton-physics/newton`,
+  independent of Isaac Sim entirely — see `docker/.env.newton`).
+  **Verified**: in a throwaway conda env (`newton==1.3.0`,
+  `warp-lang==1.14.0`; no `python3.12-venv` package and no passwordless
+  `sudo` were available on this host to use a plain venv instead), Warp
+  correctly detects and JIT-compiles for this machine's RTX PRO 4000
+  Blackwell GPU, and a dynamic box dropped above a ground plane (SolverXPBD)
+  actually falls under gravity and settles (z: 2.0 → 0.250) — real physics
+  stepping on the GPU, not just a clean import.
 - `data/waypoints/` — recorded waypoint JSON (joint-space, not Cartesian);
   see its README for the schema.
 - `README.md`, `pyproject.toml`, `.github/workflows/lint.yml`, `tests/` —
@@ -185,16 +383,41 @@ illustrative, not validated against real hardware.
 `groot` (this repo's Docker/devcontainer template) has no equivalent for
 raw Isaac Sim + cuRobo scripts — it uses Isaac Lab's higher-level scene
 API instead. `scripts/build_scene.py`, `configs/scene/table_layout.yaml`,
-`scripts/import_cr5.py`, and `examples/curobo_reference/` have since been
-run end-to-end against a live Isaac Sim 5.1.0 install (see their entries
+`scripts/import_cr5.py`, and `scripts/newton_backend.py` have since been
+run end-to-end against a live Isaac Sim 6.0.1 install (see their entries
 above). Still open:
 
+- **`examples/curobo_reference/motion_gen_reacher.py`/`helper.py` are
+  broken under Isaac Sim 6.0.1 and were deliberately left that way.**
+  These two files are pristine, vendored verbatim from cuRobo's GitHub
+  repo — this repo's own convention is "do not modify them." Re-verifying
+  against 6.0.1 found their hard-coded `from omni.isaac.kit import
+  SimulationApp` / `from omni.isaac.core import ...` imports (no fallback
+  to `isaacsim.*`) fail immediately: confirmed live that the entire
+  `omni.isaac` namespace no longer exists in 6.0.1 at all
+  (`ModuleNotFoundError: No module named 'omni.isaac'`), not just renamed
+  with a compatibility shim. Per explicit instruction, this was left
+  untouched rather than patched or worked around — needs a decision on how
+  to proceed (patch despite the "pristine" convention and note the
+  deviation, find/vendor an updated upstream reference if cuRobo has one
+  for newer Isaac Sim versions, or accept this directory as
+  5.1.0-only/reference-only going forward and say so explicitly).
+  `scripts/motion_gen_teleop.py` (see its own "Done" entry) now covers the
+  *practical* need this reference script served — an interactive
+  drag-target teleop demo that actually runs on 6.0.1 — so this item is
+  about the vendored reference copy's own status, not a blocker on having
+  a working teleop demo at all.
 - **Revert the temporary Franka swap.** `cr5_mount.robot_override` mounts
   cuRobo's bundled Franka instead of the CR5 to validate the pipeline
   first. Turn it off (`enabled: false`) and confirm the CR5 branch of both
   `mount_cr5()` and `setup_curobo_motion_gen()` in `build_scene.py` still
   works — the CR5 branch of the latter in particular has never actually
-  been exercised (see `configs/curobo/cr5.yml`'s entry above).
+  been exercised (see `configs/curobo/cr5.yml`'s entry above). Now also
+  untested for the Newton inertia-crash workaround (`link_density` in
+  `import_cr5.py` — see its "Done" entry): applied unconditionally on the
+  assumption the CR5's own URDF has no more claim to trustworthy authored
+  inertia than the Franka's, but this has never actually been checked
+  against the CR5's real inertia values.
 - **`scripts/setup_curobo.py`** — still first-draft/unverified, and now
   known (not just guessed) to be broken as written: it passes
   `configs/curobo/cr5.yml`'s path straight to
@@ -202,13 +425,6 @@ above). Still open:
   patching that turned out to be required (see the yml's own module
   comment) — will fail the same way the unpatched version did during this
   investigation.
-- **A CR5-specific interactive teleop script** (analogous to
-  `examples/curobo_reference/motion_gen_reacher.py`, but importing the CR5
-  via `scripts/import_cr5.py`'s own correct drive tuning instead of
-  `helper.py`'s Franka-tuned one) was attempted but never completed — the
-  agent doing it was stopped mid-task. Not started from scratch; whoever
-  picks this up should re-derive the plan rather than assume partial work
-  exists on disk.
 - `scripts/teach_waypoint.py`, `playback_waypoints.py` — each flags this in
   its own module docstring. (`scripts/waypoints.py` is plain Python with no
   Isaac Sim dependency and is covered by `tests/test_waypoints.py`.)
@@ -228,19 +444,47 @@ above). Still open:
   to factory dressing.
 - CR5 URDF quirk: every joint has `effort="0" velocity="0"` (an artifact of
   the SolidWorks exporter). Override drive strength at import time,
-  otherwise the articulation won't hold a pose. **Correction**: this used
-  to say `URDFImporterConfig(default_drive_strength=1e5)` — that class
-  isn't directly constructible in Isaac Sim 5.1.0's
-  `isaacsim.asset.importer.urdf`. Get the config object via
-  `omni.kit.commands.execute("URDFCreateImportConfig")[1]` instead (see
-  `scripts/import_cr5.py`), then set `default_drive_strength`/
-  `default_position_drive_damping` on it.
+  otherwise the articulation won't hold a pose. **Correction (second time
+  this API has changed)**: this used to say
+  `omni.kit.commands.execute("URDFCreateImportConfig")[1]` — that kit
+  command no longer exists in Isaac Sim 6.0.1 at all. Use the directly-
+  constructible `isaacsim.asset.importer.urdf.URDFImporterConfig` dataclass
+  + `URDFImporter` class instead (see `scripts/import_cr5.py`), setting
+  `override_joint_stiffness`/`override_joint_damping` (renamed from
+  `default_drive_strength`/`default_position_drive_damping`, same Nm/rad
+  units) — and pass `link_density` too, working around a real Newton
+  inertia-crash bug (see `import_cr5.py`'s own "Done" entry). Note also
+  that `URDFImporter.import_urdf()` now writes a USD *file* to disk rather
+  than importing directly into the current stage — a separate
+  `add_reference_to_stage()` call is required afterward.
+- `physics_backend` toggle (`configs/scene/table_layout.yaml`, consumed by
+  `scripts/newton_backend.py`): same `enabled: <bool>` shape as
+  `cr5_mount.robot_override` above, but inverted intent — `robot_override`
+  defaults **on** to de-risk an untrusted path (the CR5's own kinematics)
+  by substituting a known-good stand-in (Franka); `physics_backend`
+  defaults **on** too, but here PhysX is the known-good path and Newton is
+  the experimental substitute being exercised by default per explicit
+  project decision, not because it's already trusted — NVIDIA's own docs
+  call this integration "experimental." Set `enabled: false` to fall back
+  to PhysX if Newton causes problems with this scene's assets that aren't
+  worth chasing down.
 - Waypoints are joint-space (`Waypoint.joint_positions`, radians, 6 values
   for joint1..joint6), not Cartesian poses.
-- Pinned versions: Isaac Sim `5.1.0`, cuRobo commit
+- Pinned versions: Isaac Sim `6.0.1` (bumped from `5.1.0`, rebuilt and
+  re-verified — see `docker/.env.base`'s "Done" entry), cuRobo commit
   `ebb71702f3f70e767f40fd8e050674af0288abe8`, torch `2.11.0+cu128` (CUDA
   12.8, installed fresh in `Dockerfile.curobo` after removing Isaac Sim's
-  pre-bundled copy — see the Docker/devcontainer entry above).
+  pre-bundled copy — see the Docker/devcontainer entry above). Standalone
+  Newton (`docker/.env.newton`) is pinned separately — `newton==1.3.0`,
+  `warp-lang==1.14.0` — and has no relationship to the Isaac Sim version;
+  Isaac Sim 6.0+'s own *bundled* Newton physics backend has no separate
+  version pin of its own beyond `ISAACSIM_VERSION` (it ships inside the
+  Isaac Sim image itself — this session observed `isaacsim.physics.newton`
+  extension version `0.8.1` and Warp `1.13.0` bundled specifically inside
+  Isaac Sim 6.0.1, both slightly older than the standalone pins above,
+  which pull whatever's newest on PyPI — not expected to matter for this
+  repo's purposes, but don't assume they're identical if debugging a
+  Newton-specific discrepancy between the two contexts).
 - Dev GPU: RTX PRO 4000 Blackwell (sm_120) — `TORCH_CUDA_ARCH_LIST` in
   `Dockerfile.curobo` is tuned to this. Update it first if building for
   different hardware.
@@ -255,15 +499,16 @@ above). Still open:
   install directories unless the caller patches them to absolute paths
   first. See `configs/curobo/cr5.yml`'s module comment and
   `scripts/build_scene.py`'s `setup_curobo_motion_gen()` for the pattern.
-- `ninja` isn't installed in this Isaac Sim/cuRobo environment by default,
-  and `pip install` doesn't work here at all
+- `ninja`: cuRobo's CUDA kernels fall back to a JIT compile (needs `ninja`)
+  when the prebuilt `.so` has a torch ABI mismatch, which happened on this
+  install. **Fixed at the image level**: `Dockerfile.curobo` now installs
+  `ninja-build` via `apt-get` alongside the CUDA toolkit, instead of the
+  original one-off manual/static-binary workaround per-container. `pip
+  install` inside the Isaac Sim container was separately broken on 5.1.0
   (`ModuleNotFoundError: No module named 'pip._vendor.packaging._structures'`)
-  — cuRobo's CUDA kernels fall back to a JIT compile (needs `ninja`) when
-  the prebuilt `.so` has a torch ABI mismatch, which happened on this
-  install. Fetch `ninja` as a static binary
-  (`ninja-build/ninja` GitHub releases) or via `apt-get install
-  ninja-build` instead of pip. Worth fixing at the image level
-  (`Dockerfile.curobo`) rather than working around it every time.
+  — confirmed **fixed upstream in 6.0.1** (`python.sh -m pip --version`
+  now reports cleanly); if working against an older 5.1.0-based image,
+  this bug and its `apt`/static-binary workaround still apply.
 - Positioning a prim relative to `/World/Factory` needs care about which
   frame a number is in — see `configs/scene/table_layout.yaml`'s
   `ergo_tables`/`cr5_mount.pedestal` comments for two different, easy-to-

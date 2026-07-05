@@ -13,6 +13,10 @@ USER root
 # Detect Ubuntu version and install CUDA 12.8 via NVIDIA's network repo
 # (cuda-keyring). cuRobo compiles CUDA kernels at install time
 # (--no-build-isolation below), which needs nvcc present in the image.
+# Also installs ninja-build: cuRobo's prebuilt CUDA kernels can hit a torch
+# ABI mismatch at runtime, in which case cuRobo JIT-compiles a fallback --
+# which needs ninja. Installed here so the image has it out of the box
+# instead of requiring a per-container manual/static-binary workaround.
 RUN set -euo pipefail && \
     . /etc/os-release && \
     case "$ID" in \
@@ -38,7 +42,8 @@ RUN set -euo pipefail && \
         libcusparselt0 \
         libnccl2 \
         libnccl-dev \
-        libnvjitlink-12-8 && \
+        libnvjitlink-12-8 \
+        ninja-build && \
     apt-get -y autoremove && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV CUDA_HOME=/usr/local/cuda-12.8

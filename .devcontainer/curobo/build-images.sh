@@ -24,7 +24,16 @@ build_if_needed() {
 source "${ENV_FILE}"
 source "${CUROBO_ENV_FILE}"
 
-build_if_needed isaac-cobot-base \
+# Tagged with the Isaac Sim version pin (dots stripped), not a bare name --
+# docker image tags are global on this machine, NOT git-branch-scoped, and
+# this branch is pinned to a different Isaac Sim version than main (see
+# docker/.env.base). Without this, opening this devcontainer after main's
+# (or vice versa) would silently reuse/overwrite the other branch's image
+# under the same bare tag -- confirmed as a real risk this session, not a
+# hypothetical. Keep in sync with ISAACSIM_VERSION if that's bumped again.
+IMAGE_SUFFIX="-${ISAACSIM_VERSION//./}"
+
+build_if_needed "isaac-cobot-base${IMAGE_SUFFIX}" \
     --network host \
     -f "${REPO_ROOT}/docker/Dockerfile.base" \
     --build-arg ISAACSIM_BASE_IMAGE_ARG="${ISAACSIM_BASE_IMAGE}" \
@@ -32,14 +41,15 @@ build_if_needed isaac-cobot-base \
     --build-arg ISAACSIM_ROOT_PATH_ARG="${DOCKER_ISAACSIM_ROOT_PATH}" \
     --build-arg DOCKER_ISAAC_COBOT_PATH_ARG="${DOCKER_ISAAC_COBOT_PATH}" \
     --build-arg DOCKER_USER_HOME_ARG="${DOCKER_USER_HOME}" \
-    -t isaac-cobot-base \
+    -t "isaac-cobot-base${IMAGE_SUFFIX}" \
     "${REPO_ROOT}"
 
-build_if_needed isaac-cobot-curobo \
+build_if_needed "isaac-cobot-curobo${IMAGE_SUFFIX}" \
     --network host \
     -f "${REPO_ROOT}/docker/Dockerfile.curobo" \
+    --build-arg DOCKER_NAME_SUFFIX="${IMAGE_SUFFIX}" \
     --build-arg CUROBO_COMMIT_ARG="${CUROBO_COMMIT}" \
-    -t isaac-cobot-curobo \
+    -t "isaac-cobot-curobo${IMAGE_SUFFIX}" \
     "${REPO_ROOT}"
 
 echo "[devcontainer] Images ready."

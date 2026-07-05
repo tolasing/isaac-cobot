@@ -8,7 +8,16 @@ ENV_FILE="${REPO_ROOT}/docker/.env.base"
 
 source "${ENV_FILE}"
 
-echo "[devcontainer] Building isaac-cobot-base..."
+# Tagged with the Isaac Sim version pin (dots stripped), not a bare name --
+# docker image tags are global on this machine, NOT git-branch-scoped, and
+# this branch may be pinned to a different Isaac Sim version than main (see
+# docker/.env.base). Without this, this script's unconditional rebuild
+# below would silently overwrite whatever image the bare tag pointed to,
+# even one belonging to a different branch's devcontainer. Keep in sync
+# with ISAACSIM_VERSION if that's bumped again.
+IMAGE_SUFFIX="-${ISAACSIM_VERSION//./}"
+
+echo "[devcontainer] Building isaac-cobot-base${IMAGE_SUFFIX}..."
 docker build \
     --network host \
     -f "${REPO_ROOT}/docker/Dockerfile.base" \
@@ -17,7 +26,7 @@ docker build \
     --build-arg ISAACSIM_ROOT_PATH_ARG="${DOCKER_ISAACSIM_ROOT_PATH}" \
     --build-arg DOCKER_ISAAC_COBOT_PATH_ARG="${DOCKER_ISAAC_COBOT_PATH}" \
     --build-arg DOCKER_USER_HOME_ARG="${DOCKER_USER_HOME}" \
-    -t isaac-cobot-base \
+    -t "isaac-cobot-base${IMAGE_SUFFIX}" \
     "${REPO_ROOT}"
 
 echo "[devcontainer] Image ready."

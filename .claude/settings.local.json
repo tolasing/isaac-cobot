@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /home/ganesh/groot && find . -type f -not -path \"./.git*\" | sort)",
+      "Read(//home/ganesh/groot/**)",
+      "Bash(python3 container.py config curobo)",
+      "Bash(unzip -l ~/Downloads/\"USD_Explorer_Sample_NVD@10011.zip\")",
+      "Bash(unzip -p ~/Downloads/\"USD_Explorer_Sample_NVD@10011.zip\" \"PACKAGE-LICENSES/USD_Explorer_Sample_NVD-license.txt\")",
+      "Bash(unzip -p ~/Downloads/\"USD_Explorer_Sample_NVD@10011.zip\" \"PACKAGE-INFO.yaml\")",
+      "Bash(awk '{sum+=$1; n+=1} END {print \"textures \\(excl thumbs\\):\", n, \"files,\", sum/1024/1024, \"MB\"}')",
+      "Bash(git add *)",
+      "Bash(docker exec *)",
+      "Bash(npm ls *)",
+      "Bash(npx --version)",
+      "Bash(bash build-images.sh)",
+      "Bash(docker compose *)",
+      "Bash(/isaac-sim/python.sh scripts/build_scene.py --headless)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(ruby -ryaml -e \"YAML.load_file\\('configs/scene/table_layout.yaml'\\); puts 'yaml ok'\")"
+    ]
+  }
+}

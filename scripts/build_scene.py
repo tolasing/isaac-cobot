@@ -4,10 +4,12 @@ see cr5_mount.robot_override) between them, and warms up a matching cuRobo
 MotionGen (best-effort -- skipped if cuRobo isn't installed, e.g. the
 `base` Docker profile).
 
-Verified against a live Isaac Sim 5.1.0 install (isaac-cobot-base
-container, real GPU). The factory backdrop asset loads asynchronously --
-main() pumps a bounded number of frames after building so a one-shot
---headless run sees it fully resolved before pruning/mounting/printing.
+Verified against a live Isaac Sim 6.0.1 install (isaac-cobot-curobo
+container, real GPU), Newton physics backend enabled by default (see
+newton_backend.py). Previously verified against 5.1.0. The factory backdrop
+asset loads asynchronously -- main() pumps a bounded number of frames after
+building so a one-shot --headless run sees it fully resolved before
+pruning/mounting/printing.
 
 Only creates its own SimulationApp when run standalone (`__main__`), same
 reasoning as import_cr5.py -- safe to import as a library from a script
@@ -39,6 +41,7 @@ from isaacsim.core.utils.stage import add_reference_to_stage  # noqa: E402
 from pxr import Usd  # noqa: E402
 
 from import_cr5 import import_cr5  # noqa: E402
+from newton_backend import enable_newton_physics  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "configs" / "scene" / "table_layout.yaml"
@@ -128,13 +131,22 @@ def mount_cr5_pedestal(cfg: dict) -> None:
     xform.set_local_scale(np.array(pedestal_cfg["scale"]))
 
 
-def setup_curobo_motion_gen(cfg: dict):
+def setup_curobo_motion_gen(cfg: dict, world_cfg=None):
     """Builds and warms up a cuRobo MotionGen for whichever robot is
     actually mounted at cr5_mount.
 
     Returns None (printing why) if cuRobo isn't installed -- build_scene.py
     must keep working in the `base` profile, which has no cuRobo, so this
     step is best-effort rather than a hard dependency.
+
+    `world_cfg` (a curobo.geom.types.WorldConfig, or None) is passed
+    through as MotionGenConfig.load_from_robot_config()'s `world_model` --
+    left at its default None here (build_scene.py itself has no need for
+    obstacle-aware collision checking, just confirming the config loads and
+    warms up), which leaves `MotionGen.world_coll_checker` unset. Callers
+    that need collision checking against a real world (e.g.
+    scripts/motion_gen_teleop.py, syncing against the actual stage) must
+    pass one.
     """
     try:
         from curobo.types.base import TensorDeviceType
@@ -160,7 +172,7 @@ def setup_curobo_motion_gen(cfg: dict):
         k["asset_root_path"] = str(REPO_ROOT / k["asset_root_path"])
         k["collision_spheres"] = str(cr5_yml.parent / k["collision_spheres"])
 
-    motion_gen_config = MotionGenConfig.load_from_robot_config(robot_cfg, tensor_args=TensorDeviceType())
+    motion_gen_config = MotionGenConfig.load_from_robot_config(robot_cfg, world_cfg, tensor_args=TensorDeviceType())
     motion_gen = MotionGen(motion_gen_config)
     motion_gen.warmup()
     return motion_gen
@@ -212,6 +224,22 @@ def prune_factory_dressing(cfg: dict) -> list[str]:
 
 def main() -> None:
     cfg = load_config()
+
+    # Documented-recommended ordering (see newton_backend.py) -- first thing
+    # in main(), before build_factory().
+    physics_backend_cfg = cfg.get("physics_backend", {})
+    if physics_backend_cfg.get("enabled", False):
+        newton_ok = enable_newton_physics()
+        print(f"[build_scene] Newton physics backend: {'ENABLED' if newton_ok else 'FAILED TO ENABLE'}", flush=True)
+        if not newton_ok:
+            # Fail loud, don't silently keep building under PhysX: the
+            # config's own opt-out (`physics_backend.enabled: false`) is the
+            # sanctioned way to fall back, not an unexpected extension/engine
+            # failure going unnoticed while the rest of the scene builds.
+            raise RuntimeError("physics_backend.enabled is true but Newton could not be enabled -- see logs above")
+    else:
+        print("[build_scene] Newton physics backend: disabled (using default PhysX)", flush=True)
+
     build_factory(cfg)
 
     # The factory backdrop is a large USD reference and resolves
