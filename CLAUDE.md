@@ -281,6 +281,194 @@ illustrative, not validated against real hardware.
   making the explicit `switch_physics_engine()` call somewhat redundant in
   practice but still correct defensive belt-and-suspenders given that
   auto-switch behavior isn't documented as guaranteed.
+- `scenes/cell_scene.usda` — a minimal GUI-safe entry-point stage (just a
+  reference to `assets/factory/Factory.usd` at `/World/Factory`) for
+  interactively adding new assets without ever hand-editing the vendored
+  factory file. Exists because of a real incident this session: a "Collect
+  As"/flattened-save operation was accidentally aimed at
+  `assets/factory/Factory.usd` itself, wiping every composition arc except
+  whatever was loaded at that moment — recovered by re-fetching only the
+  small root file from the vendor zip (`SubUSDs/`, ~404MB, was untouched and
+  didn't need re-fetching, since the flattened save only replaced the small
+  root layer). This file is the safe alternative going forward: reference
+  content into it, position things, save — `Factory.usd` itself is never
+  the file being edited/saved, so it can't be overwritten this way again.
+- `assets/mefron/` — hand-assembled-in-GUI scanner-cell assets (CAD parts
+  converted from the vendored `mantra scanner/` STEP files via
+  `omni.kit.converter.cad`, e.g. `scanner assembly/finger print
+  scanner.usd`, `backpanel support.usd`), plus `packing_table.usd`. Not
+  built by `build_scene.py` — added interactively via the GUI workflow
+  above. **Real, confirmed findings from debugging why Newton wouldn't let
+  a Rigid Body + Collider added to these parts fall under gravity**,
+  reproduced headlessly via `isaac-sim.newton.sh --exec` (the GUI's own
+  `carb.log_error` truncates real tracebacks to `str(exception)`, which is
+  why this needed a standalone repro to actually root-cause):
+    - **Instancing.** Every part imported with "Instanceable References"
+      (the CAD Converter dialog's default) wraps its actual mesh in an
+      instanceable prim. Newton's rigid-body/collider USD parser lacks the
+      prototype-to-instance-proxy remapping its visual-shape-only loader
+      has (`_load_visual_shapes_impl` in the bundled `newton` package
+      explicitly skips anything with `RigidBodyAPI`/a collider, so that
+      loader's instance-remap logic never runs for physics-enabled prims
+      at all). Fix: `Usd.Prim.SetInstanceable(False)` on the wrapper prim
+      before adding physics. Since each of these parts appears once in the
+      scene, instancing buys nothing here anyway.
+    - **Units.** These CAD-converted files carry their own `metersPerUnit`
+      (`0.001`, i.e. millimeters — the STEP source's native unit), distinct
+      from the consuming stage's default (`1.0`, meters). USD does **not**
+      auto-convert for this mismatch across a `reference`/`payload` — only
+      a stage's *own* `metersPerUnit` applies when it's the actively-opened
+      root. `isaacsim.core.utils.stage.add_reference_to_stage()` already
+      authors a corrective `xformOp:scale:unitsResolve` op (alongside a
+      normal, identity `scale` op) to compensate for exactly this — but
+      only if left alone. Clearing xformOpOrder before authoring your own
+      transform (e.g. `Xformable.ClearXformOpOrder()`) silently discards
+      this correction (confirmed: world bbox came out ~61×135×29 units —
+      absurd for a fingerprint-scanner-sized part), and manually adding
+      *another* scale op on top of an existing `unitsResolve` double-
+      corrects (confirmed: bbox shrank to ~1,000,000x too small). Lesson:
+      leave `add_reference_to_stage()`'s authored xformOps alone; add a
+      *child* prim for your own positioning instead of re-authoring the
+      reference prim's own transform.
+  Also confirmed — not project-specific, genuine gaps in Isaac Sim 6.0.1's
+  bundled `isaacsim.physics.newton`/`newton` packages themselves (checked
+  GitHub for both `isaac-sim/IsaacSim` and `newton-physics/newton`; nothing
+  filed for any of these):
+    - **Root cause of the original `[Errno 13] Permission denied: ''`
+      mystery.** Newton's default solver is MuJoCo
+      (`isaacsim.physics.newton.impl.newton_config.NewtonConfig.solver_cfg`
+      defaults to `MuJoCoSolverConfig`, not XPBD). The bundled `mujoco`
+      Python package unconditionally imports its OpenGL rendering submodule
+      even for pure headless physics; that submodule imports `glfw`, whose
+      library-version-check code runs `subprocess.Popen([sys.executable,
+      ...])` — and `sys.executable` is `''` whenever Python is embedded
+      inside Kit's own C++ process (true for *any* `kit/kit <app>.kit`
+      launch, GUI or headless `--exec`, not specific to this repo).
+      Confirmed by temporarily patching `newton_stage.py`'s exception
+      handler (which normally only logs `str(e)`, swallowing the real
+      traceback) with `traceback.print_exc()` — reverted immediately after,
+      since that file is an installed package, not part of this repo.
+      Workaround: patch `sys.executable` to a real interpreter path
+      (`{ISAACSIM_ROOT_PATH}/kit/python/bin/python3`) before anything
+      imports Newton/mujoco, in any script launched via the raw `kit`
+      executable rather than `python.sh`.
+    - Past that: MuJoCo's solver requires at least one joint to convert a
+      model at all (`solver_mujoco.py::_convert_to_mjc` — "The model must
+      have at least one joint to be able to convert it to MuJoCo"). Newton
+      is supposed to auto-assign an implicit free joint to floating rigid
+      bodies for MuJoCo, but skips this for bodies it considers massless —
+      and a collider alone (mass left to be auto-computed at runtime, no
+      authored `UsdPhysics.MassAPI`) wasn't enough to avoid that in Isaac
+      Sim 6.0.1: this part still hit the joint error despite having real
+      collision geometry. **Fix, confirmed working, no solver change
+      needed**: `UsdPhysics.MassAPI.Apply(prim).CreateMassAttr().Set(<mass>)`
+      — once an explicit mass is authored, Newton's auto-free-joint
+      assignment kicks in correctly and MuJoCo works with zero other
+      changes (no manually-authored joint prim needed). Forcing
+      `XPBDSolverConfig` via
+      `isaacsim.physics.newton.impl.extension.acquire_stage()`'s singleton
+      also works (confirmed both ways) and remains a valid alternative if
+      MuJoCo isn't otherwise needed — XPBD (maximal-coordinate) never had
+      a joint requirement to begin with — but explicit mass is the better
+      fix if the scene needs to stay on MuJoCo (e.g. alongside other
+      articulated robots).
+    - Only relevant if forcing XPBD instead of authoring mass: that path
+      exposes a related inconsistency where Newton's USD parser always
+      includes `SchemaResolverMjc` in its resolver stack regardless of
+      solver type, but only calls
+      `SolverMuJoCo.register_custom_attributes()` (which is what satisfies
+      that resolver's validation) when `solver_type == "mujoco"`. Switching
+      to XPBD without any MuJoCo-tagged schema in the scene needs
+      `SchemaResolverMjc.validate_custom_attributes` patched to a no-op.
+    - `isaacsim.core.api.World`/`SimulationContext.step()` (the deprecated
+      core API, already flagged as a suspect by this repo's own
+      `newton_backend.py` docstring) crashes under Newton with
+      `AttributeError: 'NoneType' object has no attribute '_step'`
+      (`self._physics_context` is never populated for Newton). Worked
+      around by driving `omni.timeline.get_timeline_interface().play()` +
+      `omni.kit.app.get_app().update()` directly instead of `world.step()`.
+    - `isaacsim.core.prims.SingleRigidPrim.get_world_pose()` (also the
+      deprecated core API) silently falls back to a stale, unsimulated raw
+      USD attribute read whenever its internal `_physics_view` is `None` —
+      which is only bound by calling `.initialize()` explicitly, not by
+      construction or by `world.reset()` alone.
+    - Separately, once the physics view *was* correctly bound and the
+      object was genuinely falling (confirmed via the physics tensor view,
+      matching a known-good control cube's fall trajectory closely), both
+      the Fabric-backed (`usdrt`) and plain-USD reads of the same prim's
+      world transform stayed frozen at its initial authored value for the
+      whole run — Newton's `update_fabric` write-back did not appear to
+      sync for a body authored via `Usd.Stage.DefinePrim()` + reference +
+      `setRigidBody()`, as opposed to one added via `world.scene.add()`.
+      Real, but non-blocking for physics correctness — matters for whether
+      the *viewport* visibly shows the motion, not whether the simulation
+      itself is right. Not root-caused further this session.
+  Reproduced end-to-end in `scratchpad/newton_fingerprint_repro.py`
+  (diagnostic only, not committed — not one of this project's own
+  documented/verified pipeline scripts): confirmed `finger_print_scanner`
+  with a Rigid Body + Collider added actually falls under Newton/XPBD
+  gravity (z: 0.498 → 0.006 over 120 steps) once all of the above are
+  applied together, run headlessly via `/isaac-sim/isaac-sim.newton.sh
+  --no-window --/app/fastShutdown=true --exec <script>` — not `python.sh`;
+  that launcher just execs `kit/kit apps/isaacsim.exp.full.newton.kit
+  "$@"`, so headless mode and script injection come from Kit's own
+  `--no-window`/`--exec` flags, not a separate standalone-script path, and
+  a script run this way must not create its own `SimulationApp` (Kit's app
+  already exists) or rely on this repo's own `newton_backend.py` (its
+  module-level `from isaacsim import SimulationApp` import fails in this
+  context — inline the same `enable_newton_physics()` logic instead).
+  **Since confirmed working end-to-end in the actual interactive GUI too**
+  (not just headlessly), for both `finger_print_scanner` and
+  `backpanel_support`, once *all* of the following are true together (any
+  one missing reproduces some form of the failure — either the original
+  crash, silently frozen/not-falling, or falling straight through the
+  ground): (1) `sys.executable` patched (see
+  `scripts/launch_isaac_sim_newton.sh` below); (2) an explicit
+  `UsdPhysics.MassAPI` mass authored on the body (needed for Newton's
+  default MuJoCo solver specifically — its auto-free-joint assignment for
+  floating bodies skips ones it considers massless, and a collider alone
+  with mass left to auto-compute at runtime wasn't enough); (3)
+  `Instanceable` off on the CAD wrapper prim; (4) Rigid Body applied to a
+  translate-only parent Xform, never the scaled reference prim itself; (5)
+  exactly one ground collider in the scene (a duplicate — e.g. one bundled
+  inside an `Environment`/`FlatGrid` preset *and* a separately-added
+  Ground Plane both providing collision — produces a distinct error,
+  `"The number of geoms in the MuJoCo model does not match the number of
+  colliding shapes in the Newton model"`, confirmed via
+  `solver_mujoco.py`'s own geom-count assertion).
+- `scripts/newton_sys_executable_patch.py` +
+  `scripts/launch_isaac_sim_newton.sh` — automates fix (1) above so it
+  doesn't need to be pasted into the Script Editor by hand every session.
+  The wrapper shell script calls the real, **unmodified**
+  `/isaac-sim/isaac-sim.newton.sh` with an added `--exec
+  scripts/newton_sys_executable_patch.py` flag — deliberately not a copy
+  of that launcher (its `$(dirname ${BASH_SOURCE})`-relative paths would
+  break if duplicated into this repo) and deliberately not editing it
+  in place either (same "don't fork vendor files" stance already applied
+  to `examples/curobo_reference/`) — nothing under `/isaac-sim/` is
+  touched. The patch script itself deliberately does **not** call
+  `os._exit()` the way this repo's diagnostic scratchpad scripts do; it's
+  meant to leave an interactive GUI session running normally afterward,
+  just with the patch already applied before you touch anything. **Verified**:
+  confirmed headlessly that Kit accepts multiple `--exec` flags in
+  sequence (this wrapper's own + an additional one appended by the
+  caller), running each in order. Use this in place of directly invoking
+  `/isaac-sim/isaac-sim.newton.sh`, for both GUI and headless
+  (`--no-window`) use — same other args accepted, forwarded through
+  unchanged. Only covers fix (1); explicit mass (2), instancing (3), body
+  hierarchy (4), and duplicate ground colliders (5) above are still
+  per-scene/per-asset choices, not something a launcher wrapper can fix
+  for you.
+- `scripts/launch_isaac_sim.sh` — same pattern, for the **base**
+  `/isaac-sim/isaac-sim.sh` (launches `isaacsim.exp.full.kit`, not the
+  `.newton` variant). Deliberately does **not** inject the
+  `sys.executable` patch — this app config doesn't load Newton by
+  default (no `isaacsim.physics.newton*` extensions in its own `.kit`
+  file, unlike `isaacsim.exp.full.newton.kit`), so the MuJoCo/glfw bug
+  that patch works around isn't in play here. Exists purely for
+  convenience/consistency with `launch_isaac_sim_newton.sh` — a thin,
+  unmodified pass-through to the real launcher. **Verified** headlessly
+  (`--exec` smoke test, exit code 0).
 - `examples/curobo_reference/` — `motion_gen_reacher.py` + `helper.py`,
   fetched verbatim from cuRobo's own GitHub repo at the exact pinned
   commit (`docker/.env.curobo`). A pristine reference copy of cuRobo's
@@ -354,11 +542,84 @@ illustrative, not validated against real hardware.
       time rather than re-pinning `warp-lang` (which risks reopening
       Newton's own warp-version questions) or patching cuRobo's vendored
       source.
-  **NOT verified** in interactive GUI mode with a human actually dragging
-  the cube (no X11 forwarding configured for this host's
-  `docker/container.py` container path — see the devcontainer X11 entry
-  above), and **NOT verified against the CR5 itself** (only Franka, since
+  **NOT verified against the CR5 itself** (only Franka, since
   `robot_override.enabled` is still `true`).
+
+  **Since extended with three more features, GUI-tested this session** (X11
+  forwarding now works — see the devcontainer entry above):
+    - **Launches Isaac Sim's full experience** (`isaacsim.exp.full.kit`,
+      same as `isaac-sim.sh`/`scripts/launch_isaac_sim.sh`) instead of the
+      `SimulationApp` default (`isaacsim.exp.base.kit`, confirmed by
+      reading `isaacsim.simulation_app.SimulationApp`'s own resolution
+      order) — the base experience was why panels like Joint Inspector
+      were missing. Only for the interactive path; `--headless` stays on
+      the base experience, untouched, so the automated smoke test isn't
+      put at risk. Deliberately `isaacsim.exp.full.kit`, not
+      `.full.newton.kit` — the Newton-only variant disables PhysX
+      entirely, which would break this project's own
+      `physics_backend.enabled: false` fallback.
+    - **Gripper open/close via keyboard** (**O** open, **C** close),
+      polled per-frame via `carb.input`/`omni.appwindow` (confirmed this is
+      the current, non-deprecated pattern by reading a real usage,
+      `isaacsim.replicator.experimental.mobility_gen`'s `KeyboardDriver`).
+      Drives `panda_finger_joint1`/`panda_finger_joint2` via
+      `robot._articulation_view.set_joint_position_targets()` (the
+      *targets* variant — smooth, physically-driven, matching this
+      script's own established `_articulation_view` workaround pattern for
+      the arm joints, not an instant kinematic snap) — fully independent
+      of cuRobo's arm planning, since the fingers aren't in its cspace
+      joint list.
+    - **The drag target itself is a "ghost gripper"**: instead of a plain
+      cube, a *detached copy* of the robot's own end-effector visual mesh —
+      following `main`'s own `build_teleop_target()` (from that branch's
+      "interactive cuRobo teleop" commit) as the reference template, one
+      unified prim serves as both the visual and the functional target, no
+      separate cube. `main`'s version (Isaac Sim 5.1.0's URDF importer)
+      copies a clean `f"{ee_link}/visuals"` sub-scope directly; this
+      branch's redesigned 6.0.1 importer doesn't produce one equivalent
+      prim — confirmed live by walking the actual imported hierarchy that
+      `panda_hand`'s visual content is split across `panda_hand/hand`,
+      `panda_hand/hand_1` (clean) and
+      `panda_hand/panda_leftfinger/finger(+finger_1)`,
+      `panda_hand/panda_rightfinger/finger(+finger_1)` (also clean — the
+      `RigidBodyAPI` actually lives one level up, on
+      `panda_leftfinger`/`panda_rightfinger` themselves). Rather than
+      hand-assembling six sub-copies at two nesting depths, this
+      `CopyPrim`s the *whole* `panda_hand` (found by runtime name search,
+      not a hardcoded path — must keep working for the CR5 too, once
+      `robot_override.enabled` flips back) and strips
+      `RigidBodyAPI`/`CollisionAPI`/`ArticulationRootAPI` from the copy's
+      entire subtree afterward. **Real bug found and fixed on the way
+      here**: stripping those APIs from just the copy's *root* prim
+      (`panda_hand` itself) was not enough —
+      `panda_leftfinger`/`panda_rightfinger` (its children) came through
+      still carrying real `RigidBodyAPI`, confirmed via a live diagnostic
+      scan, giving Newton two phantom, unconstrained "rigid bodies" with no
+      joint attaching them to anything. That's what was actually behind a
+      GUI-only crash on pressing Play
+      (`[Newton] ... isaac sim has returned NAN joint position values`) —
+      reproducible only interactively, never headlessly, since the
+      headless smoke test's own scripted target-move happens too late
+      (`step_index > 60`) to exercise the same code path the same way.
+      Fixed by walking the *entire* copied subtree (`Usd.PrimRange`), not
+      just its root, when stripping APIs. Also tried (and abandoned) an
+      `AddInternalReference` clone before landing on `CopyPrim` to match
+      `main`'s exact technique — a live reference arc left an unresolved
+      doubt about whether its own composed transform could stack with the
+      pose set on it afterward; `CopyPrim` is a fully independent,
+      flattened prim spec, no composition ambiguity possible. Known
+      simplification (confirmed acceptable via AskUserQuestion): the
+      copy's fingers are frozen at whatever pose they were in at copy
+      time — only the ghost's overall position/orientation is draggable,
+      not a live mirror of the real gripper's open/close state.
+    - **Headless smoke test passes clean after all of the above** (exit 0,
+      `PASS: headless smoke test completed, plan succeeded, no NaNs`) —
+      but the NaN crash and the ghost-gripper feature are both
+      interactive-only concerns by nature (the headless path never
+      exercises human dragging, real Play-button timing, or the full
+      experience), so **GUI confirmation from the user is still the actual
+      verification for these three**, same as the original cube-drag
+      teleop loop always was.
 - `scripts/` (remaining) — `setup_curobo.py`, `waypoints.py`,
   `teach_waypoint.py`, `playback_waypoints.py`.
 - `scripts/newton_standalone_smoketest.py` — standalone smoke test for

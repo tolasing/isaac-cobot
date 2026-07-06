@@ -21,6 +21,10 @@ assets/factory/*
 docker/.container.cfg
 docker/.isaac-cobot-docker-history
 
+# Throwaway diagnostic scripts/logs -- not part of the documented/verified
+# pipeline (see CLAUDE.md's own scratchpad script entries)
+scratchpad/
+
 # Editors / OS
 .vscode/
 .idea/

@@ -123,19 +123,40 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+import os  # noqa: E402
+
 from isaacsim import SimulationApp  # noqa: E402
 
 if __name__ == "__main__":
-    simulation_app = SimulationApp({"headless": args.headless, "width": "1920", "height": "1080"})
+    # SimulationApp defaults to the minimal isaacsim.exp.base.kit experience
+    # when no `experience` is passed (confirmed by reading
+    # isaacsim.simulation_app.SimulationApp's own resolution order) -- not
+    # the full-featured isaacsim.exp.full.kit that isaac-sim.sh (and this
+    # repo's own scripts/launch_isaac_sim.sh) launches, which is why panels
+    # like Joint Inspector were missing. Only apply this for the interactive
+    # GUI path -- the --headless automated smoke test doesn't need the full
+    # UI experience and this keeps that existing path unchanged. Deliberately
+    # NOT isaacsim.exp.full.newton.kit -- that variant disables PhysX
+    # extensions entirely, which would break this project's own
+    # physics_backend.enabled: false fallback; this script already calls
+    # enable_newton_physics() itself when the config asks for it, and the
+    # generic full.kit experience supports both backends.
+    experience = "" if args.headless else f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
+    simulation_app = SimulationApp(
+        {"headless": args.headless, "width": "1920", "height": "1080"}, experience=experience
+    )
 
 import carb  # noqa: E402
 import numpy as np  # noqa: E402
+import omni.kit.commands  # noqa: E402
 import torch  # noqa: E402
 import warp as wp  # noqa: E402
 from isaacsim.core.api import World  # noqa: E402
 from isaacsim.core.api.objects import cuboid, sphere  # noqa: E402
 from isaacsim.core.api.robots import Robot  # noqa: E402
+from isaacsim.core.prims import SingleXFormPrim  # noqa: E402
 from isaacsim.core.utils.types import ArticulationAction  # noqa: E402
+from pxr import Sdf, Usd, UsdPhysics, UsdShade  # noqa: E402
 
 from curobo.geom.types import WorldConfig  # noqa: E402
 from curobo.types.base import TensorDeviceType  # noqa: E402
@@ -227,6 +248,31 @@ def main() -> None:
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     default_config = robot_cfg["kinematics"]["cspace"]["retract_config"]
 
+    # Gripper open/close via keyboard -- panda_finger_joint1/2 aren't in
+    # cuRobo's cspace joint_names above (gripper actuation is separate from
+    # arm motion planning), so this is fully independent of the cmd_plan
+    # loop below; can't conflict since it targets different joint indices.
+    # carb.input + omni.appwindow, per-frame polling (this script already
+    # has a while-loop stepping every frame, so no callback/subscription
+    # needed) -- confirmed this is the current, non-deprecated pattern by
+    # reading a real usage (isaacsim.replicator.experimental.mobility_gen's
+    # KeyboardDriver) rather than assuming from general knowledge.
+    import carb.input
+    import omni.appwindow
+
+    appwindow = omni.appwindow.get_default_app_window()
+    input_iface = carb.input.acquire_input_interface()
+    keyboard = appwindow.get_keyboard()
+
+    # Confirmed from franka_panda.urdf: both joints are prismatic,
+    # limit lower=0.0 upper=0.04 (meters). O opens (toward 0.04 each,
+    # moving the two fingers apart -- each joint's own axis is flipped
+    # relative to the other, so the same positive target opens both),
+    # C closes (toward 0.0, fingers together).
+    GRIPPER_OPEN_POS = 0.04
+    GRIPPER_CLOSED_POS = 0.0
+    gripper_finger_idx = None  # resolved once the robot articulation is ready, below
+
     # Target cuboid to drag, placed within reach in the ROBOT's own base
     # frame (this scene mounts the robot away from the world origin), then
     # converted to world coordinates for actually spawning it. Created
@@ -239,13 +285,98 @@ def main() -> None:
     target_world_pos = target_world.position.cpu().numpy().reshape(3)
     target_world_quat = target_world.quaternion.cpu().numpy().reshape(4)
 
-    target = cuboid.VisualCuboid(
-        "/World/target",
-        position=target_world_pos,
-        orientation=target_world_quat,
-        color=np.array([1.0, 0, 0]),
-        size=0.05,
-    )
+    # The drag target IS the ghost gripper -- following main's own
+    # build_teleop_target() (scripts/build_scene.py on main, from the
+    # "interactive cuRobo teleop" commit): a *detached copy* of the robot's
+    # own end-effector visual mesh, not a plain marker, so it shows exactly
+    # what will arrive at that pose -- one unified prim serves as both the
+    # visual and the functional drag target, no separate cube.
+    #
+    # main's own version copies a clean f"{ee_link}/visuals" sub-scope
+    # (Isaac Sim 5.1.0's URDF importer apparently produced one) via
+    # omni.kit.commands.execute("CopyPrim", ...). This branch's importer
+    # (6.0.1, redesigned -- see CLAUDE.md's import_cr5.py entry) doesn't
+    # produce a single equivalent "visuals" prim: confirmed live by walking
+    # the actual imported hierarchy that panda_hand's visual content is
+    # split across panda_hand/hand, panda_hand/hand_1 (clean, no APIs) and
+    # panda_hand/panda_leftfinger/finger(+finger_1),
+    # panda_hand/panda_rightfinger/finger(+finger_1) (also clean -- the
+    # RigidBodyAPI actually lives one level up, on panda_leftfinger/
+    # panda_rightfinger themselves). Rather than hand-assembling six
+    # separate sub-copies at two different nesting depths (fragile, and
+    # this script must also still work for the CR5 once
+    # robot_override.enabled flips back to false), CopyPrim the *whole*
+    # panda_hand (found by name search, not hardcoded -- same reasoning)
+    # and strip RigidBodyAPI/CollisionAPI from the copy afterward --
+    # CopyPrim's own doc comment on main notes it correctly preserves
+    # instanceable mesh references end to end, and unlike
+    # AddInternalReference (tried first, worked for physics-safety once
+    # APIs were stripped, but left an unconfirmed doubt about whether a
+    # live reference's own composed transform could stack with the pose
+    # set afterward) a CopyPrim is a fully independent, flattened prim
+    # spec -- no composition arc, no ambiguity about transform stacking.
+    #
+    # Known simplification (confirmed acceptable via AskUserQuestion): the
+    # copy's fingers are frozen at whatever pose panda_hand's descendants
+    # were in at copy time -- only the ghost's overall position/
+    # orientation is draggable, matching the real gripper's live open/close
+    # state isn't attempted here.
+    #
+    # Fallback: if panda_hand can't be found (e.g. testing the CR5 later,
+    # once robot_override.enabled flips back to false and there's no
+    # Franka-specific "panda_hand" link at all), fall back to a plain
+    # VisualCuboid so there's always something to drag.
+    GHOST_PRIM_PATH = "/World/GhostGripper"
+    geometry_scope_prim = world.stage.GetPrimAtPath(f"{robot_prim_path}/Geometry")
+    search_root = geometry_scope_prim if geometry_scope_prim.IsValid() else world.stage.GetPrimAtPath(robot_prim_path)
+    panda_hand_path = None
+    for p in Usd.PrimRange(search_root):
+        if p.GetName() == "panda_hand":
+            panda_hand_path = p.GetPath()
+            break
+
+    if panda_hand_path is not None:
+        omni.kit.commands.execute("CopyPrim", path_from=str(panda_hand_path), path_to=GHOST_PRIM_PATH)
+        ghost_prim = world.stage.GetPrimAtPath(GHOST_PRIM_PATH)
+        # Confirmed live (diagnostic scan): panda_leftfinger/panda_rightfinger
+        # (children of panda_hand) carry real RigidBodyAPI -- copied along
+        # with everything else by CopyPrim, same as a reference would have.
+        # Left in place, these would give Newton two phantom, unconstrained
+        # "rigid bodies" with no joint attaching them to anything -- the
+        # actual cause of a GUI-only NaN crash on Play. Must walk the WHOLE
+        # copied subtree, not just its root.
+        for p in Usd.PrimRange(ghost_prim):
+            for api in (UsdPhysics.RigidBodyAPI, UsdPhysics.CollisionAPI, UsdPhysics.ArticulationRootAPI):
+                if p.HasAPI(api):
+                    p.RemoveAPI(api)
+
+        ghost_material = UsdShade.Material.Define(world.stage, "/World/Looks/GhostGripperMaterial")
+        ghost_shader = UsdShade.Shader.Define(world.stage, "/World/Looks/GhostGripperMaterial/Shader")
+        ghost_shader.CreateIdAttr("UsdPreviewSurface")
+        ghost_shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.2, 0.6, 1.0))
+        ghost_shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(0.25)
+        ghost_material.CreateSurfaceOutput().ConnectToSource(ghost_shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(ghost_prim).Bind(
+            ghost_material, bindingStrength=UsdShade.Tokens.strongerThanDescendants
+        )
+
+        target = SingleXFormPrim(GHOST_PRIM_PATH)
+        target.set_world_pose(position=target_world_pos, orientation=target_world_quat)
+        print(f"[motion_gen_teleop] ghost gripper cloned from {panda_hand_path}", flush=True)
+        print("[motion_gen_teleop] this is now the drag target -- no separate cube", flush=True)
+    else:
+        print(
+            f"[motion_gen_teleop] WARNING: no 'panda_hand' prim found under {robot_prim_path} "
+            "-- falling back to a plain cube target (expected if robot_override is disabled / running the CR5)",
+            flush=True,
+        )
+        target = cuboid.VisualCuboid(
+            "/World/target",
+            position=target_world_pos,
+            orientation=target_world_quat,
+            color=np.array([1.0, 0, 0]),
+            size=0.05,
+        )
 
     usd_help = UsdHelper()
     usd_help.load_stage(world.stage)
@@ -264,7 +395,14 @@ def main() -> None:
     # (MotionGenStatus.INVALID_START_STATE_WORLD_COLLISION, confirmed live).
     only_paths = [instance["prim_path"] for instance in cfg["ergo_tables"]["instances"]]
     pedestal_prim_path = mount_cfg["pedestal"]["prim_path"]
-    ignore_substring = [robot_prim_path, pedestal_prim_path, "/World/target", "/World/defaultGroundPlane", "/curobo"]
+    ignore_substring = [
+        robot_prim_path,
+        pedestal_prim_path,
+        "/World/target",
+        GHOST_PRIM_PATH,
+        "/World/defaultGroundPlane",
+        "/curobo",
+    ]
 
     def sync_obstacles_from_stage():
         return usd_help.get_obstacles_from_stage(
@@ -354,8 +492,30 @@ def main() -> None:
                 positions=torch.tensor(default_config, dtype=torch.float32).unsqueeze(0),
                 joint_indices=idx_list,
             )
+            gripper_finger_idx = torch.tensor(
+                [robot.get_dof_index("panda_finger_joint1"), robot.get_dof_index("panda_finger_joint2")],
+                dtype=torch.long,
+            )
         if step_index < 20:
             continue
+
+        # Gripper open/close -- independent of cuRobo's arm plan below
+        # (different joint indices, can't conflict). Drive TARGET, not an
+        # instant teleport, so it moves smoothly under the existing joint
+        # stiffness/damping -- same physically-driven behavior already
+        # confirmed working via the GUI's Joint Inspector, not a kinematic
+        # snap. GUI-only: headless has no keyboard to poll.
+        if not args.headless and gripper_finger_idx is not None:
+            if input_iface.get_keyboard_value(keyboard, carb.input.KeyboardInput.O) != 0:
+                robot._articulation_view.set_joint_position_targets(
+                    positions=torch.tensor([[GRIPPER_OPEN_POS, GRIPPER_OPEN_POS]], dtype=torch.float32),
+                    joint_indices=gripper_finger_idx,
+                )
+            elif input_iface.get_keyboard_value(keyboard, carb.input.KeyboardInput.C) != 0:
+                robot._articulation_view.set_joint_position_targets(
+                    positions=torch.tensor([[GRIPPER_CLOSED_POS, GRIPPER_CLOSED_POS]], dtype=torch.float32),
+                    joint_indices=gripper_finger_idx,
+                )
 
         if step_index == 50 or step_index % 1000 == 0:
             print(f"[motion_gen_teleop] syncing cuRobo world from stage w.r.t. {robot_prim_path}", flush=True)
