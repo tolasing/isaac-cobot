@@ -223,15 +223,40 @@ _ROBOT_INIT_SETTLE_FRAMES = 5
 
 # Re-times the already-planned trajectory to play out slower -- confirmed via
 # curobo's own source (MotionGenPlanConfig.time_dilation_factor's docstring:
-# "Slow down optimized trajectory by re-timing with a dilation factor... Use
-# this to generate slower trajectories instead of reducing velocity_scale or
-# acceleration_scale, as those parameters require re-tuning of the cost
-# terms"). This is a pure post-process re-time of an already collision-checked,
-# successfully-planned trajectory -- it cannot affect planning success, only
-# how long the same motion takes to play out. 0.3 means motion takes roughly
-# 1/0.3 ~ 3.3x longer than cuRobo's own default plan; tune this one constant
-# to taste for a slower/faster feel.
+# "Slow down optimized trajectory by re-timing with a dilation factor..."):
+# this is a pure post-process, UNIFORM re-time of an already collision-checked,
+# successfully-planned trajectory -- it cannot affect planning success, and
+# crucially it does NOT change the *relative* speed profile the optimizer
+# already chose: a naturally-fast long-distance move and a naturally-slow
+# short move both just get stretched by the same 1/0.3 ~ 3.3x factor, so a
+# far target still ends up moving faster in absolute terms than a near one --
+# just proportionally less fast than before dilation. Confirmed live this
+# doesn't fix "far targets move fast enough to disturb a carried load" --
+# use _TELEOP_VELOCITY_SCALE/_TELEOP_ACCELERATION_SCALE below for that
+# instead, since those actually cap the velocity/acceleration LIMITS the
+# optimizer plans within (a uniform ceiling regardless of distance), not
+# just stretch whatever profile it already produced.
 _TELEOP_TIME_DILATION_FACTOR = 0.3
+
+# Caps the actual velocity/acceleration limits used during trajectory
+# optimization (set at MotionGenConfig construction time, unlike
+# time_dilation_factor above) -- this is what makes motion uniformly slow
+# regardless of target distance, since the optimizer can no longer plan a
+# fast cruise phase for long moves in the first place. cuRobo's own source
+# treats this as a first-class, supported case (not just a risky override):
+# scale <= 0.25 automatically swaps in a dedicated "finetune_trajopt_slow.yml"
+# tuning file made specifically for slow trajectories, and automatically
+# increases the trajectory's own time budget (maximum_trajectory_dt) to
+# compensate -- confirmed via direct source read of
+# MotionGenConfig.load_from_robot_config(). 0.2 stays safely below that 0.25
+# threshold (to get the dedicated slow-trajectory tuning) and above the 0.1
+# floor below which cuRobo requires you to also set maximum_trajectory_dt
+# manually. Scaling both velocity and acceleration together (not just one)
+# matters for not disturbing a carried/grasped load specifically: a low
+# acceleration limit avoids sudden starts/stops/direction changes (the main
+# thing that shakes a friction-held object loose), not just a low top speed.
+_TELEOP_VELOCITY_SCALE = 0.2
+_TELEOP_ACCELERATION_SCALE = 0.2
 
 # Grasp-physics constants, ported from build_scene_mefron.py -- confirmed there
 # (not assumed here) via franka_panda.urdf's actual joint limits
@@ -248,6 +273,17 @@ _TELEOP_TIME_DILATION_FACTOR = 0.3
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 GRIPPER_OPEN_POSITION = 0.04
 GRIPPER_CLOSED_POSITION = 0.0
+# The commanded gripper position is ramped toward GRIPPER_OPEN_POSITION/
+# GRIPPER_CLOSED_POSITION at this rate (meters/second) instead of being
+# commanded as an instant step -- with the high drive stiffness/damping
+# tuned in for grip strength (see stiffen_gripper_drive()'s own history),
+# an instant open<->closed position-target jump makes the fingers snap
+# shut almost immediately, since a stiff position drive tracks a sudden
+# setpoint change aggressively. Ramping the SETPOINT itself gradually keeps
+# that same strong holding force once closed, without the fast snap while
+# getting there. 0.02 m/s means the full 0.04m open<->closed travel takes
+# about 2 seconds; tune this one constant for a faster/slower feel.
+GRIPPER_CLOSE_SPEED = 0.02
 GRIPPER_FRICTION_MATERIAL_PATH = "/World/GripperFrictionMaterial"
 GRIPPER_STATIC_FRICTION = 0.9
 GRIPPER_DYNAMIC_FRICTION = 0.8
@@ -258,16 +294,21 @@ HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
 # T_S_G: the Franka's ee_link pose expressed in finger_print_scanner's own
 # local frame, at a known-good grasp. Derived live via
-# compute_relative_pose(scanner_pose, ee_link_pose) -- confirmed via direct
-# source inspection that isaacsim.core.utils.numpy.rotations.rot_matrices_to_quats
-# returns scalar-first (wxyz), so this is unambiguous, not another
-# hand-Euler-conversion guess. The near-zero w and near-1 z components mean
-# this is close to a 180-degree rotation about the scanner's own Z axis --
-# expected, not a bug: the gripper approaches from above, and the scanner's
-# CAD-authored local frame has its own axis convention flipped relative to
-# that approach direction.
-GRASP_OFFSET_POSITION = [0.01277519, -0.02169126, -0.02863107]
-GRASP_OFFSET_ORIENTATION_WXYZ = [-0.000518294608, -0.00348700255, 0.000751325308, 0.999993504]
+# compute_relative_pose(scanner_pose, target_pose) against a manually-jogged
+# /World/target -- confirmed via direct source inspection that
+# isaacsim.core.utils.numpy.rotations.rot_matrices_to_quats returns
+# scalar-first (wxyz), so this is unambiguous, not a hand-Euler-conversion
+# guess. Re-derived from a fresh manual jog (superseding an earlier value
+# that had a ~180-degree relative rotation about the scanner's own Z axis --
+# this one's near-identity orientation, w~1 and x/y/z~0, reflects wherever
+# the gripper was actually jogged to this time, not a fixed convention).
+GRASP_OFFSET_POSITION = [0.00027002069774515104, -0.021693730387954874, -0.1271989186209571]
+GRASP_OFFSET_ORIENTATION_WXYZ = [
+    -2.1523912431273915e-05,
+    -8.089888886539503e-06,
+    5.762411090611313e-06,
+    0.9999999997190347,
+]
 
 # T_H_S: finger_print_scanner's pose expressed in main_holder's own local
 # frame, at the correctly assembled position. Derived live the same way, by
@@ -280,8 +321,8 @@ ASSEMBLY_RELATIONSHIPS = {
     "finger_print_scanner_on_main_holder": {
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",
-        "local_position": [-0.05765023, 0.02069006, 0.01875005],
-        "local_orientation_wxyz": [0.999973595, -0.00618904850, 0.000842160478, -0.00371422408],
+        "local_position": [-0.05765001316747483, 0.02068996147910942, 0.01500000425999065],
+        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     }
 }
 
@@ -479,7 +520,11 @@ def setup_motion_gen():
     # behavior).
     world_cfg = get_obstacles()
     motion_gen_config = MotionGenConfig.load_from_robot_config(
-        {"robot_cfg": robot_cfg}, world_cfg, tensor_args=TensorDeviceType()
+        {"robot_cfg": robot_cfg},
+        world_cfg,
+        tensor_args=TensorDeviceType(),
+        velocity_scale=_TELEOP_VELOCITY_SCALE,
+        acceleration_scale=_TELEOP_ACCELERATION_SCALE,
     )
     motion_gen = MotionGen(motion_gen_config)
     motion_gen.warmup()
@@ -667,6 +712,11 @@ def run_teleop_loop(
     step_index = 0
     not_playing_frames = 0
     was_playing = False
+    # Ramped gripper setpoint state -- see GRIPPER_CLOSE_SPEED's own comment
+    # for why the commanded position moves gradually instead of jumping
+    # straight to GRIPPER_OPEN_POSITION/GRIPPER_CLOSED_POSITION.
+    gripper_setpoint = None
+    last_gripper_time = None
 
     while simulation_app.is_running():
         simulation_app.update()
@@ -694,6 +744,8 @@ def run_teleop_loop(
             last_cmd_time = None
             obstacles = None
             step_index = 0
+            gripper_setpoint = None
+            last_gripper_time = None
             was_playing = True
 
         step_index += 1
@@ -828,8 +880,18 @@ def run_teleop_loop(
         # every planned frame; see GRIPPER_JOINT_NAMES' comment above).
         if gripper_control is not None:
             gripper_target = GRIPPER_CLOSED_POSITION if gripper_control.closed else GRIPPER_OPEN_POSITION
+            if gripper_setpoint is None:
+                gripper_setpoint = gripper_target
+            now = time.time()
+            if last_gripper_time is not None:
+                max_step = GRIPPER_CLOSE_SPEED * (now - last_gripper_time)
+                if gripper_setpoint < gripper_target:
+                    gripper_setpoint = min(gripper_setpoint + max_step, gripper_target)
+                elif gripper_setpoint > gripper_target:
+                    gripper_setpoint = max(gripper_setpoint - max_step, gripper_target)
+            last_gripper_time = now
             gripper_action = ArticulationAction(
-                np.array([gripper_target, gripper_target]),
+                np.array([gripper_setpoint, gripper_setpoint]),
                 joint_indices=gripper_idx_list,
             )
             articulation_controller.apply_action(gripper_action)

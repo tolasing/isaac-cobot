@@ -23,6 +23,15 @@ assets/factory/*
 assets/mefron/*
 mantra scanner/*
 
+# Locally-vendored NVIDIA Isaac Franka Panda asset (collected from Nucleus
+# to work around an instanceable-geometry/ancestral-prim restriction -- see
+# robots/franka_panda/SOURCE.md). Same reasoning as assets/factory/ above.
+robots/franka_panda/*
+!robots/franka_panda/SOURCE.md
+
+# Session screen recordings -- debugging artifacts, never meant to be committed.
+*.webm
+
 # Docker container.py runtime state
 docker/.container.cfg
 docker/.isaac-cobot-docker-history

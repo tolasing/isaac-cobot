@@ -559,6 +559,21 @@ illustrative, not validated against real hardware.
       `local_position=[-0.05765023, 0.02069006, 0.01875005]`,
       `local_orientation_wxyz=[0.999973595, -0.00618904850,
       0.000842160478, -0.00371422408]`.
+    - **T_H_S was re-derived a second time in a later session — the value
+      above visibly placed the scanner wrong on the mount ("rederiving it
+      is off from the pos it is suppose to be at").** Same technique as
+      before (manually re-aligned `finger_print_scanner` under
+      `main_holder` in the GUI, then `compute_relative_pose()` on the two
+      prims' resulting world poses), not a hand-tweak of the old numbers.
+      New value, now what `mefron.py`'s `ASSEMBLY_RELATIONSHIPS` actually
+      holds, superseding the one immediately above: `local_position=
+      [-0.05765001316747483, 0.02068996147910942, 0.01500000425999065]`,
+      `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`. X/Y moved by well
+      under a millimeter, but Z dropped from `0.01875` to `0.01500` (the
+      part had been sitting ~3.75mm too high) and the orientation
+      simplified from a small residual rotation to a clean identity
+      quaternion — consistent with a more carefully-aligned re-measurement
+      rather than measurement noise.
     - **The official `isaacsim.robot_setup.grasp_editor` tool (`GraspSpec`)
       was tried first for T_S_G (the gripper's grasp pose relative to
       `finger_print_scanner`) and found fundamentally unusable for this
@@ -608,6 +623,22 @@ illustrative, not validated against real hardware.
       Editor is worth retrying against a from-scratch stage for a
       robot/asset combination that doesn't hit this same layered-import
       bug.
+    - **T_S_G was also re-derived in a later session**, same technique
+      (manually jog the gripper to a fresh visually-confirmed good grasp,
+      then `compute_relative_pose()` on the live poses), not a hand-tweak.
+      New value, now what `mefron.py` actually holds, superseding the one
+      immediately above: `GRASP_OFFSET_POSITION=
+      [0.00027002069774515104, -0.021693730387954874,
+      -0.1271989186209571]`, `GRASP_OFFSET_ORIENTATION_WXYZ=
+      [-2.1523912431273915e-05, -8.089888886539503e-06,
+      5.762411090611313e-06, 0.9999999997190347]` — a near-identity
+      rotation (`w≈1`) rather than the earlier ~180-degree-about-Z one,
+      reflecting a different jog approach angle this time, not a
+      convention change. **Still an open, unresolved problem even with
+      this re-derivation**: placement lands close on X, visibly off on Y.
+      Diagnosed (not yet fixed) as a grasp-*centering* issue, not a T_S_G
+      accuracy problem or a joint-configuration asymmetry — see
+      "Needs verification" below.
     - **Step 6: wired T_H_S/T_S_G into two new pose functions and two new
       keybindings, table-position-independent by construction.**
       `compute_grasp_approach_pose()`/`compute_assembly_grasp_target()`
@@ -651,6 +682,98 @@ illustrative, not validated against real hardware.
       success=True` for both phases, with real joint-position deltas
       (`1.8159` rad for the grasp-approach move, `0.6809` rad more for the
       subsequent assembly-placement move).
+    - **A later session tried moving robot/friction ownership into
+      `mefron.usd` itself (`scripts/mefron2.py`, see its own entry below),
+      then reverted back to this file.** The user deleted the manually-
+      placed Franka and its gripper-friction material back out of
+      `mefron.usd` in the GUI and asked to return to this script's own
+      code-driven `mount_franka()`/`apply_gripper_friction()`/
+      `stiffen_gripper_drive()` pipeline ("lets go back to mefron.py i
+      deleted the franka from mefron.usd and gripper friction do this
+      reimport and physciacs from script itself"). This file is the active
+      script again; the fixes below all landed here, not in `mefron2.py`.
+    - **Motion was only uniformly slow in *relative* terms — far targets
+      still moved fast enough to disturb a carried load — fixed via
+      `velocity_scale`/`acceleration_scale`, not `time_dilation_factor`.**
+      `_TELEOP_TIME_DILATION_FACTOR` (`0.3`, a `MotionGenPlanConfig`-level
+      setting) only uniformly re-times an *already-planned* trajectory
+      after the fact — confirmed via cuRobo's own source that this can't
+      change the plan's relative speed profile, only stretch it, so a
+      naturally-fast long move and a naturally-slow short move both just
+      get stretched by the same factor and the long move still ends up
+      faster in absolute terms. Fixed by capping the velocity/acceleration
+      *limits the trajectory optimizer plans within* instead, via
+      `MotionGenConfig.load_from_robot_config()`'s own `velocity_scale`/
+      `acceleration_scale` kwargs (set once, at `MotionGen` construction
+      time, in `setup_motion_gen()`). New module constants
+      `_TELEOP_VELOCITY_SCALE = 0.2` / `_TELEOP_ACCELERATION_SCALE = 0.2`
+      — deliberately kept in the `0.1`–`0.25` band: confirmed via direct
+      source read that cuRobo treats `scale <= 0.25` as a first-class
+      case, automatically swapping in a dedicated
+      `finetune_trajopt_slow.yml` tuning file made for slow trajectories
+      and increasing the trajectory's own time budget
+      (`maximum_trajectory_dt`) to compensate, whereas going below `0.1`
+      would additionally require setting `maximum_trajectory_dt` by hand.
+      Scaling both velocity **and** acceleration (not just velocity) is
+      deliberate: a low acceleration limit specifically damps sudden
+      starts/stops/direction changes, which is what actually shakes a
+      friction-held carried object loose, not just top speed.
+    - **Gripper was closing too fast even with drive stiffness already
+      tuned up for grip strength** ("the fingers are closing too quickly
+      need to slow that also down"). Root cause: the gripper block in
+      `run_teleop_loop()` commanded `GRIPPER_OPEN_POSITION`/
+      `GRIPPER_CLOSED_POSITION` as an instant position-target jump every
+      frame — with `stiffen_gripper_drive()`'s already-high stiffness/
+      damping, a stiff position drive tracks a sudden setpoint change
+      aggressively, snapping the fingers shut almost immediately. Fixed by
+      ramping the *commanded setpoint* itself gradually instead of jumping
+      straight to the target: new `gripper_setpoint`/`last_gripper_time`
+      loop-local state, advanced toward the target by at most
+      `GRIPPER_CLOSE_SPEED` (new module constant, `0.02` m/s — the full
+      `0.04`m open↔closed travel takes about 2 seconds) times real elapsed
+      wall-clock time (`time.time()`, same non-frame-based pacing pattern
+      already used for trajectory playback) each frame. The drive itself
+      is unchanged, so the same strong holding force applies once fully
+      closed — only the approach to that setpoint is gradual now.
+    - **Confirmed via source but not yet wired in: cuRobo has no awareness
+      that the robot is carrying `finger_print_scanner` once grasped**,
+      which is at least part of why a planned move crashes the carried
+      part into `main_holder` instead of avoiding it ("why is cuRobo not
+      avoiding the main holder side instead crashing into it?"). Confirmed
+      via direct source read: `MotionGen` exposes
+      `attach_objects_to_robot()`/`detach_object_from_robot()` specifically
+      for this (treating a grasped object as rigidly attached to the
+      robot's own collision body for the rest of planning, until
+      detached), and `franka.yml` already has a pre-built `attached_object`
+      link with 4 spare collision spheres sized for exactly this purpose,
+      currently unused. The natural wiring point is the existing C/O
+      gripper keybindings in `run_teleop_loop()` (call
+      `attach_objects_to_robot()` on close, `detach_object_from_robot()` on
+      open), but this is **not implemented** — paused mid-decision to
+      check how placement accuracy behaves first ("wait first let me check
+      how precisely this placement works"), and the session moved on to
+      the grasp-centering problem below before returning to it.
+    - **Still open, not yet fixed: a grasp-centering problem, confirmed to
+      NOT be a per-finger joint/drive asymmetry.** Reviewing a screen
+      recording of a grasp-close (5 frames extracted from the session's
+      own `.webm` capture for review — see the repo's gitignored
+      screencast files), the object visibly shifted sideways as the
+      fingers closed. A per-finger drive/mimic-joint asymmetry between
+      `panda_finger_joint1`/`panda_finger_joint2` looked plausible and was
+      about to be investigated as the cause. **The user corrected this
+      diagnosis directly**: "i wouldnt say fixed since the central mount is
+      closer to the right finger joint it reached first and then the left
+      joint comes" — i.e. `finger_print_scanner` isn't equidistant from
+      both fingertips at the moment closing begins (a grasp-pose centering
+      issue), so one finger contacts and starts pushing the object before
+      the other one arrives, rather than both sides closing onto it
+      symmetrically. This remains unresolved — no fix has been attempted.
+      Two directions were discussed but neither started: re-derive
+      `GRASP_OFFSET_POSITION` checking explicitly that it's equidistant
+      from both fingertips at grasp time, or derive it from the gripper's
+      own finger-midpoint frame instead of `ee_link` directly. The
+      per-finger joint-asymmetry hypothesis above was explicitly rejected
+      by the user — don't re-investigate it without new evidence.
 - `scripts/test_mefron_teleop_headless.py` — headless regression test for
   `mefron.py`'s `run_teleop_loop()`, mirroring `test_teleop_headless.py`'s
   established pattern for `build_scene.py` (reuses `mefron.py`'s own
@@ -675,14 +798,24 @@ illustrative, not validated against real hardware.
   different robot/asset combination, not currently part of any regular
   workflow since T_S_G was derived via `compute_relative_pose()` instead.
 - `configs/scene/mefron_layout.yaml` + `scripts/build_scene_mefron.py` —
-  the **preferred** approach for the mefron scene, in place of
-  `scripts/mefron.py` above. Same overall goal (mount the Franka, run
-  cuRobo teleop) but built the way `build_scene.py` itself is: a fresh,
-  anonymous `SimulationApp` stage with `mefron.usd` brought in via
+  originally written as the **preferred** approach for the mefron scene,
+  in place of `scripts/mefron.py` above. Same overall goal (mount the
+  Franka, run cuRobo teleop) but built the way `build_scene.py` itself is:
+  a fresh, anonymous `SimulationApp` stage with `mefron.usd` brought in via
   `add_reference_to_stage()` (under `/World/Factory`), not opened
   directly. This one architectural difference avoids essentially every
   bug found in `scripts/mefron.py` above *by construction*, confirmed
-  live:
+  live (see below) — **but in practice, all of this session's active
+  interactive work (grasp/assembly tuning, speed/gripper fixes, pose
+  re-derivations) happened directly in `scripts/mefron.py`, not this
+  file**, because deriving T_H_S required temporarily reparenting
+  `finger_print_scanner` under `main_holder` in the Stage tree, which
+  only works against `mefron.usd` opened directly — `build_scene_mefron.py`'s
+  own referenced-stage session hits the "Cannot move/rename ancestral
+  prim" restriction for that (see the T_H_S entry under `scripts/mefron.py`
+  above). Treat `build_scene_mefron.py` as verified-and-working but
+  currently dormant, and `scripts/mefron.py` as the actually-active script,
+  until/unless something forces a switch back:
     - Since the stage's root layer stays anonymous/in-memory (same as
       `build_scene.py`'s own stage always has), the URDF importer never
       triggers the file-backed "Robot Description" multi-layer write (see
@@ -742,6 +875,228 @@ illustrative, not validated against real hardware.
   involvement for either name — confirmed live this survives the full
   experience and reaches `curobo motion_gen: READY` same as before.
   Applied to both this file and `scripts/mefron.py` for consistency.
+    - **Mount remount: pedestal → SEKTION table.** The old
+      `Pedestal_plates/Cube_05` mount plate was removed from `mefron.usd` in
+      the GUI and replaced with a pre-authored SEKTION cabinet table
+      (`/World/sektion_cabinet_instanceable`, a `/World` sibling of
+      `Factory` in mefron.usd's own raw hierarchy — becomes
+      `/World/Factory/sektion_cabinet_instanceable` here after this file's
+      own one-level nesting, see above). `cr5_mount.position`
+      (`[2.74097, -4.782, 0.7924]`) was read directly off a manually-placed
+      Franka copy's Property-panel Translate/Orient in the GUI, not
+      independently re-derived via a `get_world_pose()`/`BBoxCache` script
+      like most other poses in this project — worth re-checking first if
+      the robot ends up floating/clipping through the table.
+      `cr5_mount.pedestal` was renamed to **`cr5_mount.mount_surface`** in
+      `mefron_layout.yaml` (`get_teleop_obstacles()` and `main()`'s
+      status-print list both use the new key). `teleop_target.position` was
+      carried forward **algebraically** (old target minus old mount,
+      applied to the new mount position) rather than re-derived from
+      scratch — valid only because `cr5_mount.orientation_wxyz` is
+      unchanged (still identity); recompute properly, don't just shift,
+      if the mount orientation ever changes.
+    - **Grasp-physics fixes: `apply_gripper_friction()` /
+      `stiffen_gripper_drive()`.** Read-only inspection of `mefron.usd`
+      found **zero** `PhysxMaterialAPI` authored anywhere (not on
+      `finger_print_scanner`/`main_holder`/`screen`, not a usable one on
+      `backpanel_support`'s pure-render `Black_Paint_01` material, no
+      `PhysicsScene`-level default), and confirmed the Franka side has none
+      either (`franka_panda.urdf` has no friction tags; `import_cr5.py`
+      sets none) — both sides of every grasp contact were relying on
+      PhysX's un-overridden engine default friction, which is what was
+      causing `finger_print_scanner` to slip out of the gripper regardless
+      of its mass. `apply_gripper_friction()` creates one shared material
+      at `/World/GripperFrictionMaterial`
+      (`GRIPPER_STATIC_FRICTION=0.9`/`GRIPPER_DYNAMIC_FRICTION=0.8`,
+      restitution 0.0) via the real
+      `omni.physx.scripts.utils.addRigidBodyMaterial()`/
+      `physicsUtils.add_physics_material_to_prim()` helpers, bound to both
+      Franka fingertip links and everything listed in the new
+      `high_friction_prim_paths` config key (currently just
+      `finger_print_scanner`). Separately, a headless inspection of the
+      actual imported joint prims
+      (`/World/CR5/joints/panda_finger_joint1|2`, `UsdPhysics.DriveAPI`
+      type `"linear"`) found `stiffness=625.0`/`damping=10.0` — not the
+      configured `default_drive_strength=1047.2`/
+      `default_position_drive_damping=52.36` (the URDF importer derives a
+      different effective value for prismatic joints, and the URDF's own
+      `<dynamics damping="10.0"/>` on these two joints wins over the
+      importer's default damping), leaving most of the fingers' real
+      `effort="20"` N ceiling unused for a typical 1-2cm grasp position
+      error (~6-12N reached). `stiffen_gripper_drive()` raises both to
+      `GRIPPER_DRIVE_STIFFNESS=10000.0`/`GRIPPER_DRIVE_DAMPING=200.0` via
+      `UsdPhysics.DriveAPI` on both finger joints. Both fixes are
+      **runtime-only, not persisted** to `mefron.usd` — deliberate, matches
+      how every other robot-tied property in this scene works. Headless
+      read-back confirmed the material's friction values and the joints'
+      drive values land exactly as configured; **not yet live-tested**
+      whether the combination actually produces a firm, non-slipping grip
+      in the GUI.
+    - **Keyboard gripper control.** `GripperKeyboardControl` +
+      `build_gripper_keyboard_control()` subscribe to real `carb.input`
+      keyboard events (**C** closes, **O** opens), confirmed against this
+      install's own stubs (`carb/input.pyi`,
+      `omni/appwindow/_appwindow.pyi`) rather than assumed from memory.
+      `GRIPPER_OPEN_POSITION=0.04`/`GRIPPER_CLOSED_POSITION=0.0` come from
+      `franka_panda.urdf`'s actual joint limits (`panda_finger_joint1/2`,
+      prismatic, `lower="0.0" upper="0.04"`). Wired into `run_teleop_loop()`
+      via an optional `gripper_control` param, applied every playing frame
+      *after* the arm's own `cmd_plan` block so it always wins that frame's
+      write to the finger joints (`get_full_js()` re-applies cuRobo's own
+      `lock_joints`-locked-open value on every planned frame otherwise).
+      Chosen over the `isaacsim.robot_setup.grasp_editor` tool because
+      `franka.yml` already excludes the two finger joints from IK/trajopt
+      entirely, so finger actuation was always going to be orthogonal to
+      cuRobo regardless — Grasp Editor only pays off once something
+      computes a grasp target pose autonomously, which nothing here did at
+      the time this decision was made. **Verified headlessly** (joint-drive
+      mechanism only, via the `set_closed()` test hook the class exposes
+      for exactly this purpose); **not yet verified** with a real
+      interactive keypress in the GUI, and no permanent headless regression
+      test exists yet for plain open/close specifically
+      (`test_mefron_assembly_headless.py` exercises this file's G/P
+      snap-to-pose requests instead — a different code path from `C`/`O`).
+    - **Trajectory playback was running too fast with an arrival
+      oscillation — root-caused to a frame-vs-time mismatch, not a
+      stiffness/damping problem.** `get_interpolated_plan()` spaces
+      waypoints `interpolation_dt` seconds apart (`0.02s`), but this loop's
+      own render rate (confirmed live at ~119 FPS, far above the 50Hz the
+      plan assumes) has nothing to do with that — applying one waypoint per
+      render *frame* instead of one per `interpolation_dt` played the whole
+      trajectory back at roughly 2.4x its intended speed and cut its final
+      deceleration-to-zero-velocity ramp short, leaving real residual
+      velocity for the position-hold drive to absorb once `cmd_plan` ran
+      out — the actual cause of both the too-fast motion and the arrival
+      oscillation. Fixed by gating playback on real elapsed time
+      (`time.time()`) against each plan's own `result.interpolation_dt` (a
+      `MotionGenResult`-level value — `MotionGen` itself exposes no such
+      attribute) instead of one waypoint per render frame.
+- `scripts/mefron2.py` — a simplified sibling of `scripts/mefron.py` built
+  for a "everything already baked into `mefron.usd`, no code-driven
+  import" approach: assumes the Franka and its gripper-friction material
+  are already saved directly into `mefron.usd` (via Isaac Sim's own GUI
+  robot-asset import — NVIDIA's bundled Nucleus Franka Panda asset, not
+  this repo's URDF-import pipeline), so this script does no import and no
+  friction/drive-stiffness authoring at all — only cuRobo setup, the
+  draggable teleop target, and the G/P/C/O controls, all ported from
+  `mefron.py`. Two real, confirmed-live differences from `mefron.py`'s
+  equivalents were needed:
+    - `build_teleop_target()`'s first attempt — a plain `CopyPrim` from
+      `panda_hand/geometry` — produced an **empty bounding box**, confirmed
+      via `UsdGeom.BBoxCache`. Root cause: `geometry` is only
+      `instanceable=True` metadata pointing at an instance; `CopyPrim`'s
+      shallow, spec-level copy carries the instanceable flag but not the
+      composition arc needed to resolve it, leaving a hollow shell. Fixed
+      by resolving the actual instance-proxy `Mesh` prim underneath
+      `geometry` first (via `Usd.TraverseInstanceProxies()`), then
+      `CopyPrim`-ing from *that* already-resolved path — confirmed live
+      this produces a correct non-empty bbox, and (separately, tested via a
+      diagnostic script, not just assumed) `check_ancestral()==False` and a
+      real `MovePrim` reparent succeeds, unlike the `AddInternalReference()`
+      approach `mefron.py` uses for its own (differently-sourced) Franka.
+    - NVIDIA's bundled Franka asset bakes real `UsdPhysics.CollisionAPI`
+      onto that same mesh prim (visuals and collision aren't split into
+      separate prims the way a from-scratch URDF import keeps them), so
+      the copied target inherited a real, live collider — confirmed via a
+      real PhysX overlap query that it was already geometrically
+      overlapping the actual robot's own nearby links. Since the resolved
+      copy (unlike a plain instance proxy) is a genuine, editable prim,
+      `RemoveAPI(UsdPhysics.CollisionAPI)` works directly on it with no
+      further workaround needed.
+    - `MOUNT_POSITION`/`MOUNT_ORIENTATION_WXYZ` aren't hardcoded here since
+      there's no mount step — `get_robot_base_pose()` reads the
+      already-placed robot's real live world pose off the stage once at
+      startup instead, correct regardless of exactly where the robot was
+      manually placed when it was saved into `mefron.usd`.
+  **Verified working** at the time it was built: headless run reaches
+  `curobo motion_gen: READY`, all status paths `OK`, and a fake-drag test
+  gives `plan_single success=True` with a non-empty target bbox and no
+  articulation errors. **Now superseded**, not actively used: the user
+  later deleted the manually-placed Franka and its gripper-friction
+  material back out of `mefron.usd` in the GUI and asked to return to
+  `scripts/mefron.py`'s own code-driven pipeline instead (see that file's
+  own entry above for the revert). This file is kept as a working artifact
+  for its CopyPrim/instance-proxy-resolution technique, but as of that
+  revert it no longer matches what's actually saved in `mefron.usd` (no
+  Franka, no friction material) — it would need a fresh Franka re-added to
+  `mefron.usd` by hand (from `robots/franka_panda/`, below) before it could
+  run again; treat it as a reference, not as ready-to-run.
+- `robots/franka_panda/` — a local, Content-Browser-"Collect Asset"-vendored
+  copy of NVIDIA's own Nucleus-hosted Franka Panda asset (public,
+  unauthenticated S3 bucket; see the directory's own `SOURCE.md` for the
+  exact URL), built specifically to unblock `scripts/mefron2.py`: the
+  Nucleus-hosted original's link geometry is `instanceable=True`, and USD
+  refuses to author anything — including `SetInstanceable(False)` — onto a
+  *read-only, Nucleus-backed* instance proxy. Collecting the asset locally
+  (which also pulls in every file it references, unlike a plain `curl` of
+  `franka.usd` alone) makes it a real, locally-editable file instead.
+  ~39MB, gitignored like every other vendored asset pack in this repo
+  (`robots/franka_panda/*` / `!robots/franka_panda/SOURCE.md`, added to
+  `.gitignore` this session) — same NVIDIA Omniverse License Agreement
+  content-pack terms as `assets/factory/`/`assets/mefron/`. Now effectively
+  dormant along with `mefron2.py` itself, kept only because that script
+  still references it.
+- **`main_holder` convex-decomposition collision tuning — researched and
+  confirmed against this Isaac Sim install's actual schema, not yet
+  applied.** Switching `main_holder`'s collider from Convex Hull to Convex
+  Decomposition (via GUI, needed for the same reason as
+  `finger_print_scanner`'s own collider — see 3b under `scripts/mefron.py`'s
+  grasp-physics findings above) made the part sink slightly into the table
+  and lose its small mounting studs. A research **Workflow** (3 parallel
+  research agents + 3 adversarial verify agents, every claim grounded
+  against this install's real schema files, not memory) confirmed:
+    - Schema: `PhysxSchema.PhysxConvexDecompositionCollisionAPI`
+      (single-apply), applied alongside `UsdPhysics.MeshCollisionAPI` with
+      `approximation="convexDecomposition"`. Real schema defaults:
+      `hullVertexLimit=64`, `maxConvexHulls=32`, `minThickness=0.001`,
+      `voxelResolution=500000`, `errorPercentage=10`, `shrinkWrap=False`.
+    - Mechanism (VHACD-family: voxelize → cluster → convex-hull-per-cluster
+      → optional shrink-wrap re-projection): **sinking** happens because
+      `shrinkWrap` defaults to `False`, so nothing re-projects the
+      voxel-quantized hull back onto the true surface. **Small-feature
+      loss** happens because `voxelResolution` is a budget spread over the
+      *whole part's bounding box*, not per-feature — mm-scale studs on a
+      much larger flat part can fail to rasterize at all, or get merged
+      away during the volume-error-driven clustering step.
+    - `main_holder`'s actual collider prim (confirmed via headless
+      inspection, not assumed by analogy):
+      `/World/Factory/main_holder/tn__mainholder_kA` — `approximation`
+      is `convexHull` on-disk in `mefron.usd` as of this check (any live
+      GUI edit to `convexDecomposition` is session-local until saved).
+    - Recommended values, given to the user as a GUI walkthrough, **not**
+      implemented in code — deliberately: the user pushed back on
+      hardcoding per-part collision tuning as not scalable, and this is an
+      asset-intrinsic property of `mefron.usd` itself, unlike the
+      robot-tied friction/stiffness fixes above which are legitimately
+      runtime concerns: **Shrink Wrap → ON** (fixes sinking), **Voxel
+      Resolution → ~3,000,000–5,000,000** (fixes stud loss; hard ceiling is
+      5,000,000), **Max Convex Hulls → ~128** (secondary, budget for small
+      features), **Error Percentage → ~1–2** (secondary), Hull Vertex Limit
+      and Min Thickness left at defaults — then **save `mefron.usd`**
+      (`Ctrl+S`), the one fix in this investigation meant to persist into
+      the asset file directly rather than be reproduced by code. **Not yet
+      applied/tested** as of the last check (`mefron.usd` isn't tracked in
+      git, so this can't be re-verified from the repo alone — check live
+      before assuming it's still pending).
+- `scenes/cell_scene.usda` — a small, hand-written USD stage
+  (`defaultPrim=/World`, `metersPerUnit=1`) that references
+  `assets/factory/Factory.usd` under `/World/Factory` and nothing else — no
+  CR5/Franka, no ergo tables, no pruning. Not referenced by any script in
+  this repo (confirmed via search); origin and intended use are unclear as
+  of this check — likely a manual scratch/exploration stage from GUI work,
+  not a pipeline artifact. Investigate before building on it, in case it's
+  in-progress work rather than dead weight.
+- `solidworks_transform_extraction.md` — notes on an alternative,
+  SolidWorks-side method (Coordinate Systems + Measure, or direct mate
+  values) for extracting the `finger_print_scanner`→`main_holder` relative
+  transform (`T_part_target`) at the CAD-authoring stage, instead of
+  deriving it live in Isaac Sim. **Superseded in practice**: the actual
+  `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]` value
+  used in `scripts/mefron.py` was instead derived live via
+  `compute_relative_pose()` on both parts' Isaac Sim world poses at a
+  manually-aligned position (the T_H_S finding, see `scripts/mefron.py`'s
+  entry above) — kept as a reference for a CAD-side alternative, not part
+  of the executed pipeline.
 - `data/waypoints/` — recorded waypoint JSON (joint-space, not Cartesian);
   see its README for the schema.
 - `README.md`, `pyproject.toml`, `.github/workflows/lint.yml`, `tests/` —
@@ -813,6 +1168,59 @@ above). Still open:
   measured against real hardware dimensions.
 - The devcontainer X11/GUI-forwarding fix (see its own "Done" entry above)
   is still unconfirmed end-to-end with a live GUI launch.
+- **`build_scene_mefron.py`'s grasp-physics fixes** (`apply_gripper_friction()`,
+  `stiffen_gripper_drive()`) — headless read-back confirmed the friction
+  material and drive values land exactly as configured, but whether the
+  combination actually produces a firm, non-slipping, non-dangling grasp on
+  `finger_print_scanner` has not been tested live in the GUI.
+- **Keyboard gripper open/close (`C`/`O`) in `build_scene_mefron.py`** —
+  the underlying joint-drive mechanism is headlessly verified (via the
+  `GripperKeyboardControl.set_closed()` test hook), but a real interactive
+  keypress in the GUI hasn't been tried, and there's no permanent headless
+  regression test for plain open/close specifically (only the separate G/P
+  snap-to-pose request path in `mefron.py` has one, via
+  `test_mefron_assembly_headless.py`).
+- **`main_holder`'s convex-decomposition collision tuning** (Shrink Wrap
+  on, Voxel Resolution ~3-5M, Max Convex Hulls ~128, Error Percentage ~1-2
+  — see its own "Done" entry above for the full research) is a
+  recommendation only — apply it via the GUI, confirm live that it fixes
+  the sinking/stud-loss symptoms, and save `mefron.usd`.
+- **Grasp-centering problem in `scripts/mefron.py` — open, unresolved.**
+  `finger_print_scanner` isn't equidistant from both fingertips at the
+  moment the gripper starts closing, so one finger contacts and pushes the
+  object before the other arrives, shifting it sideways instead of
+  squeezing it symmetrically (see that file's own entry above for the full
+  diagnosis and the explicitly-rejected joint-asymmetry hypothesis). No
+  fix attempted yet — re-derive `GRASP_OFFSET_POSITION` checking
+  equidistance from both fingertips, or derive it from the gripper's
+  finger-midpoint frame instead of `ee_link`, are the two directions
+  discussed but not started.
+- **`attach_objects_to_robot()`/`detach_object_from_robot()` wiring in
+  `scripts/mefron.py`** — confirmed via cuRobo source that this is the
+  right mechanism for making planning aware of a carried
+  `finger_print_scanner` (see that file's own entry above), and
+  `franka.yml` already has a pre-built `attached_object` link ready for it,
+  but it's not wired into the C/O gripper keybindings yet. Paused pending
+  the user's own check of "how precisely this placement works" — confirm
+  that's resolved before implementing, in case it changes the approach.
+- **`_TELEOP_VELOCITY_SCALE`/`_TELEOP_ACCELERATION_SCALE = 0.2` and
+  `GRIPPER_CLOSE_SPEED = 0.02`** (both in `scripts/mefron.py`, see that
+  file's own entry above) were applied in direct response to the user
+  reporting fast-target motion disturbing a carried load and the gripper
+  snapping shut too quickly — the mechanism for both is confirmed correct
+  against cuRobo/PhysX source, but neither was independently re-confirmed
+  live afterward against the *original* complaints specifically (the
+  session moved on to the separate grasp-centering investigation above
+  before circling back). Worth a quick live re-check that both actually
+  feel right before assuming these constants are final.
+- **The re-derived `GRASP_OFFSET_POSITION`/`GRASP_OFFSET_ORIENTATION_WXYZ`
+  and `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`
+  values** (`scripts/mefron.py`, re-derivation documented inline in that
+  file's own entry above) fixed the T_H_S/T_S_G values being visibly off,
+  but placement is still described as off on the Y axis — likely the same
+  grasp-centering problem above rather than a T_S_G derivation error, but
+  not explicitly confirmed as the same root cause versus a second,
+  independent issue.
 
 ## Conventions
 
