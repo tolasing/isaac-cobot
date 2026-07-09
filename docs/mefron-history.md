@@ -266,6 +266,47 @@ debounce-ordering bug, and the open grasp-centering problem.
   grasp-centering problem (see `docs/grasp-and-assembly-offsets.md`)
   before returning to it.
 
+## `scripts/mefron_lib/` (package split)
+
+`mefron.py` had grown into one file holding constants, robot mounting,
+grasp/assembly pose math, keyboard control, and the teleop loop together.
+Split into a proper package, `scripts/mefron_lib/` (`kit_bootstrap.py`,
+`config.py`, `grasp.py`, `robot.py`, `teleop.py`), with `mefron.py` reduced
+to a thin entry point. Also applied to `mefron_gripper_probe.py`,
+`mefron_grasp_editor_scene.py`, `franka_grasp_editor_scene.py`, and both
+`test_mefron_*_headless.py` files, all of which previously did `import
+mefron` purely to reach its module-level functions/constants and to
+trigger its packaging-preload side effect. `mefron2.py` (dormant/
+superseded, see below) only had its duplicated packaging-preload block
+swapped for `kit_bootstrap.preload_real_packaging()` — its other, already-
+diverged logic was left alone rather than forced onto the new shared
+modules' signatures.
+
+Two non-cosmetic things fell out of this, not just file-moving:
+
+- **`mefron.simulation_app = simulation_app` monkey-patching, eliminated.**
+  The four dependent scripts each set this on the imported `mefron` module
+  before calling any of its functions, because the old `run_teleop_loop()`
+  referenced the bare module-global `simulation_app` (`while
+  simulation_app.is_running(): simulation_app.update()`) — grep confirmed
+  this was the *only* moved function relying on that global (`mount_franka()`/
+  `apply_gripper_friction()`/`stiffen_gripper_drive()` don't touch it).
+  `mefron_lib.teleop.run_teleop_loop()` now takes `simulation_app` as an
+  explicit first parameter instead, so every caller passes its own local
+  variable directly and the monkey-patch requirement disappears entirely.
+- **A real bug caught while wiring up `mefron_gripper_probe.py`'s
+  `spawn_gripper_probe()`**: importing the hand-only probe while
+  `finger_print_scanner` was still selected in the Stage tree nested the
+  new prim under it (`/World/finger_print_scanner/GripperProbe` instead of
+  `/World/GripperProbe`) — confirmed live via the PhysX warning "Rigid Body
+  ... missing xformstack reset when child of another enabled rigid body in
+  hierarchy." `import_cr5()`'s `URDFParseAndImportFile` call parents under
+  whatever's currently selected when a specific destination isn't otherwise
+  forced; `spawn_gripper_probe()` now explicitly clears the Stage-tree
+  selection (and deletes any stale prim already at the destination path)
+  before importing, so it lands under `/World` regardless of prior
+  selection state.
+
 ## `scripts/test_mefron_teleop_headless.py`
 
 Headless regression test for `mefron.py`'s `run_teleop_loop()` (reuses

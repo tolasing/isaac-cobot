@@ -1,8 +1,12 @@
-"""Diagnostic scene built to chase a Grasp Editor bug on a fresh anonymous
-stage; kept as a working artifact. Full investigation: docs/grasp-and-assembly-offsets.md.
+"""Grasp Editor scene using our own hand-only Franka import (no arm) on a fresh anonymous stage --
+combines franka_grasp_editor_scene.py's anonymous-stage workaround (avoids the layered-import bug that
+breaks Grasp Editor's Frames-of-Reference dropdown against mefron.usd directly) with
+mefron_gripper_probe.py's trimmed hand-only URDF (avoids whatever full-arm-only issue makes
+panda_leftfinger/panda_rightfinger's meshes fail to resolve on an anonymous stage -- confirmed empty via
+a direct Usd.PrimRange check, not just a visibility flag). Full investigation: docs/grasp-and-assembly-offsets.md.
 
 Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/franka_grasp_editor_scene.py
+    ${ISAACSIM_ROOT_PATH}/python.sh scripts/panda_hand_grasp_editor_scene.py
 """
 
 from __future__ import annotations
@@ -38,9 +42,9 @@ def main() -> None:
     # Same fix mefron.main() applies -- see mefron.py's own comment on this setting.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
 
-    # Deliberately no open_stage() -- SimulationApp's default anonymous stage
-    # avoids the URDF importer's layered-import mechanism entirely (see docstring).
-    robot.mount_franka()
+    # Mounted at config.ROBOT_PRIM_PATH (not a separate probe path) so apply_gripper_friction()/
+    # stiffen_gripper_drive() -- which hardcode that path -- work unmodified.
+    robot.mount_franka_hand_only(config.ROBOT_PRIM_PATH)
     for _ in range(60):
         simulation_app.update()
 
@@ -57,9 +61,9 @@ def main() -> None:
     stage = omni.usd.get_context().get_stage()
     for status_path in [config.ROBOT_PRIM_PATH, SCANNER_PRIM_PATH]:
         prim = stage.GetPrimAtPath(status_path)
-        print(f"[franka_grasp_editor_scene] {status_path}: {'OK' if prim.IsValid() else 'MISSING'}", flush=True)
+        print(f"[panda_hand_grasp_editor_scene] {status_path}: {'OK' if prim.IsValid() else 'MISSING'}", flush=True)
 
-    print("[franka_grasp_editor_scene] Scene ready -- open the Grasp Editor now.", flush=True)
+    print("[panda_hand_grasp_editor_scene] Scene ready -- open the Grasp Editor now.", flush=True)
 
     if _headless:
         simulation_app.close()

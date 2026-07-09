@@ -1,0 +1,16 @@
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /World/finger_print_scanner
+gripper_frame: /World/panda_hand
+
+grasps:
+   "grasp_0":
+      confidence: 1.0
+      position: [0.0077242591441606745, -0.007865624884558156, -0.11964608597219457]
+      orientation: {w: 0.0022109744966873008, xyz: [0.00023162420256992017, 0.0009308197338812307, 0.999997095754096]}
+      cspace_position:
+         panda_finger_joint1: 0.00690716365352273
+      pregrasp_cspace_position:
+         panda_finger_joint1: 0.015
+

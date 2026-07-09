@@ -15,28 +15,10 @@ if __name__ == "__main__":
     experience = "" if _headless else f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
     simulation_app = SimulationApp({"headless": _headless}, experience=experience)
 
-# Pre-load real `packaging` before cuRobo imports it, or the full Kit experience shadows it with a broken bundle.
-import importlib.util  # noqa: E402
+# Must run before any omni/curobo import -- see mefron_lib/kit_bootstrap.py's docstring.
+from mefron_lib.kit_bootstrap import preload_real_packaging  # noqa: E402
 
-_REAL_PACKAGING_DIR = "/isaac-sim/kit/python/lib/python3.11/site-packages/packaging"
-
-
-def _preload_real_submodule(pkg_module, name):
-    spec = importlib.util.spec_from_file_location(f"packaging.{name}", f"{_REAL_PACKAGING_DIR}/{name}.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[f"packaging.{name}"] = module
-    spec.loader.exec_module(module)
-    setattr(pkg_module, name, module)
-
-
-if "packaging" not in sys.modules and os.path.isdir(_REAL_PACKAGING_DIR):
-    _spec = importlib.util.spec_from_file_location(
-        "packaging", f"{_REAL_PACKAGING_DIR}/__init__.py", submodule_search_locations=[_REAL_PACKAGING_DIR]
-    )
-    _packaging_module = importlib.util.module_from_spec(_spec)
-    sys.modules["packaging"] = _packaging_module
-    _spec.loader.exec_module(_packaging_module)
-    _preload_real_submodule(_packaging_module, "version")
+preload_real_packaging()
 
 import carb.settings  # noqa: E402
 import omni.kit.commands  # noqa: E402

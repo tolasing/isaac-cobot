@@ -38,15 +38,31 @@ on real hardware.
   separate script instead (`scripts/mefron.py` is exactly that). See
   `docs/mefron-history.md` for the environment fixes needed to run it and
   a license caveat on its header comments.
+- `scripts/mefron_lib/` — shared package backing every mefron entry-point
+  script (`mefron.py`, `mefron_gripper_probe.py`,
+  `mefron_grasp_editor_scene.py`, `franka_grasp_editor_scene.py`,
+  `test_mefron_*_headless.py`): `kit_bootstrap.py` (packaging preload +
+  stale-config cleanup, stdlib-only so it's safe to import before
+  `SimulationApp` exists), `config.py` (all constants), `grasp.py` (pose
+  math), `robot.py` (mount/friction/drive), `teleop.py` (keyboard control +
+  `run_teleop_loop()`). `mefron2.py` (dormant/superseded, see below) keeps
+  its own diverged copies of everything except the packaging-preload block.
 
 ## Active script + current state
 
-`scripts/mefron.py` is the live script: mounts cuRobo's bundled Franka
-Panda onto `assets/mefron/`'s SEKTION-cabinet mount plate (world position
+`scripts/mefron.py` is the live script, now a thin entry point over
+`scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
+`assets/mefron/`'s SEKTION-cabinet mount plate (world position
 `[2.74097, -4.782, 0.7924]`), runs a drag-follow teleop loop, and provides
 G(rasp)/P(lace) keys that snap the teleop target to a live-computed pose
 for `finger_print_scanner`/`main_holder`, plus C/O keys for the gripper.
 Opens `mefron.usd` directly via `open_stage()`.
+
+`scripts/mefron_gripper_probe.py` imports just the Franka hand +
+`panda_leftfinger`/`panda_rightfinger` + `ee_link` (no arm, no motion_gen)
+onto its own free-floating `base_link`, for dragging into place against a
+part mesh in Stop mode to measure a grasp pose directly, without cuRobo
+IK/teleop in the way.
 
 `scripts/build_scene_mefron.py` (+ `configs/scene/mefron_layout.yaml`) is
 architecturally preferred — same goal, but a fresh anonymous stage with
@@ -56,7 +72,7 @@ offsets requires temporarily reparenting prims in the Stage tree, which
 only works when `mefron.usd` is opened directly, so active work happens in
 `mefron.py`. See `docs/mefron-history.md` for both files' full histories.
 
-Current constants (`scripts/mefron.py`):
+Current constants (`scripts/mefron_lib/config.py`):
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`:
   `local_position=[-0.05765001316747483, 0.02068996147910942,
   0.01500000425999065]`, `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`.
@@ -101,7 +117,7 @@ Currently open issues (see the linked docs for full diagnosis):
   a later Play leaves the robot permanently unresponsive. Any interactive
   loop must track not-playing→playing transitions and rebuild
   `robot`/`idx_list`/`articulation_controller` on *every* fresh Play (see
-  `run_teleop_loop()` in `scripts/mefron.py`).
+  `run_teleop_loop()` in `scripts/mefron_lib/teleop.py`).
 - **cuRobo plans in the robot's base-link frame, never world space.** Any
   USD world pose (e.g. a dragged teleop target) must go through
   `robot_base_pose.compute_local_pose(world_pose)` first, where
@@ -119,8 +135,10 @@ Currently open issues (see the linked docs for full diagnosis):
   Passing `experience=.../isaacsim.exp.full.kit` (needed for the Physics
   debug-visualization menu) makes `from packaging import version` resolve
   to a broken internal copy. Fix: pre-load `packaging`/`packaging.version`
-  from real `site-packages` before anything else imports cuRobo — see the
-  top of `scripts/mefron.py`. Full root-cause: `docs/mefron-history.md`.
+  from real `site-packages` before anything else imports cuRobo — see
+  `scripts/mefron_lib/kit_bootstrap.py`'s `preload_real_packaging()`,
+  called from the top of every mefron entry-point script. Full root-cause:
+  `docs/mefron-history.md`.
 - **`ninja`/`pip` are broken in this environment.** cuRobo's CUDA kernels
   JIT-compile (needs `ninja`) on a torch ABI mismatch; `pip install`
   itself doesn't work here. Fixed via `apt-get install ninja-build` — see
