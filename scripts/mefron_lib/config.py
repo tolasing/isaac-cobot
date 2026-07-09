@@ -5,6 +5,7 @@ import at any point.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -91,6 +92,18 @@ GRASP_OFFSET_ORIENTATION_WXYZ = [
 # the G key's constants-based grasp-approach pose. See grasp.compute_grasp_approach_pose_from_file().
 GRASP_EDITOR_YAML_PATH = REPO_ROOT / "assets" / "finger_print_scanner.yaml"
 GRASP_EDITOR_GRASP_NAME = "grasp_0"
+
+# MPC reactive-tracking constants (see mpc.setup_mpc_solver(), teleop.run_teleop_loop()'s mpc_active branch).
+_MPC_STEP_DT = 0.05  # Unvalidated starting guess -- print mpc_result.solve_time on first live use and tune.
+# Convergence is gated on grasp.compute_assembly_placement_error() -- the part's actual live pose vs.
+# its target on main_holder -- not on mpc_result.metrics (gripper-to-its-own-last-goal error), since
+# those are only equivalent if the grasp offset hasn't changed since that goal was computed.
+_MPC_POSITION_CONVERGENCE_THRESHOLD_M = 0.003  # raw Euclidean meters, no internal deadband exists.
+_MPC_ROTATION_CONVERGENCE_THRESHOLD_RAD = math.radians(1.0)
+_MPC_CONVERGED_STEPS_REQUIRED = 5  # consecutive under-threshold steps before declaring "arrived."
+_MPC_MAX_TRACKING_STEPS = 300  # timeout safeguard -- MpcSolver has no built-in "stuck" flag.
+_MPC_STEP_MAX_ATTEMPTS = 2
+_MPC_WARMUP_STEPS = 5
 
 # T_H_S: finger_print_scanner's pose expressed in main_holder's own local frame at the correctly
 # assembled position, derived via grasp.compute_relative_pose() after temporarily reparenting in mefron.usd.

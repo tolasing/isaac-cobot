@@ -13,19 +13,27 @@ from isaacsim.core.utils.types import ArticulationAction
 from pxr import Sdf, UsdPhysics
 
 from . import config
-from .grasp import compute_assembly_grasp_target, compute_grasp_approach_pose, compute_grasp_approach_pose_from_file
+from .grasp import (
+    compute_assembly_grasp_target,
+    compute_assembly_placement_error,
+    compute_grasp_approach_pose,
+    compute_grasp_approach_pose_from_file,
+    compute_reactive_assembly_target,
+)
 
 
 class GripperKeyboardControl:
-    """Open/closed request for the Franka's gripper, read once per teleop frame, plus three one-shot
+    """Open/closed request for the Franka's gripper, read once per teleop frame, plus four one-shot
     snap-to-pose requests (G: grasp approach, P: assembly placement, J: grasp-editor-yaml grasp approach,
-    for live comparison against G) consumed exactly once via request_*/consume_*."""
+    for live comparison against G, M: reactive MPC-tracked assembly placement) consumed exactly once via
+    request_*/consume_*."""
 
     def __init__(self) -> None:
         self.closed = False
         self._grasp_approach_requested = False
         self._assembly_target_requested = False
         self._grasp_approach_from_file_requested = False
+        self._reactive_assembly_requested = False
 
     def set_closed(self, closed: bool) -> None:
         self.closed = closed
@@ -54,11 +62,20 @@ class GripperKeyboardControl:
         self._grasp_approach_from_file_requested = False
         return requested
 
+    def request_reactive_assembly(self) -> None:
+        self._reactive_assembly_requested = True
+
+    def consume_reactive_assembly_request(self) -> bool:
+        requested = self._reactive_assembly_requested
+        self._reactive_assembly_requested = False
+        return requested
+
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
     """Subscribes to keyboard events: C closes the gripper, O opens it, G snaps /World/target to the
     constants-based grasp-approach pose, P snaps it to the assembly-placement pose, J snaps it to the
-    Grasp Editor-exported yaml's grasp-approach pose (config.GRASP_EDITOR_YAML_PATH/GRASP_NAME)."""
+    Grasp Editor-exported yaml's grasp-approach pose (config.GRASP_EDITOR_YAML_PATH/GRASP_NAME), M
+    triggers the discrete-approach-then-MPC-reactive-tracking two-phase assembly placement."""
     import carb.input
     import omni.appwindow
 
@@ -78,6 +95,8 @@ def build_gripper_keyboard_control() -> GripperKeyboardControl:
                 control.request_assembly_target()
             elif event.input == carb.input.KeyboardInput.J:
                 control.request_grasp_approach_from_file()
+            elif event.input == carb.input.KeyboardInput.M:
+                control.request_reactive_assembly()
         return True
 
     # Kept alive on the control object so the subscription isn't garbage-collected.
@@ -168,11 +187,16 @@ def run_teleop_loop(
     target: SingleXFormPrim,
     max_iterations: int | None = None,
     gripper_control: GripperKeyboardControl | None = None,
+    mpc_solver=None,
 ) -> None:
     """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen plan/apply loop, rebuilding
-    the articulation on every fresh Play and supporting gripper open/close plus G/P grasp/assembly pose snaps."""
+    the articulation on every fresh Play and supporting gripper open/close plus G/P/J grasp/assembly pose snaps.
+    If mpc_solver is provided, M triggers a two-phase placement: a discrete MotionGen approach to the nominal
+    assembly pose, then a handoff to mpc_solver for continuous slip-corrected tracking via
+    grasp.compute_reactive_assembly_target() (see cuRobo's own MpcSolver docstring for the global/local split)."""
     import time
 
+    from curobo.rollout.rollout_base import Goal
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose
     from curobo.types.state import JointState
@@ -193,6 +217,7 @@ def run_teleop_loop(
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     default_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     robot = None
     idx_list = None
@@ -215,6 +240,14 @@ def run_teleop_loop(
     # Ramped gripper setpoint state -- see config.GRIPPER_CLOSE_SPEED for why it moves gradually.
     gripper_setpoint = None
     last_gripper_time = None
+    # M-key reactive-placement state: pending_mpc_handoff bridges the discrete MotionGen approach leg
+    # (still driven by the existing cmd_plan machinery below) to the MPC local-tracking leg.
+    mpc_active = False
+    pending_mpc_handoff = False
+    mpc_goal_buffer = None
+    mpc_step_count = 0
+    mpc_converged_count = 0
+    last_mpc_time = None
 
     while simulation_app.is_running():
         simulation_app.update()
@@ -242,6 +275,14 @@ def run_teleop_loop(
             step_index = 0
             gripper_setpoint = None
             last_gripper_time = None
+            mpc_active = False
+            pending_mpc_handoff = False
+            mpc_goal_buffer = None
+            mpc_step_count = 0
+            mpc_converged_count = 0
+            last_mpc_time = None
+            if mpc_solver is not None:
+                mpc_solver.reset()
             was_playing = True
 
         step_index += 1
@@ -266,6 +307,8 @@ def run_teleop_loop(
         if obstacles is None or step_index % config._TELEOP_OBSTACLE_RESCAN_INTERVAL == 0:
             obstacles = get_obstacles()
             motion_gen.update_world(obstacles)
+            if mpc_solver is not None:
+                mpc_solver.update_world(obstacles)
 
         cube_position, cube_orientation = target.get_world_pose()
         if past_pose is None:
@@ -291,6 +334,17 @@ def run_teleop_loop(
                     config.GRASP_EDITOR_YAML_PATH, config.GRASP_EDITOR_GRASP_NAME
                 )
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
+            elif gripper_control.consume_reactive_assembly_request():
+                if not mpc_active:
+                    cube_position, cube_orientation = compute_assembly_grasp_target()
+                    target.set_world_pose(position=cube_position, orientation=cube_orientation)
+                    if mpc_solver is not None:
+                        pending_mpc_handoff = True
+                    else:
+                        print(
+                            "[mefron] WARNING: reactive assembly requested but no mpc_solver was provided.",
+                            flush=True,
+                        )
 
         sim_js = robot.get_joints_state()
         if sim_js is None:
@@ -316,6 +370,7 @@ def run_teleop_loop(
             and np.linalg.norm(past_orientation - cube_orientation) == 0.0
             and robot_static
             and cmd_plan is None
+            and not mpc_active
         ):
             world_target_pose = Pose(
                 position=tensor_args.to_device(cube_position),
@@ -337,7 +392,88 @@ def run_teleop_loop(
         past_pose = cube_position
         past_orientation = cube_orientation
 
-        if cmd_plan is not None:
+        if mpc_active:
+            # Gate on real elapsed time, mirroring the cmd_plan branch's own interpolation_dt gate below.
+            now = time.time()
+            if last_mpc_time is None or (now - last_mpc_time) >= config._MPC_STEP_DT:
+                try:
+                    gripper_target_trans, gripper_target_quat = compute_reactive_assembly_target(ee_link_prim_path)
+                    world_target_pose = Pose(
+                        position=tensor_args.to_device(gripper_target_trans),
+                        quaternion=tensor_args.to_device(gripper_target_quat),
+                    )
+                    local_target_pose = robot_base_pose.compute_local_pose(world_target_pose)
+
+                    # Separate sim_js_mpc/cu_js_mpc from the sim_js/cu_js already read above -- those keep
+                    # feeding the (still-evaluated-every-frame) discrete-trigger condition, and MPC needs the
+                    # robot's real current velocity to track well, not the zeroed-velocity cu_js used there.
+                    sim_js_mpc = robot.get_joints_state()
+                    cu_js_mpc = JointState(
+                        position=tensor_args.to_device(sim_js_mpc.positions),
+                        velocity=tensor_args.to_device(sim_js_mpc.velocities),
+                        acceleration=tensor_args.to_device(sim_js_mpc.velocities) * 0.0,
+                        jerk=tensor_args.to_device(sim_js_mpc.velocities) * 0.0,
+                        joint_names=robot.dof_names,
+                    ).unsqueeze(0)
+                    cu_js_mpc = mpc_solver.get_active_js(cu_js_mpc)
+
+                    if mpc_goal_buffer is None:
+                        mpc_goal_buffer = mpc_solver.setup_solve_single(
+                            Goal(current_state=cu_js_mpc, goal_pose=local_target_pose), num_seeds=1
+                        )
+                    else:
+                        mpc_goal_buffer.goal_pose.copy_(local_target_pose)
+                        mpc_solver.update_goal(mpc_goal_buffer)
+
+                    mpc_result = mpc_solver.step(cu_js_mpc, max_attempts=config._MPC_STEP_MAX_ATTEMPTS)
+                    mpc_js_action = mpc_result.js_action.get_ordered_joint_state(sim_js_names)
+                    articulation_controller.apply_action(
+                        ArticulationAction(
+                            mpc_js_action.position.squeeze(0).cpu().numpy(),
+                            mpc_js_action.velocity.squeeze(0).cpu().numpy(),
+                            joint_indices=idx_list,
+                        )
+                    )
+                    last_mpc_time = now
+                    mpc_step_count += 1
+
+                    # What actually matters is whether the PART is correctly placed on its mount, not
+                    # whether the gripper reached its own last-computed goal_pose -- those are only
+                    # equivalent if the grasp offset hasn't changed since that goal was computed. Convergence
+                    # is gated on the direct part-to-target error; mpc_result.metrics (gripper-to-goal error,
+                    # cuRobo's own solver-internal signal) is logged alongside for diagnostics only.
+                    position_error, rotation_error = compute_assembly_placement_error()
+                    gripper_position_error = float(mpc_result.metrics.position_error.item())
+                    gripper_rotation_error = float(mpc_result.metrics.rotation_error.item())
+                    if (
+                        position_error < config._MPC_POSITION_CONVERGENCE_THRESHOLD_M
+                        and rotation_error < config._MPC_ROTATION_CONVERGENCE_THRESHOLD_RAD
+                    ):
+                        mpc_converged_count += 1
+                    else:
+                        mpc_converged_count = 0
+
+                    if mpc_converged_count >= config._MPC_CONVERGED_STEPS_REQUIRED:
+                        print(
+                            f"[mefron] MPC reactive placement converged after {mpc_step_count} steps "
+                            f"(part_pos_err={position_error:.4f} m, part_rot_err={rotation_error:.4f} rad; "
+                            f"gripper_pos_err={gripper_position_error:.4f}, gripper_rot_err={gripper_rotation_error:.4f}).",
+                            flush=True,
+                        )
+                        mpc_active = False
+                    elif mpc_step_count >= config._MPC_MAX_TRACKING_STEPS:
+                        print(
+                            f"[mefron] MPC reactive placement TIMED OUT after {mpc_step_count} steps "
+                            f"(part_pos_err={position_error:.4f} m, part_rot_err={rotation_error:.4f} rad; "
+                            f"gripper_pos_err={gripper_position_error:.4f}, gripper_rot_err={gripper_rotation_error:.4f}).",
+                            flush=True,
+                        )
+                        mpc_active = False
+                except Exception as exc:
+                    print(f"[mefron] MPC branch failed, aborting reactive tracking: {exc}", flush=True)
+                    mpc_active = False
+                # Falls through to the unconditional gripper-ramp block below either way.
+        elif cmd_plan is not None:
             # Gate on real elapsed time, not frame count.
             now = time.time()
             if last_cmd_time is None or (now - last_cmd_time) >= interpolation_dt:
@@ -353,6 +489,14 @@ def run_teleop_loop(
                 if cmd_idx >= len(cmd_plan.position):
                     cmd_idx = 0
                     cmd_plan = None
+                    if pending_mpc_handoff:
+                        pending_mpc_handoff = False
+                        mpc_active = True
+                        mpc_goal_buffer = None
+                        mpc_step_count = 0
+                        mpc_converged_count = 0
+                        last_mpc_time = None
+                        mpc_solver.reset()
 
         # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
         # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.

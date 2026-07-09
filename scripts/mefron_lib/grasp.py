@@ -62,14 +62,82 @@ def compute_grasp_approach_pose_from_file(
     return grasp_spec.compute_gripper_pose_from_rigid_body_pose(grasp_name, part_trans, part_quat)
 
 
-def compute_assembly_grasp_target(relationship_name: str = "finger_print_scanner_on_main_holder"):
-    """Returns the world pose /World/target should be set to in order to place the already-grasped part at
-    its assembled position, by composing the mount's live pose with ASSEMBLY_RELATIONSHIPS and GRASP_OFFSET_*."""
+def measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat):
+    """Measures the CURRENT live gripper-to-part relative pose (same shape/semantics as the fixed
+    GRASP_OFFSET_POSITION/ORIENTATION_WXYZ constants: T_part_gripper) instead of assuming the fixed
+    nominal offset -- corrects for whatever grasp slip has actually happened this pick."""
+    return compute_relative_pose(part_trans, part_quat, gripper_trans, gripper_quat)
+
+
+def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_main_holder"):
+    """Returns the part's own target world pose on its mount (e.g. finger_print_scanner's correctly-
+    assembled pose on main_holder) -- independent of any grasp offset. This is the pose that actually
+    determines whether the assembly is correct; compute_assembly_grasp_target*() converts it into an
+    equivalent GRIPPER target only because that's the sole goal type cuRobo's MotionGen/MpcSolver can
+    directly command. See compute_assembly_placement_error() for checking against this directly."""
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
     mount_trans, mount_quat = SingleXFormPrim(prim_path=relationship["mount_prim_path"]).get_world_pose()
-    part_target_trans, part_target_quat = compute_dependent_world_pose(
+    return compute_dependent_world_pose(
         mount_trans, mount_quat, relationship["local_position"], relationship["local_orientation_wxyz"]
     )
+
+
+def compute_assembly_grasp_target_from_offset(
+    grasp_offset_position,
+    grasp_offset_orientation_wxyz,
+    relationship_name: str = "finger_print_scanner_on_main_holder",
+):
+    """Same composition as compute_assembly_grasp_target(), but takes the grasp offset as a
+    parameter instead of hardcoding config.GRASP_OFFSET_POSITION/ORIENTATION_WXYZ."""
+    part_target_trans, part_target_quat = compute_part_target_pose(relationship_name)
     return compute_dependent_world_pose(
-        part_target_trans, part_target_quat, config.GRASP_OFFSET_POSITION, config.GRASP_OFFSET_ORIENTATION_WXYZ
+        part_target_trans, part_target_quat, grasp_offset_position, grasp_offset_orientation_wxyz
     )
+
+
+def quaternion_angular_distance(quat_a_wxyz, quat_b_wxyz) -> float:
+    """Standard quaternion angular distance in radians: 2*arccos(|dot(a, b)|). The abs() makes it
+    robust to the double-cover sign ambiguity (q and -q represent the same rotation, and USD/cuRobo
+    give no guarantee which sign a given pose read-back returns)."""
+    dot = np.clip(np.abs(np.dot(np.array(quat_a_wxyz), np.array(quat_b_wxyz))), -1.0, 1.0)
+    return float(2.0 * np.arccos(dot))
+
+
+def compute_assembly_placement_error(relationship_name: str = "finger_print_scanner_on_main_holder"):
+    """Returns (position_error_m, rotation_error_rad): how far the part's CURRENT live pose is from
+    its correctly-assembled target pose on its mount -- the thing that actually matters for a correct
+    assembly, independent of the gripper/grasp-offset indirection compute_reactive_assembly_target()
+    needs. Use this (not mpc_result.metrics, which measures gripper-to-its-own-last-goal error) to
+    decide whether reactive placement has actually converged -- gripper-converged only implies
+    part-converged if the grasp offset hasn't changed since that particular goal was computed, which
+    isn't guaranteed if slip is still happening in the final ticks."""
+    relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    part_trans, part_quat = SingleXFormPrim(prim_path=relationship["part_prim_path"]).get_world_pose()
+    target_trans, target_quat = compute_part_target_pose(relationship_name)
+    position_error = float(np.linalg.norm(np.array(part_trans) - np.array(target_trans)))
+    rotation_error = quaternion_angular_distance(part_quat, target_quat)
+    return position_error, rotation_error
+
+
+def compute_assembly_grasp_target(relationship_name: str = "finger_print_scanner_on_main_holder"):
+    """Returns the world pose /World/target should be set to in order to place the already-grasped part at
+    its assembled position, by composing the mount's live pose with ASSEMBLY_RELATIONSHIPS and the fixed
+    nominal GRASP_OFFSET_*. Thin wrapper around compute_assembly_grasp_target_from_offset() for the one-shot,
+    non-reactive P key -- see compute_reactive_assembly_target() for the per-frame, slip-corrected version."""
+    return compute_assembly_grasp_target_from_offset(
+        config.GRASP_OFFSET_POSITION, config.GRASP_OFFSET_ORIENTATION_WXYZ, relationship_name
+    )
+
+
+def compute_reactive_assembly_target(
+    ee_link_prim_path: str, relationship_name: str = "finger_print_scanner_on_main_holder"
+):
+    """Per-frame derivation for slip-corrected placement: measures the current live gripper-to-part
+    offset (not the fixed nominal GRASP_OFFSET_*), then applies it to the part's target pose on
+    main_holder -- so the commanded gripper pose corrects for whatever slip has actually happened,
+    rather than assuming the grasp came out exactly as planned."""
+    relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    gripper_trans, gripper_quat = SingleXFormPrim(prim_path=ee_link_prim_path).get_world_pose()
+    part_trans, part_quat = SingleXFormPrim(prim_path=relationship["part_prim_path"]).get_world_pose()
+    offset_trans, offset_quat = measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat)
+    return compute_assembly_grasp_target_from_offset(offset_trans, offset_quat, relationship_name)

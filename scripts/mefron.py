@@ -25,7 +25,7 @@ preload_real_packaging()
 import carb.settings  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from mefron_lib import config, robot, teleop  # noqa: E402
+from mefron_lib import config, mpc, robot, teleop  # noqa: E402
 
 
 def main() -> None:
@@ -55,8 +55,14 @@ def main() -> None:
     print("[mefron] warming up cuRobo motion_gen (viewport will look frozen/black until this finishes)...", flush=True)
     motion_gen, robot_cfg = teleop.setup_motion_gen()
     print("[mefron] curobo motion_gen: READY", flush=True)
-    # Force a stop unconditionally: if physics was left playing across warmup()'s ~30s unpumped gap,
+
+    print("[mefron] warming up cuRobo mpc_solver...", flush=True)
+    mpc_solver = mpc.setup_mpc_solver(robot_cfg)
+    print("[mefron] curobo mpc_solver: READY", flush=True)
+
+    # Force a stop unconditionally: if physics was left playing across either warmup's unpumped gap,
     # PhysX's simulation view gets corrupted; the loop rebuilds cleanly on the next fresh Play regardless.
+    # Must come after BOTH warmups, not between them, or the second one runs across the same corrupting gap.
     omni.timeline.get_timeline_interface().stop()
 
     target = teleop.build_teleop_target(robot_cfg)
@@ -70,7 +76,9 @@ def main() -> None:
     gripper_control = teleop.build_gripper_keyboard_control()
     print("[mefron] Gripper: press C to close, O to open.", flush=True)
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
-    teleop.run_teleop_loop(simulation_app, motion_gen, robot_cfg, target, gripper_control=gripper_control)
+    teleop.run_teleop_loop(
+        simulation_app, motion_gen, robot_cfg, target, gripper_control=gripper_control, mpc_solver=mpc_solver
+    )
     simulation_app.close()
 
 
