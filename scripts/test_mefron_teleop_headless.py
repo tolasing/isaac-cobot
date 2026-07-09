@@ -1,47 +1,7 @@
-"""Headless verification that mefron.py's run_teleop_loop() actually drives
-the mounted Franka via cuRobo's MotionGen, without hitting the
-robot.initialize() crash this session repeatedly chased and fixed:
-AttributeError: 'NoneType' object has no attribute 'create_articulation_view'.
+"""Headless regression test for mefron.py's run_teleop_loop(): fakes a mouse
+drag by monkeypatching target.get_world_pose(), then asserts the robot moved.
 
-Root cause (confirmed by reading isaacsim.core.simulation_manager's actual
-source, not guessed): SingleArticulation.initialize() depends on
-SimulationManager.get_physics_sim_view(), which only ever gets set via a
-specific chain -- timeline PLAY event -> _warm_start() -> gated behind the
-carb setting /app/player/playSimulations -> if true, initialize_physics() ->
-dispatches PHYSICS_WARMUP -> _create_simulation_view() actually sets the
-view. If that setting is off (a real toggle in the Play button's own toolbar
-dropdown), timeline.is_playing() still correctly returns True, but the
-simulation view never gets created -- no amount of Play-timing or settle
-frames fixes it. mefron.py's own main() now forces this setting on; this
-script does the same explicitly, since it doesn't call mefron.main() itself
-(see below for why).
-
-mefron.py's own main() only calls run_teleop_loop() in the interactive
-(non-headless) path -- with --headless it builds the scene, prints status,
-and closes before ever reaching the teleop loop (no Play button, no mouse to
-drag headlessly). This script exercises run_teleop_loop() directly instead,
-reusing mefron.py's own functions as a library rather than calling main()
-wholesale (so this script controls play-triggering itself, the same
-established pattern test_teleop_headless.py already uses for build_scene.py):
-faking a mouse-drag by monkeypatching target.get_world_pose() to hold the
-target's real starting pose for enough frames to clear run_teleop_loop's own
-init/settle phase, then jump to a second, nearby pose -- indistinguishable
-from a real drag.
-
-Same two gotchas test_teleop_headless.py's own docstring documents for
-build_scene.py, both confirmed to apply identically here:
-
-  - run_teleop_loop() references a module-level `simulation_app` global
-    inside mefron's own namespace, only ever set there under
-    `if __name__ == "__main__"` -- this script must assign
-    `mefron.simulation_app` explicitly before calling run_teleop_loop().
-  - run_teleop_loop() only defines /physicsScene (or reuses /PhysicsScene)
-    at its own top, right before its while loop -- too late if this script
-    calls timeline.play() first. Defined here explicitly before playing,
-    matching run_teleop_loop's own required ordering.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_teleop_headless.py --headless
+Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_teleop_headless.py --headless
 """
 
 from __future__ import annotations
@@ -63,13 +23,10 @@ from pxr import UsdPhysics  # noqa: E402
 
 import mefron  # noqa: E402
 
-# Small enough to stay within reach of the target's own starting pose (the
-# robot's own retract-config end-effector pose, guaranteed reachable).
+# Small offset from the target's reachable starting pose.
 _DRAG_OFFSET = np.array([0.0, 0.05, 0.05])
 _MAX_ITERATIONS = 200
-# Must clear mefron._ROBOT_INIT_SETTLE_FRAMES (5) + _TELEOP_INIT_FRAMES (10)
-# + _TELEOP_SETTLE_FRAMES (20) before the simulated drag lands, so
-# run_teleop_loop's debounce logic sees a genuinely static target first.
+# Must clear run_teleop_loop's own init/settle frame counts first.
 _SETTLE_CALLS = 40
 
 
@@ -77,10 +34,7 @@ def main() -> None:
     if __name__ == "__main__":
         mefron.simulation_app = simulation_app
 
-    # Same fix mefron.main() itself now applies -- replicated here since this
-    # script calls mefron's individual functions directly rather than main()
-    # itself (main() would also `return` early in the headless path before
-    # ever reaching run_teleop_loop(), which is the whole thing being tested).
+    # Replicates mefron.main()'s fix; main() itself returns early in headless mode.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
 
     mefron.clear_stale_robot_configuration()
@@ -97,9 +51,7 @@ def main() -> None:
 
     target = mefron.build_teleop_target(robot_cfg)
 
-    # Must exist before the timeline plays -- run_teleop_loop() defines this
-    # itself too, but only at its own top, too late here since we call
-    # timeline.play() before run_teleop_loop() even starts.
+    # Must exist before timeline.play(); run_teleop_loop() only defines it later.
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -129,9 +81,7 @@ def main() -> None:
 
     mefron.run_teleop_loop(motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS)
 
-    # Only constructed now, after run_teleop_loop's own internal
-    # SingleArticulation has gone out of scope (see test_teleop_headless.py's
-    # own docstring for why holding two at once breaks PhysX's tensor view).
+    # Constructed only after run_teleop_loop's own SingleArticulation goes out of scope.
     robot = SingleArticulation(prim_path=mefron.ROBOT_PRIM_PATH, name="verify_robot")
     robot.initialize()
     idx_list = [robot.get_dof_index(x) for x in j_names]

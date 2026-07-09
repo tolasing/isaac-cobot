@@ -1,39 +1,5 @@
-"""cuRobo teleop for assets/mefron/factory floor/mefron.usd -- target-drag
-only, no robot import.
-
-Unlike mefron.py, this script does not import or mount any robot: the
-Franka Panda is already saved directly into mefron.usd (added via Isaac
-Sim's own GUI robot-asset import, not this repo's URDF-import pipeline --
-confirmed live it composes via plain reference arcs straight into NVIDIA's
-own bundled Franka Panda Isaac Asset, with no local sublayers and none of
-the layered "Robot Description"/ancestral-prim issues mefron.py's own
-docstring documents for a from-scratch URDF import). So this file only
-needs to attach to what's already there and run cuRobo + the draggable
-teleop target -- no import_cr5, no mount positioning, no gripper-friction/
-drive-stiffness authoring.
-
-Two things needed adapting from mefron.py, both confirmed live against the
-actual saved file, not assumed:
-  - The end-effector visuals path mefron.py hardcodes
-    (f"{ROBOT_PRIM_PATH}/{ee_link}/visuals") does not exist on this robot
-    asset -- its layout uses "<link>/geometry" (an instanceable prim), not
-    "<link>/visuals". build_teleop_target() below references the ee_link
-    prim itself instead.
-  - MOUNT_POSITION/MOUNT_ORIENTATION_WXYZ used to be the pose mefron.py's
-    mount_franka() actively *imposed* on the robot. With no mount step
-    here, the robot's actual base pose is read directly off the stage once
-    at startup (get_robot_base_pose()) instead of trusted as a hardcoded
-    constant -- correct regardless of exactly where the robot was placed.
-
-Everything else (obstacle scan, MotionGen setup, the drag-follow loop,
-gripper keyboard control, grasp/assembly pose helpers) is ported verbatim
-from mefron.py.
-
-Only creates its own SimulationApp when run standalone.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron2.py [--headless]
-"""
+"""Simplified sibling of mefron.py: drives the same drag-teleop loop but
+assumes the Franka + gripper are already saved into mefron.usd, so it does no robot import or friction authoring."""
 
 from __future__ import annotations
 
@@ -49,10 +15,7 @@ if __name__ == "__main__":
     experience = "" if _headless else f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
     simulation_app = SimulationApp({"headless": _headless}, experience=experience)
 
-# See mefron.py's own module comment for why this is needed under the full
-# Kit experience: cuRobo's torch_utils does `from packaging import version`,
-# which resolves to a broken internal pip-bootstrap bundle instead of the
-# real site-packages install unless pre-loaded explicitly first.
+# Pre-load real `packaging` before cuRobo imports it, or the full Kit experience shadows it with a broken bundle.
 import importlib.util  # noqa: E402
 
 _REAL_PACKAGING_DIR = "/isaac-sim/kit/python/lib/python3.11/site-packages/packaging"
@@ -92,8 +55,7 @@ MOUNT_PLATE_PRIM_PATH = "/World/sektion_cabinet_instanceable"
 
 FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 
-# Nearby scene objects actually within the Franka's reach envelope -- not
-# the whole /World/Factory backdrop.
+# Nearby scene objects within the Franka's reach envelope, not the whole /World/Factory backdrop.
 OBSTACLE_PRIM_PATHS = [
     "/World/packing_table",
     "/World/packing_table_01",
@@ -104,7 +66,7 @@ OBSTACLE_PRIM_PATHS = [
     MOUNT_PLATE_PRIM_PATH,
 ]
 
-# Loop-timing constants, ported verbatim from mefron.py's own run_teleop_loop.
+# Loop-timing constants.
 _TELEOP_INIT_FRAMES = 10
 _TELEOP_SETTLE_FRAMES = 20
 _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
@@ -113,21 +75,14 @@ _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
 _ROBOT_INIT_SETTLE_FRAMES = 5
 _TELEOP_TIME_DILATION_FACTOR = 0.3
 
-# Gripper actuation constants -- confirmed via franka_panda.urdf's actual
-# joint limits (panda_finger_joint1/2, prismatic, lower=0.0 upper=0.04).
-# No friction-material/drive-stiffening constants here (unlike mefron.py):
-# this robot asset's own defaults are used as-is, since that setup is
-# import-time physics tuning, not teleop/target-drag logic.
+# Gripper joint limits (panda_finger_joint1/2, prismatic, 0.0-0.04); no friction/drive tuning here, unlike mefron.py.
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 GRIPPER_OPEN_POSITION = 0.04
 GRIPPER_CLOSED_POSITION = 0.0
-# Load-bearing even without any friction-authoring code: this is
-# compute_grasp_approach_pose()'s default argument below.
+# Default arg for compute_grasp_approach_pose() below.
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
-# T_S_G / T_H_S -- ported verbatim from mefron.py, see that file's own
-# comments for how these were derived (compute_relative_pose() on live
-# world poses, not hand Euler-angle math).
+# T_S_G / T_H_S, derived via compute_relative_pose() on live world poses.
 GRASP_OFFSET_POSITION = [0.01277519, -0.02169126, -0.02863107]
 GRASP_OFFSET_ORIENTATION_WXYZ = [-0.000518294608, -0.00348700255, 0.000751325308, 0.999993504]
 
@@ -142,28 +97,21 @@ ASSEMBLY_RELATIONSHIPS = {
 
 
 def get_robot_base_pose():
-    """Reads the already-mounted robot's real world pose directly off the
-    stage, instead of trusting a hardcoded mount-position constant -- correct
-    regardless of exactly where the robot was placed when it was saved into
-    mefron.usd."""
+    """Reads the already-mounted robot's real world pose directly off the stage."""
     position, orientation_wxyz = SingleXFormPrim(prim_path=ROBOT_PRIM_PATH).get_world_pose()
     return np.array(position), np.array(orientation_wxyz)
 
 
 def compute_grasp_approach_pose(part_prim_path: str = HIGH_FRICTION_PRIM_PATHS[0]):
-    """Returns the world pose /World/target should be set to in order to grasp
-    the named part (finger_print_scanner by default) at the fixed relative
-    offset GRASP_OFFSET_*, wherever that part currently sits on the table.
-    Table-position-independent by construction -- recomputes from the part's
-    live pose every call, not a value baked in once."""
+    """Returns the /World/target pose to grasp the named part at the fixed
+    GRASP_OFFSET_*, recomputed live from the part's current pose."""
     part_trans, part_quat = SingleXFormPrim(prim_path=part_prim_path).get_world_pose()
     return compute_dependent_world_pose(part_trans, part_quat, GRASP_OFFSET_POSITION, GRASP_OFFSET_ORIENTATION_WXYZ)
 
 
 def compute_assembly_grasp_target(relationship_name: str = "finger_print_scanner_on_main_holder"):
-    """Returns the world pose /World/target should be set to in order to place
-    the already-grasped part at its correctly assembled position on its mount,
-    wherever the mount currently sits."""
+    """Returns the /World/target pose to place the grasped part at its
+    assembled position on the given mount's current pose."""
     relationship = ASSEMBLY_RELATIONSHIPS[relationship_name]
     mount_trans, mount_quat = SingleXFormPrim(prim_path=relationship["mount_prim_path"]).get_world_pose()
     part_target_trans, part_target_quat = compute_dependent_world_pose(
@@ -175,9 +123,8 @@ def compute_assembly_grasp_target(relationship_name: str = "finger_print_scanner
 
 
 class GripperKeyboardControl:
-    """Open/closed request for the Franka's gripper, read once per teleop
-    frame, plus two one-shot snap-to-pose requests (G: grasp approach, P:
-    assembly placement). Ported verbatim from mefron.py."""
+    """Open/closed request for the gripper, plus two one-shot snap-to-pose
+    requests (G: grasp approach, P: assembly placement)."""
 
     def __init__(self) -> None:
         self.closed = False
@@ -205,9 +152,8 @@ class GripperKeyboardControl:
 
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
-    """Subscribes to real keyboard events: C closes the gripper, O opens it,
-    G snaps /World/target to the grasp-approach pose, P snaps it to the
-    assembly-placement pose. Ported verbatim from mefron.py."""
+    """Subscribes to keyboard events: C/O close/open the gripper, G/P snap
+    /World/target to the grasp-approach/assembly-placement pose."""
     import carb.input
     import omni.appwindow
 
@@ -269,42 +215,8 @@ def motion_gen_kinematics_get_state(robot_cfg, q):
 
 
 def build_teleop_target(robot_cfg: dict, robot_base_position, robot_base_orientation_wxyz) -> SingleXFormPrim:
-    """Creates a draggable target at the robot's own retract_config
-    end-effector pose, as a real, freely-editable copy of the end-effector's
-    visual mesh -- not a reference, and not the ee_link/geometry prim
-    directly.
-
-    Two real problems, both confirmed live and both fixed by *how* this
-    copy is made:
-
-    1. **Ancestral prim (can't be reparented in the Stage tree).**
-       mefron.py's equivalent uses `AddInternalReference()` -- that produces
-       a working, correctly-sized target, but `check_ancestral()` (confirmed
-       against real Kit source) recurses into whatever a reference points
-       at, and "{ee_link}/geometry" is itself a descendant of the referenced
-       Franka subtree, so the reference target stays ancestral no matter
-       what. A plain `CopyPrim` from "{ee_link}/geometry" itself doesn't
-       work either -- confirmed live it produces an EMPTY bounding box,
-       because "geometry" is only `instanceable=True` metadata pointing at
-       an instance; CopyPrim's shallow copy carries the instanceable flag
-       but not the composition arc needed to resolve it, leaving a hollow
-       shell. The fix: resolve the actual instance-proxy Mesh prim
-       underneath "geometry" first (via `Usd.TraverseInstanceProxies()`),
-       then `CopyPrim` from THAT already-resolved path. Confirmed live this
-       produces a correct non-empty bbox, `check_ancestral()==False`, and a
-       real `MovePrim` reparent actually succeeds.
-    2. **Unwanted collision.** NVIDIA's asset bakes collision
-       (UsdPhysics.CollisionAPI + PhysxCollisionAPI + PhysicsMeshCollisionAPI,
-       approximation=convexHull) onto the very same mesh prim as the
-       visuals -- confirmed live via a real PhysX overlap query that a
-       referenced copy is a genuine static collider, already overlapping the
-       robot's own nearby arm links (the target starts right at the current
-       end-effector pose). Since the CopyPrim-from-resolved-path result
-       above is a real, non-instance-proxy prim (not read-only), the
-       collision API can be removed directly with a plain `RemoveAPI` --
-       confirmed live this works and leaves a correct, non-empty mesh with
-       zero collision APIs.
-    """
+    """Creates a draggable target at the retract_config EE pose: resolve the
+    instanceable "geometry" prim's real Mesh via TraverseInstanceProxies() (plain CopyPrim on it yields an empty bbox), CopyPrim from there, then RemoveAPI(CollisionAPI) to drop the asset's baked-in collider."""
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose as CuroboPose
 
@@ -347,8 +259,7 @@ def build_teleop_target(robot_cfg: dict, robot_base_position, robot_base_orienta
 
 def compute_relative_pose(reference_trans, reference_quat, dependent_trans, dependent_quat):
     """Given two live world poses, returns the dependent object's pose
-    expressed in the reference object's own frame. Ported verbatim from
-    mefron.py."""
+    expressed in the reference object's own frame."""
     from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
 
     ref_rot, dep_rot = quats_to_rot_matrices(np.array([reference_quat, dependent_quat]))
@@ -358,7 +269,7 @@ def compute_relative_pose(reference_trans, reference_quat, dependent_trans, depe
 
 
 def compute_dependent_world_pose(reference_trans, reference_quat, relative_trans, relative_quat_wxyz):
-    """Inverse of compute_relative_pose(). Ported verbatim from mefron.py."""
+    """Inverse of compute_relative_pose()."""
     from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
 
     (ref_rot,) = quats_to_rot_matrices(np.array([reference_quat]))
@@ -377,13 +288,7 @@ def run_teleop_loop(
     gripper_control: GripperKeyboardControl | None = None,
 ) -> None:
     """Drag `target` in the GUI viewport; the robot follows via cuRobo's
-    MotionGen. Ported verbatim from mefron.py's run_teleop_loop() (see that
-    file for the full design history -- physics-scene dedup, Stop/Play
-    articulation rebuild, interpolation_dt-gated playback, gripper
-    actuation, G/P snap-to-pose requests) except robot_base_position/
-    robot_base_orientation_wxyz are now passed in (read live from the stage
-    by get_robot_base_pose(), see main()) instead of hardcoded constants.
-    """
+    MotionGen, rebuilding the articulation on every fresh Play."""
     import time
 
     from curobo.types.base import TensorDeviceType
@@ -561,9 +466,7 @@ def run_teleop_loop(
 
 
 def main() -> None:
-    # See mefron.py's own main() comment for why this is needed: pressing
-    # Play only creates a real PhysX simulation view if this setting is on
-    # (a real toggle in the Play button's own dropdown).
+    # Required for Play to create a real PhysX simulation view.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
 
     omni.usd.get_context().open_stage(str(MEFRON_USD))
@@ -587,10 +490,7 @@ def main() -> None:
     print("[mefron2] warming up cuRobo motion_gen (viewport will look frozen/black until this finishes)...", flush=True)
     motion_gen, robot_cfg = setup_motion_gen()
     print("[mefron2] curobo motion_gen: READY", flush=True)
-    # See mefron.py's own main() comment: motion_gen.warmup() is a ~30s
-    # blocking call with no simulation_app.update() of its own, so physics
-    # "playing" across that gap corrupts PhysX's simulation view. Force a
-    # stop here; run_teleop_loop() already rebuilds everything on Play.
+    # Force a stop: warmup()'s ~30s blocking call can corrupt PhysX's view if playing.
     omni.timeline.get_timeline_interface().stop()
 
     target = build_teleop_target(robot_cfg, robot_base_position, robot_base_orientation_wxyz)

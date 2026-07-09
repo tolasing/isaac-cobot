@@ -1,25 +1,5 @@
-"""Builds the mefron scanner-assembly scene (mefron.usd's own factory
-backdrop, packing tables, and scanner-assembly parts) and mounts cuRobo's
-bundled Franka Panda on its pre-built mount plate, then runs an
-interactive teleop loop -- drag the ghost end-effector target in the GUI
-and the robot follows via MotionGen.plan_single().
-
-Variant of build_scene.py for configs/scene/mefron_layout.yaml: mefron.usd
-already has its own backdrop/tables/CAD parts authored, so there's no
-pruning, ergo-table copy, or assembly-part step here. Uses
-add_reference_to_stage() (not open_stage()) to keep the stage's root layer
-anonymous/in-memory -- opening mefron.usd directly makes the URDF importer
-persist a multi-layer robot structure to disk that breaks CopyPrim (see
-scripts/mefron.py's own docstring); referencing it in avoids that, at the
-cost of nesting mefron.usd's own content one level under /World/Factory
-(its own /World/Factory becomes /World/Factory/Factory here; its /World
-siblings like packing_table become /World/Factory/packing_table).
-
-Only creates its own SimulationApp when run standalone.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/build_scene_mefron.py
-"""
+"""Mounts cuRobo's bundled Franka Panda onto mefron.usd (referenced into a fresh
+anonymous stage via add_reference_to_stage()) and runs an interactive cuRobo teleop loop."""
 
 from __future__ import annotations
 
@@ -34,28 +14,13 @@ from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
 if __name__ == "__main__":
-    # SimulationApp defaults to the minimal isaacsim.exp.base.python.kit
-    # experience, which is missing most UI extensions (Physics debug
-    # visualization, full menu bar, etc.) -- load the same
-    # isaacsim.exp.full.kit experience isaac-sim.sh itself uses instead,
-    # for interactive runs only (headless verification doesn't need it).
+    # Interactive runs load the full isaac-sim.sh experience (Physics debug UI, full menu bar);
+    # headless verification doesn't need it and uses the minimal default instead.
     experience = "" if _headless else f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
     simulation_app = SimulationApp({"headless": _headless}, experience=experience)
 
-# The full experience's extra extensions make `import packaging` (and
-# specifically `packaging.version`) resolve to an incomplete internal
-# pip-bootstrap bundle instead of the real site-packages install --
-# confirmed live this is NOT a sys.path ordering issue (that bundle's
-# path never appears in sys.path at all) and NOT fixed by only
-# pre-registering `sys.modules["packaging"]` (still resolved the broken
-# `packaging.version` afterward regardless -- whatever finder is doing
-# this intercepts the submodule import by name, ignoring the parent
-# module's own __path__). cuRobo's own torch_utils does `from packaging
-# import version`; fixed by pre-loading both `packaging` and
-# `packaging.version` explicitly and setting the latter as a plain
-# attribute on the former, so the `from X import Y` statement resolves
-# via attribute lookup alone, without any further import-machinery
-# involvement for either name.
+# Workaround: the full experience breaks cuRobo's `from packaging import version` import;
+# pre-load the real module/submodule instead (full root-cause: docs/mefron-history.md).
 import importlib.util  # noqa: E402
 
 _REAL_PACKAGING_DIR = "/isaac-sim/kit/python/lib/python3.11/site-packages/packaging"
@@ -135,23 +100,8 @@ GRIPPER_FINGER_LINK_NAMES = ["panda_leftfinger", "panda_rightfinger"]
 
 
 def apply_gripper_friction(cfg: dict, robot_prim_path: str) -> None:
-    """Authors one high-friction physics material and binds it to both the
-    Franka's fingertip links and cfg's high_friction_prim_paths (the
-    object(s) meant to be grasped).
-
-    Runtime-only, not persisted: mefron.usd is referenced into this script's
-    own anonymous in-memory stage (see build_factory()'s own module comment
-    on why), and this script never calls stage.Save(), so this material is
-    re-authored fresh every run rather than written back into mefron.usd
-    itself.
-
-    Confirmed via a read-only inspection of mefron.usd that NO physics
-    material was authored anywhere in the file (on the scanner parts) or via
-    import_cr5()/the Franka URDF (on the fingertips) -- both sides of every
-    grasp contact were relying entirely on PhysX's un-overridden engine
-    default friction, which is why grasps were slipping regardless of
-    object mass.
-    """
+    """Authors a high-friction physics material and binds it to the Franka's fingertip links
+    and cfg's high_friction_prim_paths. Runtime-only, re-authored fresh every run (never saved)."""
     from omni.physx.scripts import utils as physx_utils
     from omni.physx.scripts.physicsUtils import add_physics_material_to_prim
 
@@ -179,28 +129,8 @@ GRIPPER_DRIVE_DAMPING = 200.0
 
 
 def stiffen_gripper_drive(robot_prim_path: str) -> None:
-    """Raises the finger joints' own position-drive stiffness/damping well
-    above the whole-robot import-time default (import_cr5()'s
-    default_drive_strength=1047.2/default_position_drive_damping=52.36,
-    applied uniformly to every joint at import -- tuned for holding the
-    arm's much heavier links against gravity).
-
-    Confirmed via a headless inspection of the actual imported joint prims
-    (/World/CR5/joints/panda_finger_joint1|2, UsdPhysics.DriveAPI,
-    drive type "linear") that the finger joints land at stiffness=625.0,
-    damping=10.0 -- not the configured 1047.2/52.36 (the importer evidently
-    derives a different effective value for prismatic joints, and the
-    URDF's own <dynamics damping="10.0"/> on these two joints takes
-    precedence over the importer's default damping). At that stiffness, a
-    typical 1-2cm grasp position error only reaches ~6-12N of the joints'
-    own hard maxForce=20 ceiling (also confirmed, matches the URDF's
-    effort="20") -- real headroom being left unused, which likely
-    contributes to the grasped object dangling/rotating rather than being
-    held firmly.
-
-    Runtime-only, not persisted -- see apply_gripper_friction()'s own
-    module comment; the same reasoning applies here.
-    """
+    """Raises the finger joints' own position-drive stiffness/damping above the
+    whole-robot import-time default. Runtime-only, not persisted."""
     stage = omni.usd.get_context().get_stage()
     for joint_name in GRIPPER_JOINT_NAMES:
         joint_prim = stage.GetPrimAtPath(f"{robot_prim_path}/joints/{joint_name}")
@@ -279,24 +209,15 @@ _TELEOP_INIT_FRAMES = 10
 _TELEOP_SETTLE_FRAMES = 20
 _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
 
-# Values confirmed by reading franka_panda.urdf directly (both
-# panda_finger_joint1/2 are prismatic with limit lower=0.0 upper=0.04), not
-# assumed -- 0.04 also matches franka.yml's own lock_joints/retract_config
-# value, so "open" here is the same pose cuRobo already holds the fingers at
-# whenever it plans an arm trajectory (see run_teleop_loop's own gripper
-# actuation block below for why that matters).
+# Prismatic joint limits per franka_panda.urdf; 0.04 also matches franka.yml's lock_joints value.
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 GRIPPER_OPEN_POSITION = 0.04
 GRIPPER_CLOSED_POSITION = 0.0
 
 
 class GripperKeyboardControl:
-    """Open/closed request for the Franka's gripper, read once per teleop
-    frame. Real instances are driven by carb.input keyboard events (see
-    build_gripper_keyboard_control()); a test can construct one directly and
-    call set_closed() to simulate a keypress without a live keyboard device,
-    the same trick test_teleop_headless.py already uses for simulating a
-    mouse-drag via target.get_world_pose()."""
+    """Open/closed request for the Franka's gripper, read once per teleop frame.
+    Real instances are driven by keyboard events; tests can call set_closed() directly."""
 
     def __init__(self) -> None:
         self.closed = False
@@ -306,14 +227,7 @@ class GripperKeyboardControl:
 
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
-    """Subscribes to real keyboard events: C closes the gripper, O opens it.
-
-    carb.input/omni.appwindow are Kit-level (not Isaac-Sim-specific) APIs,
-    confirmed against this install's own stubs
-    (isaac-sim/kit/kernel/py/carb/input.pyi,
-    isaac-sim/extscache/omni.appwindow-*/omni/appwindow/_appwindow.pyi)
-    rather than assumed from memory.
-    """
+    """Subscribes to real keyboard events: C closes the gripper, O opens it."""
     import carb.input
     import omni.appwindow
 
@@ -329,9 +243,7 @@ def build_gripper_keyboard_control() -> GripperKeyboardControl:
                 control.set_closed(False)
         return True
 
-    # Kept alive on the control object itself -- nothing else holds a
-    # reference to keyboard/input_iface/the subscription id otherwise, and an
-    # unreferenced subscription is liable to be garbage-collected away.
+    # Kept alive on the control object itself so the subscription isn't garbage-collected.
     control._keyboard = keyboard
     control._input_iface = input_iface
     control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
@@ -347,21 +259,8 @@ def run_teleop_loop(
     max_iterations: int | None = None,
     gripper_control: GripperKeyboardControl | None = None,
 ) -> None:
-    """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen.
-
-    Rebuilds the robot's SingleArticulation on every fresh Play, not just
-    the first: clicking Stop tears down PhysX's simulation view, and
-    reusing a stale SingleArticulation afterward leaves the robot
-    permanently unresponsive (confirmed live).
-
-    `gripper_control`: if given, the Franka's two finger joints are driven
-    directly to GRIPPER_OPEN_POSITION/GRIPPER_CLOSED_POSITION every playing
-    frame based on `gripper_control.closed`, independent of cmd_plan/cuRobo
-    -- franka.yml already locks these two joints out of cuRobo's own
-    IK/trajopt (see GRIPPER_JOINT_NAMES' comment above), so this is the
-    correct point of separation, not a workaround. None disables gripper
-    actuation entirely (e.g. no live keyboard device available).
-    """
+    """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen. Rebuilds the
+    robot's SingleArticulation on every fresh Play; `gripper_control` drives the finger joints directly."""
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose
     from curobo.types.state import JointState
@@ -398,10 +297,7 @@ def run_teleop_loop(
     target_orientation = None
     cmd_plan = None
     cmd_idx = 0
-    # Real elapsed time (not frame count) since the last waypoint was applied,
-    # and the plan's own intended per-waypoint duration -- gates playback speed
-    # to what the plan was actually generated for, independent of render FPS.
-    # See run_teleop_loop's own module comment for why this matters.
+    # Real elapsed time since the last waypoint, gating playback speed to the plan's own rate.
     last_cmd_time = None
     interpolation_dt = 0.02
     obstacles = None
@@ -420,8 +316,7 @@ def run_teleop_loop(
             continue
 
         if not was_playing:
-            # Fresh Play (first ever, or after a Stop) -- rebuild everything
-            # bound to the previous physics view/step count.
+            # Fresh Play (first ever, or after a Stop) -- rebuild everything bound to the old physics view.
             idx_list = None
             gripper_idx_list = None
             articulation_controller = None
@@ -503,9 +398,7 @@ def run_teleop_loop(
                 cmd_plan = motion_gen.get_full_js(result.get_interpolated_plan())
                 cmd_plan = cmd_plan.get_ordered_joint_state(sim_js_names)
                 cmd_idx = 0
-                # result.interpolation_dt (not a motion_gen-level attribute --
-                # MotionGen itself doesn't expose one; MotionGenResult does)
-                # is this specific plan's own intended per-waypoint duration.
+                # This plan's own intended per-waypoint duration (from MotionGenResult).
                 interpolation_dt = result.interpolation_dt
                 last_cmd_time = None
             target_pose = cube_position
@@ -515,16 +408,8 @@ def run_teleop_loop(
         past_orientation = cube_orientation
 
         if cmd_plan is not None:
-            # Gate on real elapsed time, not frame count -- get_interpolated_plan()
-            # spaces waypoints interpolation_dt seconds apart (0.02s here), but this
-            # loop's own render rate (confirmed live at ~119 FPS, far above the 50Hz
-            # the plan assumes) has nothing to do with that. Applying one waypoint
-            # per frame instead of one per interpolation_dt played the whole
-            # trajectory back at ~2.4x its intended speed and cut its final
-            # deceleration-to-zero-velocity ramp short, leaving real residual
-            # velocity for the position-hold drive to absorb once cmd_plan ran out
-            # -- the actual cause of both the too-fast motion and the arrival
-            # oscillation, not a stiffness/damping problem.
+            # Gate on real elapsed time, not frame count -- render FPS doesn't match the
+            # plan's own interpolation_dt spacing, so one waypoint per frame would misplay it.
             now = time.time()
             if last_cmd_time is None or (now - last_cmd_time) >= interpolation_dt:
                 cmd_state = cmd_plan[cmd_idx]
@@ -540,12 +425,8 @@ def run_teleop_loop(
                     cmd_idx = 0
                     cmd_plan = None
 
-        # Independent of cmd_plan/cuRobo -- applied every frame (not just
-        # while a plan is interpolating), so it always wins that frame's
-        # drive-target write for the finger indices even when the block
-        # above just also wrote to them (get_full_js() re-applies the
-        # lock_joints value on every planned frame; see GRIPPER_JOINT_NAMES'
-        # comment above for why fingers are locked out of cuRobo at all).
+        # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the
+        # finger-joint drive-target write, overriding cuRobo's own locked-joint value.
         if gripper_control is not None:
             gripper_target = GRIPPER_CLOSED_POSITION if gripper_control.closed else GRIPPER_OPEN_POSITION
             gripper_action = ArticulationAction(

@@ -1,15 +1,5 @@
-"""Headless verification of Step 6's assembly wiring in mefron.py:
-compute_grasp_approach_pose(), compute_assembly_grasp_target(), and the G/P
-one-shot snap-to-pose requests on GripperKeyboardControl consumed inside
-run_teleop_loop().
-
-Same established pattern as test_mefron_teleop_headless.py (reuses mefron.py's
-own functions as a library, drives run_teleop_loop() directly with a fake
-input instead of a real GUI event) -- here the "fake input" is calling
-gripper_control.request_grasp_approach()/request_assembly_target() directly
-instead of a real G/P keypress, which is indistinguishable to run_teleop_loop()
-since it only ever reads the request through consume_grasp_approach_request()/
-consume_assembly_target_request(), never the keyboard event itself.
+"""Headless regression test for mefron.py's G/P one-shot grasp-approach and
+assembly-target snap requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py.
 
 Run standalone:
     ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_headless.py --headless
@@ -65,9 +55,7 @@ def main() -> None:
     for _ in range(5):
         simulation_app.update()
 
-    # Sanity-check the pose math directly, before it's ever wired through the
-    # teleop loop's own debounce/plan machinery -- independent of whether
-    # cuRobo can actually reach the pose.
+    # Sanity-check the pose math directly, independent of whether cuRobo can reach it.
     scanner_trans, scanner_quat = SingleXFormPrim(prim_path="/World/finger_print_scanner").get_world_pose()
     approach_trans, approach_quat = mefron.compute_grasp_approach_pose()
     print(
@@ -99,11 +87,7 @@ def main() -> None:
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
 
-    # Phase 1: simulate pressing G (grasp-approach). request_grasp_approach()
-    # is consumed on the first eligible frame of run_teleop_loop() -- setting
-    # it before the call is equivalent to a keypress landing right at the
-    # start, and is indistinguishable to the loop from a real one since it
-    # only ever reads the request through consume_grasp_approach_request().
+    # Phase 1: simulate pressing G (grasp-approach) before run_teleop_loop() starts.
     gripper_control = mefron.GripperKeyboardControl()
     gripper_control.request_grasp_approach()
     mefron.run_teleop_loop(motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS_PER_PHASE, gripper_control=gripper_control)

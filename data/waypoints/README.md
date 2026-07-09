@@ -1,9 +1,9 @@
 # Waypoint data
 
 Recorded CR5 waypoints, written by `scripts/teach_waypoint.py` and
-consumed by `scripts/playback_waypoints.py`. Joint-space, not Cartesian
-(see CLAUDE.md's Conventions section) — each waypoint is 6 joint angles in
-radians, for joint1..joint6, in that order.
+consumed by `scripts/playback_waypoints.py`. Joint-space, not Cartesian —
+each waypoint is 6 joint angles in radians, for joint1..joint6, in that
+order.
 
 Schema (see `scripts/waypoints.py` for the authoritative dataclass):
 
