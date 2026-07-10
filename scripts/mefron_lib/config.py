@@ -77,18 +77,8 @@ GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 200.0
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
-# T_S_G: the Franka's ee_link pose expressed in finger_print_scanner's own local frame at a known-good
-# grasp, derived via grasp.compute_relative_pose() against a manually-jogged /World/target (see docs/grasp-and-assembly-offsets.md).
-GRASP_OFFSET_POSITION = [0.00027002069774515104, -0.021693730387954874, -0.1271989186209571]
-GRASP_OFFSET_ORIENTATION_WXYZ = [
-    -2.1523912431273915e-05,
-    -8.089888886539503e-06,
-    5.762411090611313e-06,
-    0.9999999997190347,
-]
-
-# Grasp Editor-exported alternative to GRASP_OFFSET_*, wired to the J key for live comparison against
-# the G key's constants-based grasp-approach pose. See grasp.compute_grasp_approach_pose_from_file().
+# Grasp Editor-exported grasp-approach pose, wired to the J key -- the sole grasp-approach method now
+# that the hand-derived-constant G key has been removed. See grasp.compute_grasp_approach_pose_from_file().
 GRASP_EDITOR_YAML_PATH = REPO_ROOT / "assets" / "finger_print_scanner.yaml"
 GRASP_EDITOR_GRASP_NAME = "grasp_0"
 
@@ -98,7 +88,7 @@ ASSEMBLY_RELATIONSHIPS = {
     "finger_print_scanner_on_main_holder": {
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",
-        "local_position": [-0.05765001316747483, 0.02068996147910942, 0.01500000425999065],
+        "local_position": [-0.05765, 0.02069, 0.01565],
         "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     }
 }

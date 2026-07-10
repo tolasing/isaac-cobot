@@ -1,4 +1,4 @@
-"""Headless regression test for mefron_lib's G/P one-shot grasp-approach and
+"""Headless regression test for mefron_lib's J/P one-shot grasp-approach and
 assembly-target snap requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py.
 
 Run standalone:
@@ -7,6 +7,7 @@ Run standalone:
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
@@ -14,7 +15,12 @@ from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
 if __name__ == "__main__":
-    simulation_app = SimulationApp({"headless": _headless})
+    # Unlike mefron.py's own headless path (which never touches J), this test exercises
+    # grasp.compute_grasp_approach_pose_from_file() unconditionally -- that needs the
+    # isaacsim.robot_setup.grasp_editor extension, which only the full experience loads.
+    simulation_app = SimulationApp(
+        {"headless": _headless}, experience=f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
+    )
 
 # Must run before any omni/curobo import -- see mefron_lib/kit_bootstrap.py's docstring.
 from mefron_lib.kit_bootstrap import clear_stale_robot_configuration, preload_real_packaging  # noqa: E402
@@ -28,7 +34,11 @@ from isaacsim.core.prims import SingleArticulation, SingleXFormPrim  # noqa: E40
 from pxr import UsdPhysics  # noqa: E402
 from mefron_lib import config, grasp, robot, teleop  # noqa: E402
 
-_MAX_ITERATIONS_PER_PHASE = 300
+# 900, not 300: phase 1's discrete MotionGen trajectory needs more real time than 300 frames provides
+# to actually finish (time-dilated playback + headless frames ticking faster than real time) -- the
+# post-phase-1 assembly-target sanity check below needs phase 1 to have truly completed, not just
+# started, or it measures a still-in-transit gripper pose.
+_MAX_ITERATIONS_PER_PHASE = 900
 
 
 def main() -> None:
@@ -58,7 +68,9 @@ def main() -> None:
 
     # Sanity-check the pose math directly, independent of whether cuRobo can reach it.
     scanner_trans, scanner_quat = SingleXFormPrim(prim_path="/World/finger_print_scanner").get_world_pose()
-    approach_trans, approach_quat = grasp.compute_grasp_approach_pose()
+    approach_trans, approach_quat = grasp.compute_grasp_approach_pose_from_file(
+        config.GRASP_EDITOR_YAML_PATH, config.GRASP_EDITOR_GRASP_NAME
+    )
     print(
         f"[test_mefron_assembly_headless] scanner world pose: pos={scanner_trans} quat_wxyz={scanner_quat}",
         flush=True,
@@ -71,26 +83,17 @@ def main() -> None:
     print(f"[test_mefron_assembly_headless] approach pose is {approach_distance:.4f} m from the scanner", flush=True)
     assert approach_distance < 0.2, "grasp-approach pose is implausibly far from the scanner"
 
-    holder_trans, holder_quat = SingleXFormPrim(prim_path="/World/main_holder").get_world_pose()
-    assembly_trans, assembly_quat = grasp.compute_assembly_grasp_target()
-    print(
-        f"[test_mefron_assembly_headless] main_holder world pose: pos={holder_trans} quat_wxyz={holder_quat}",
-        flush=True,
-    )
-    print(
-        f"[test_mefron_assembly_headless] assembly-target pose: pos={assembly_trans} quat_wxyz={assembly_quat}",
-        flush=True,
-    )
-    assembly_distance = float(np.linalg.norm(np.array(assembly_trans) - np.array(holder_trans)))
-    print(f"[test_mefron_assembly_headless] assembly target is {assembly_distance:.4f} m from main_holder", flush=True)
-    assert assembly_distance < 0.2, "assembly-target pose is implausibly far from main_holder"
+    # compute_assembly_grasp_target() now needs a real live gripper-to-part relationship (it composes
+    # main_holder's target pose with the CURRENT measured offset) -- meaningless before phase 1 has
+    # actually moved the gripper near the part, so that check moves to after phase 1 below.
+    ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
 
-    # Phase 1: simulate pressing G (grasp-approach) before run_teleop_loop() starts.
+    # Phase 1: simulate pressing J (grasp-approach) before run_teleop_loop() starts.
     gripper_control = teleop.GripperKeyboardControl()
-    gripper_control.request_grasp_approach()
+    gripper_control.request_grasp_approach_from_file()
     teleop.run_teleop_loop(
         simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS_PER_PHASE, gripper_control=gripper_control
     )
@@ -102,6 +105,23 @@ def main() -> None:
     phase1_delta = float(np.max(np.abs(phase1_positions - start_positions)))
     print(f"[test_mefron_assembly_headless] phase 1 (grasp approach) max joint delta: {phase1_delta:.4f} rad", flush=True)
     del verify_robot  # must go out of scope before run_teleop_loop() builds its own again -- see test_mefron_teleop_headless.py
+
+    # Sanity-check compute_assembly_grasp_target() against the post-phase-1 live gripper pose, not
+    # retract config -- it now composes main_holder's target with the CURRENT measured gripper-to-part
+    # offset, so it only makes sense once phase 1 has actually moved the gripper near the part.
+    holder_trans, holder_quat = SingleXFormPrim(prim_path="/World/main_holder").get_world_pose()
+    assembly_trans, assembly_quat = grasp.compute_assembly_grasp_target(ee_link_prim_path)
+    print(
+        f"[test_mefron_assembly_headless] main_holder world pose: pos={holder_trans} quat_wxyz={holder_quat}",
+        flush=True,
+    )
+    print(
+        f"[test_mefron_assembly_headless] assembly-target pose: pos={assembly_trans} quat_wxyz={assembly_quat}",
+        flush=True,
+    )
+    assembly_distance = float(np.linalg.norm(np.array(assembly_trans) - np.array(holder_trans)))
+    print(f"[test_mefron_assembly_headless] assembly target is {assembly_distance:.4f} m from main_holder", flush=True)
+    assert assembly_distance < 0.2, "assembly-target pose is implausibly far from main_holder"
 
     # Phase 2: simulate pressing P (assembly target), continuing from wherever
     # phase 1 left the robot.
@@ -120,7 +140,7 @@ def main() -> None:
     if phase1_delta < 0.05 or phase2_delta < 0.05:
         print("[test_mefron_assembly_headless] FAIL: robot did not move meaningfully for one or both phases.", flush=True)
     else:
-        print("[test_mefron_assembly_headless] PASS: both G (grasp approach) and P (assembly target) drove the robot.", flush=True)
+        print("[test_mefron_assembly_headless] PASS: both J (grasp approach) and P (assembly target) drove the robot.", flush=True)
 
     simulation_app.close()
 

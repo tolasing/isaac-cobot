@@ -54,8 +54,13 @@ on real hardware.
 `scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
 `assets/mefron/`'s SEKTION-cabinet mount plate (world position
 `[2.74097, -4.782, 0.7924]`), runs a drag-follow teleop loop, and provides
-G(rasp)/P(lace) keys that snap the teleop target to a live-computed pose
-for `finger_print_scanner`/`main_holder`, plus C/O keys for the gripper.
+J(grasp, via an NVIDIA Grasp Editor-exported pose)/P(lace) keys that snap
+the teleop target to a live-computed pose, plus C/O keys for the gripper.
+P's placement pose is computed by measuring the CURRENT live gripper-to-
+part offset (not a fixed constant) and applying it to `finger_print_scanner`'s
+live-computed target pose on `main_holder` — so it self-corrects to
+whatever grasp J actually produced. There is no G key: an earlier
+hand-derived-constant grasp-approach pose has been removed in favor of J.
 Opens `mefron.usd` directly via `open_stage()`.
 
 `scripts/mefron_gripper_probe.py` imports just the Franka hand +
@@ -74,13 +79,11 @@ only works when `mefron.usd` is opened directly, so active work happens in
 
 Current constants (`scripts/mefron_lib/config.py`):
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`:
-  `local_position=[-0.05765001316747483, 0.02068996147910942,
-  0.01500000425999065]`, `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`.
-- `GRASP_OFFSET_POSITION=[0.00027002069774515104, -0.021693730387954874,
-  -0.1271989186209571]`, `GRASP_OFFSET_ORIENTATION_WXYZ=
-  [-2.1523912431273915e-05, -8.089888886539503e-06, 5.762411090611313e-06,
-  0.9999999997190347]`.
-- `_TELEOP_VELOCITY_SCALE = _TELEOP_ACCELERATION_SCALE = 0.2`,
+  `local_position=[-0.05765, 0.02069, 0.01565]`,
+  `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`. (There is no
+  `GRASP_OFFSET_POSITION`/`ORIENTATION_WXYZ` anymore — P measures the
+  live grasp offset instead of using a fixed constant; see above.)
+- `_TELEOP_VELOCITY_SCALE = _TELEOP_ACCELERATION_SCALE = 0.5`,
   `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
 
 Currently open issues (see the linked docs for full diagnosis):

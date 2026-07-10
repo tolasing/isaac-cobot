@@ -1,5 +1,5 @@
 """Interactive cuRobo teleop loop: builds the draggable target, warms up MotionGen, and runs the
-drag-follow plan/apply loop with gripper open/close and G/P/J grasp/assembly/grasp-editor pose snaps. See
+drag-follow plan/apply loop with gripper open/close and P/J assembly/grasp-editor pose snaps. See
 docs/mefron-history.md for the Stop/Play-rebuild and physics-timing gotchas this loop works around.
 """
 
@@ -13,30 +13,21 @@ from isaacsim.core.utils.types import ArticulationAction
 from pxr import Sdf, UsdPhysics
 
 from . import config
-from .grasp import compute_assembly_grasp_target, compute_grasp_approach_pose, compute_grasp_approach_pose_from_file
+from .grasp import compute_assembly_grasp_target, compute_grasp_approach_pose_from_file
 
 
 class GripperKeyboardControl:
-    """Open/closed request for the Franka's gripper, read once per teleop frame, plus three one-shot
-    snap-to-pose requests (G: grasp approach, P: assembly placement, J: grasp-editor-yaml grasp approach,
-    for live comparison against G) consumed exactly once via request_*/consume_*."""
+    """Open/closed request for the Franka's gripper, read once per teleop frame, plus two one-shot
+    snap-to-pose requests (P: assembly placement, J: grasp-editor-yaml grasp approach) consumed
+    exactly once via request_*/consume_*."""
 
     def __init__(self) -> None:
         self.closed = False
-        self._grasp_approach_requested = False
         self._assembly_target_requested = False
         self._grasp_approach_from_file_requested = False
 
     def set_closed(self, closed: bool) -> None:
         self.closed = closed
-
-    def request_grasp_approach(self) -> None:
-        self._grasp_approach_requested = True
-
-    def consume_grasp_approach_request(self) -> bool:
-        requested = self._grasp_approach_requested
-        self._grasp_approach_requested = False
-        return requested
 
     def request_assembly_target(self) -> None:
         self._assembly_target_requested = True
@@ -56,9 +47,9 @@ class GripperKeyboardControl:
 
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
-    """Subscribes to keyboard events: C closes the gripper, O opens it, G snaps /World/target to the
-    constants-based grasp-approach pose, P snaps it to the assembly-placement pose, J snaps it to the
-    Grasp Editor-exported yaml's grasp-approach pose (config.GRASP_EDITOR_YAML_PATH/GRASP_NAME)."""
+    """Subscribes to keyboard events: C closes the gripper, O opens it, P snaps /World/target to the
+    assembly-placement pose, J snaps it to the Grasp Editor-exported yaml's grasp-approach pose
+    (config.GRASP_EDITOR_YAML_PATH/GRASP_NAME)."""
     import carb.input
     import omni.appwindow
 
@@ -72,8 +63,6 @@ def build_gripper_keyboard_control() -> GripperKeyboardControl:
                 control.set_closed(True)
             elif event.input == carb.input.KeyboardInput.O:
                 control.set_closed(False)
-            elif event.input == carb.input.KeyboardInput.G:
-                control.request_grasp_approach()
             elif event.input == carb.input.KeyboardInput.P:
                 control.request_assembly_target()
             elif event.input == carb.input.KeyboardInput.J:
@@ -170,7 +159,7 @@ def run_teleop_loop(
     gripper_control: GripperKeyboardControl | None = None,
 ) -> None:
     """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen plan/apply loop, rebuilding
-    the articulation on every fresh Play and supporting gripper open/close plus G/P grasp/assembly pose snaps."""
+    the articulation on every fresh Play and supporting gripper open/close plus P/J grasp/assembly pose snaps."""
     import time
 
     from curobo.types.base import TensorDeviceType
@@ -193,6 +182,7 @@ def run_teleop_loop(
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     default_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
+    ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     robot = None
     idx_list = None
@@ -277,14 +267,11 @@ def run_teleop_loop(
         if past_orientation is None:
             past_orientation = cube_orientation
 
-        # One-shot G/P/J snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not before --
+        # One-shot P/J snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not before --
         # otherwise cube_position would already reflect the post-snap pose when target_pose is seeded, making the debounce distance 0 forever.
         if gripper_control is not None:
-            if gripper_control.consume_grasp_approach_request():
-                cube_position, cube_orientation = compute_grasp_approach_pose()
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
-            elif gripper_control.consume_assembly_target_request():
-                cube_position, cube_orientation = compute_assembly_grasp_target()
+            if gripper_control.consume_assembly_target_request():
+                cube_position, cube_orientation = compute_assembly_grasp_target(ee_link_prim_path)
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
             elif gripper_control.consume_grasp_approach_from_file_request():
                 cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
