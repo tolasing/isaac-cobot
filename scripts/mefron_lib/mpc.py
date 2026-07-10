@@ -26,7 +26,20 @@ def setup_mpc_solver(robot_cfg: dict):
     from .teleop import get_obstacles, motion_gen_kinematics_get_state
 
     tensor_args = TensorDeviceType()
-    world_cfg = get_obstacles()
+    world_cfg = get_obstacles(exclude_paths=config._MPC_COLLISION_EXCLUDE_PATHS)
+
+    # MpcSolverConfig.load_from_robot_config() has no velocity_scale/acceleration_scale kwarg (unlike
+    # MotionGenConfig's), but it reads the same robot_cfg["kinematics"]["cspace"] fields MotionGen's
+    # kwarg-based call writes -- so without this, MPC would silently inherit whatever scale
+    # setup_motion_gen() happened to set, with no dedicated dampener of its own (MotionGen additionally
+    # gets slowed via MotionGenPlanConfig(time_dilation_factor=...) at playback time in
+    # run_teleop_loop(); MPC has no equivalent). Set independently here so MPC's actual ceiling doesn't
+    # depend on call ordering elsewhere. Confirmed this doesn't retroactively affect the already-built
+    # motion_gen passed in from setup_motion_gen() -- RobotConfig.from_dict() converts robot_cfg into
+    # its own internal representation at construction time, not a live view of the dict.
+    robot_cfg["kinematics"]["cspace"]["velocity_scale"] = config._MPC_VELOCITY_SCALE
+    robot_cfg["kinematics"]["cspace"]["acceleration_scale"] = config._MPC_ACCELERATION_SCALE
+
     mpc_config = MpcSolverConfig.load_from_robot_config(
         {"robot_cfg": robot_cfg},
         world_cfg,

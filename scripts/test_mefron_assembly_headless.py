@@ -28,7 +28,12 @@ from isaacsim.core.prims import SingleArticulation, SingleXFormPrim  # noqa: E40
 from pxr import UsdPhysics  # noqa: E402
 from mefron_lib import config, grasp, robot, teleop  # noqa: E402
 
-_MAX_ITERATIONS_PER_PHASE = 300
+# 900, not 300: phase 1's discrete MotionGen trajectory needs more real time than 300 frames provides
+# to actually finish (time-dilated playback + headless frames ticking faster than real time) -- the
+# post-phase-1 assembly-target sanity check below needs phase 1 to have truly completed, not just
+# started, or it measures a still-in-transit gripper pose. Same fix as
+# test_mefron_reactive_placement_headless.py's own _MAX_ITERATIONS_PHASE1.
+_MAX_ITERATIONS_PER_PHASE = 900
 
 
 def main() -> None:
@@ -71,19 +76,11 @@ def main() -> None:
     print(f"[test_mefron_assembly_headless] approach pose is {approach_distance:.4f} m from the scanner", flush=True)
     assert approach_distance < 0.2, "grasp-approach pose is implausibly far from the scanner"
 
-    holder_trans, holder_quat = SingleXFormPrim(prim_path="/World/main_holder").get_world_pose()
-    assembly_trans, assembly_quat = grasp.compute_assembly_grasp_target()
-    print(
-        f"[test_mefron_assembly_headless] main_holder world pose: pos={holder_trans} quat_wxyz={holder_quat}",
-        flush=True,
-    )
-    print(
-        f"[test_mefron_assembly_headless] assembly-target pose: pos={assembly_trans} quat_wxyz={assembly_quat}",
-        flush=True,
-    )
-    assembly_distance = float(np.linalg.norm(np.array(assembly_trans) - np.array(holder_trans)))
-    print(f"[test_mefron_assembly_headless] assembly target is {assembly_distance:.4f} m from main_holder", flush=True)
-    assert assembly_distance < 0.2, "assembly-target pose is implausibly far from main_holder"
+    # compute_assembly_grasp_target() now needs a real live gripper-to-part relationship (it composes
+    # main_holder's target pose with the CURRENT measured offset, same as compute_reactive_assembly_target()) --
+    # meaningless before phase 1 has actually moved the gripper near the part, so that check moves to
+    # after phase 1 below instead of running here against the retract-config starting pose.
+    ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
@@ -102,6 +99,24 @@ def main() -> None:
     phase1_delta = float(np.max(np.abs(phase1_positions - start_positions)))
     print(f"[test_mefron_assembly_headless] phase 1 (grasp approach) max joint delta: {phase1_delta:.4f} rad", flush=True)
     del verify_robot  # must go out of scope before run_teleop_loop() builds its own again -- see test_mefron_teleop_headless.py
+
+    # Sanity-check compute_assembly_grasp_target() against the post-phase-1 live gripper pose, not
+    # retract config -- it now composes main_holder's target with the CURRENT measured gripper-to-part
+    # offset (same underlying call as compute_reactive_assembly_target()), so it only makes sense once
+    # phase 1 has actually moved the gripper near the part.
+    holder_trans, holder_quat = SingleXFormPrim(prim_path="/World/main_holder").get_world_pose()
+    assembly_trans, assembly_quat = grasp.compute_assembly_grasp_target(ee_link_prim_path)
+    print(
+        f"[test_mefron_assembly_headless] main_holder world pose: pos={holder_trans} quat_wxyz={holder_quat}",
+        flush=True,
+    )
+    print(
+        f"[test_mefron_assembly_headless] assembly-target pose: pos={assembly_trans} quat_wxyz={assembly_quat}",
+        flush=True,
+    )
+    assembly_distance = float(np.linalg.norm(np.array(assembly_trans) - np.array(holder_trans)))
+    print(f"[test_mefron_assembly_headless] assembly target is {assembly_distance:.4f} m from main_holder", flush=True)
+    assert assembly_distance < 0.2, "assembly-target pose is implausibly far from main_holder"
 
     # Phase 2: simulate pressing P (assembly target), continuing from wherever
     # phase 1 left the robot.

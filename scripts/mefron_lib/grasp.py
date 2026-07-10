@@ -119,14 +119,14 @@ def compute_assembly_placement_error(relationship_name: str = "finger_print_scan
     return position_error, rotation_error
 
 
-def compute_assembly_grasp_target(relationship_name: str = "finger_print_scanner_on_main_holder"):
-    """Returns the world pose /World/target should be set to in order to place the already-grasped part at
-    its assembled position, by composing the mount's live pose with ASSEMBLY_RELATIONSHIPS and the fixed
-    nominal GRASP_OFFSET_*. Thin wrapper around compute_assembly_grasp_target_from_offset() for the one-shot,
-    non-reactive P key -- see compute_reactive_assembly_target() for the per-frame, slip-corrected version."""
-    return compute_assembly_grasp_target_from_offset(
-        config.GRASP_OFFSET_POSITION, config.GRASP_OFFSET_ORIENTATION_WXYZ, relationship_name
-    )
+def compute_assembly_grasp_target(ee_link_prim_path: str):
+    """Returns the world pose /World/target should be set to for the P key's placement: main_holder's
+    live pose composed with ASSEMBLY_RELATIONSHIPS gives finger_print_scanner's target pose, then the
+    CURRENT live gripper-to-part offset (not a fixed nominal one -- picking is via J, not G, so there's
+    no separate grasp constant to fall back on) is applied to get the gripper's target. Computed once,
+    on the P keypress, rather than continuously -- see compute_reactive_assembly_target(), which this
+    delegates to and which M's phase-2 calls every tick instead of once."""
+    return compute_reactive_assembly_target(ee_link_prim_path)
 
 
 def compute_reactive_assembly_target(

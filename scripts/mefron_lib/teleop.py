@@ -106,7 +106,10 @@ def build_gripper_keyboard_control() -> GripperKeyboardControl:
     return control
 
 
-def get_obstacles():
+def get_obstacles(exclude_paths=()):
+    """exclude_paths: additional prim paths to drop beyond the always-excluded robot/target/curobo --
+    e.g. mpc.setup_mpc_solver() and the mpc_solver.update_world() rescan pass config._MPC_COLLISION_EXCLUDE_PATHS
+    so MPC gets its own, smaller collision world than motion_gen's."""
     from curobo.util.usd_helper import UsdHelper
 
     usd_help = UsdHelper()
@@ -114,7 +117,7 @@ def get_obstacles():
     return usd_help.get_obstacles_from_stage(
         only_paths=list(config.OBSTACLE_PRIM_PATHS),
         reference_prim_path=config.ROBOT_PRIM_PATH,
-        ignore_substring=[config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, "/curobo"],
+        ignore_substring=[config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, "/curobo", *exclude_paths],
     ).get_collision_check_world()
 
 
@@ -248,6 +251,10 @@ def run_teleop_loop(
     mpc_step_count = 0
     mpc_converged_count = 0
     last_mpc_time = None
+    # Best (minimum) part-placement error seen this MPC run -- diagnostic only, so a timeout print
+    # shows how close it actually got, not just wherever it ended up after the fact.
+    mpc_best_position_error = None
+    mpc_best_rotation_error = None
 
     while simulation_app.is_running():
         simulation_app.update()
@@ -308,7 +315,7 @@ def run_teleop_loop(
             obstacles = get_obstacles()
             motion_gen.update_world(obstacles)
             if mpc_solver is not None:
-                mpc_solver.update_world(obstacles)
+                mpc_solver.update_world(get_obstacles(exclude_paths=config._MPC_COLLISION_EXCLUDE_PATHS))
 
         cube_position, cube_orientation = target.get_world_pose()
         if past_pose is None:
@@ -327,7 +334,7 @@ def run_teleop_loop(
                 cube_position, cube_orientation = compute_grasp_approach_pose()
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
             elif gripper_control.consume_assembly_target_request():
-                cube_position, cube_orientation = compute_assembly_grasp_target()
+                cube_position, cube_orientation = compute_assembly_grasp_target(ee_link_prim_path)
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
             elif gripper_control.consume_grasp_approach_from_file_request():
                 cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
@@ -336,7 +343,7 @@ def run_teleop_loop(
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
             elif gripper_control.consume_reactive_assembly_request():
                 if not mpc_active:
-                    cube_position, cube_orientation = compute_assembly_grasp_target()
+                    cube_position, cube_orientation = compute_assembly_grasp_target(ee_link_prim_path)
                     target.set_world_pose(position=cube_position, orientation=cube_orientation)
                     if mpc_solver is not None:
                         pending_mpc_handoff = True
