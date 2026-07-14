@@ -9,7 +9,7 @@
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspace/isaac-cobot,type=bind,consistency=cached"
   ],
-  "postCreateCommand": "git config --global --add safe.directory /workspace/isaac-cobot",
+  "postCreateCommand": "git config --global --add safe.directory /workspace/isaac-cobot && git lfs install && git lfs pull",
   "overrideCommand": false,
   "shutdownAction": "stopCompose",
   "remoteEnv": {
