@@ -31,7 +31,8 @@ scratchpad/*
 # Editors / OS
 .vscode/
 .idea/
-.claude/
+.claude/*
+!.claude/skills/
 .DS_Store
 Thumbs.db
 
