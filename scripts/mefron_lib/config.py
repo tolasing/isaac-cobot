@@ -77,10 +77,24 @@ GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 200.0
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
-# Grasp Editor-exported grasp-approach pose, wired to the J key -- the sole grasp-approach method now
-# that the hand-derived-constant G key has been removed. See grasp.compute_grasp_approach_pose_from_file().
-GRASP_EDITOR_YAML_PATH = REPO_ROOT / "assets" / "finger_print_scanner.yaml"
-GRASP_EDITOR_GRASP_NAME = "grasp_0"
+# Grasp Editor-exported grasp-approach poses + per-object finger widths, keyed by object name and
+# wired to a keyboard key in teleop.build_gripper_keyboard_control(). "key" is a carb.input.KeyboardInput
+# attribute name (resolved via getattr in teleop.py, since this module stays free of omni/curobo imports).
+# See grasp.compute_grasp_approach_pose_from_file()/compute_grasp_finger_widths_from_file().
+GRASP_TARGETS = {
+    "finger_print_scanner": {
+        "key": "J",
+        "yaml_path": REPO_ROOT / "assets" / "finger_print_scanner.yaml",
+        "grasp_name": "grasp_0",
+        "part_prim_path": "/World/finger_print_scanner",
+    },
+    "backpanel_support": {
+        "key": "B",
+        "yaml_path": REPO_ROOT / "assets" / "backpanel_support.yaml",
+        "grasp_name": "grasp_0",
+        "part_prim_path": "/World/backpanel_support",
+    },
+}
 
 # T_H_S: finger_print_scanner's pose expressed in main_holder's own local frame at the correctly
 # assembled position, derived via grasp.compute_relative_pose() after temporarily reparenting in mefron.usd.

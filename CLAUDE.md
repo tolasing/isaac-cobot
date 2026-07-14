@@ -54,14 +54,20 @@ on real hardware.
 `scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
 `assets/mefron/`'s SEKTION-cabinet mount plate (world position
 `[2.74097, -4.782, 0.7924]`), runs a drag-follow teleop loop, and provides
-J(grasp, via an NVIDIA Grasp Editor-exported pose)/P(lace) keys that snap
-the teleop target to a live-computed pose, plus C/O keys for the gripper.
-P's placement pose is computed by measuring the CURRENT live gripper-to-
-part offset (not a fixed constant) and applying it to `finger_print_scanner`'s
-live-computed target pose on `main_holder` — so it self-corrects to
-whatever grasp J actually produced. There is no G key: an earlier
-hand-derived-constant grasp-approach pose has been removed in favor of J.
-Opens `mefron.usd` directly via `open_stage()`.
+one grasp key per `config.GRASP_TARGETS` entry (J: `finger_print_scanner`,
+B: `backpanel_support`, via NVIDIA Grasp Editor-exported poses) plus P(lace),
+all snapping the teleop target to a live-computed pose, plus C/O keys for
+the gripper. Pressing a grasp key also stages that object's own yaml-specified
+finger widths (`cspace_position`/`pregrasp_cspace_position`) onto the
+`GripperKeyboardControl` instance and immediately opens the gripper to its
+pregrasp width — so C/O ramp toward whichever object was grasped last, not
+one fixed global width. P's placement pose is computed by measuring the
+CURRENT live gripper-to-part offset (not a fixed constant) and applying it
+to `finger_print_scanner`'s live-computed target pose on `main_holder` — so
+it self-corrects to whatever grasp J actually produced (P is not yet
+generalized to `backpanel_support`). There is no G key: an earlier
+hand-derived-constant grasp-approach pose has been removed in favor of
+J/B. Opens `mefron.usd` directly via `open_stage()`.
 
 `scripts/mefron_gripper_probe.py` imports just the Franka hand +
 `panda_leftfinger`/`panda_rightfinger` + `ee_link` (no arm, no motion_gen)
@@ -78,6 +84,14 @@ only works when `mefron.usd` is opened directly, so active work happens in
 `mefron.py`. See `docs/mefron-history.md` for both files' full histories.
 
 Current constants (`scripts/mefron_lib/config.py`):
+- `GRASP_TARGETS`: dict keyed by object name (`finger_print_scanner`,
+  `backpanel_support`), each entry holding the keyboard `key` (a
+  `carb.input.KeyboardInput` attribute name, resolved via `getattr` in
+  `teleop.py` since `config.py` stays omni/curobo-import-free), `yaml_path`,
+  `grasp_name`, and `part_prim_path`. Replaces the old singular
+  `GRASP_EDITOR_YAML_PATH`/`GRASP_EDITOR_GRASP_NAME` constants. Finger
+  widths themselves aren't stored here — `grasp.compute_grasp_finger_widths_from_file()`
+  reads `cspace_position`/`pregrasp_cspace_position` from the yaml live.
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`:
   `local_position=[-0.05765, 0.02069, 0.01565]`,
   `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`. (There is no
@@ -85,6 +99,10 @@ Current constants (`scripts/mefron_lib/config.py`):
   live grasp offset instead of using a fixed constant; see above.)
 - `_TELEOP_VELOCITY_SCALE = _TELEOP_ACCELERATION_SCALE = 0.5`,
   `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
+  `GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` are now only the
+  *default* widths a fresh `GripperKeyboardControl` starts with, before any
+  grasp key has been pressed — each grasp key overrides them for the rest
+  of the run via `set_grasp_widths()`.
 
 Currently open issues (see the linked docs for full diagnosis):
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both

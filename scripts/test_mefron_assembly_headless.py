@@ -68,8 +68,9 @@ def main() -> None:
 
     # Sanity-check the pose math directly, independent of whether cuRobo can reach it.
     scanner_trans, scanner_quat = SingleXFormPrim(prim_path="/World/finger_print_scanner").get_world_pose()
+    finger_print_scanner_target = config.GRASP_TARGETS["finger_print_scanner"]
     approach_trans, approach_quat = grasp.compute_grasp_approach_pose_from_file(
-        config.GRASP_EDITOR_YAML_PATH, config.GRASP_EDITOR_GRASP_NAME
+        finger_print_scanner_target["yaml_path"], finger_print_scanner_target["grasp_name"]
     )
     print(
         f"[test_mefron_assembly_headless] scanner world pose: pos={scanner_trans} quat_wxyz={scanner_quat}",
@@ -93,7 +94,7 @@ def main() -> None:
 
     # Phase 1: simulate pressing J (grasp-approach) before run_teleop_loop() starts.
     gripper_control = teleop.GripperKeyboardControl()
-    gripper_control.request_grasp_approach_from_file()
+    gripper_control.request_grasp_approach_from_file("finger_print_scanner")
     teleop.run_teleop_loop(
         simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS_PER_PHASE, gripper_control=gripper_control
     )

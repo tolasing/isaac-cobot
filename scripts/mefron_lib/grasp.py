@@ -52,6 +52,23 @@ def compute_grasp_approach_pose_from_file(
     return grasp_spec.compute_gripper_pose_from_rigid_body_pose(grasp_name, part_trans, part_quat)
 
 
+def compute_grasp_finger_widths_from_file(
+    yaml_path: str,
+    grasp_name: str,
+    finger_joint_name: str = "panda_finger_joint1",
+):
+    """Reads the yaml's pregrasp_cspace_position (approach/open width) and cspace_position
+    (grasp/closed width) for finger_joint_name -- the object-specific widths Grasp Editor authored,
+    to replace the single global GRIPPER_OPEN_POSITION/GRIPPER_CLOSED_POSITION once a grasp is selected."""
+    from isaacsim.robot_setup.grasp_editor import import_grasps_from_file
+
+    grasp_spec = import_grasps_from_file(str(yaml_path))
+    grasp_dict = grasp_spec.get_grasp_dict_by_name(grasp_name)
+    open_position = grasp_dict["pregrasp_cspace_position"][finger_joint_name]
+    closed_position = grasp_dict["cspace_position"][finger_joint_name]
+    return open_position, closed_position
+
+
 def measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat):
     """CURRENT live gripper-to-part relative pose (T_part_gripper) -- not a fixed nominal offset,
     since J's grasp (not a hand-derived constant) is what actually determines this now."""

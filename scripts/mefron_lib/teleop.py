@@ -1,6 +1,7 @@
 """Interactive cuRobo teleop loop: builds the draggable target, warms up MotionGen, and runs the
-drag-follow plan/apply loop with gripper open/close and P/J assembly/grasp-editor pose snaps. See
-docs/mefron-history.md for the Stop/Play-rebuild and physics-timing gotchas this loop works around.
+drag-follow plan/apply loop with gripper open/close and P/J/B assembly/grasp-editor pose snaps (one
+key per config.GRASP_TARGETS entry). See docs/mefron-history.md for the Stop/Play-rebuild and
+physics-timing gotchas this loop works around.
 """
 
 from __future__ import annotations
@@ -13,21 +14,34 @@ from isaacsim.core.utils.types import ArticulationAction
 from pxr import Sdf, UsdPhysics
 
 from . import config
-from .grasp import compute_assembly_grasp_target, compute_grasp_approach_pose_from_file
+from .grasp import (
+    compute_assembly_grasp_target,
+    compute_grasp_approach_pose_from_file,
+    compute_grasp_finger_widths_from_file,
+)
 
 
 class GripperKeyboardControl:
     """Open/closed request for the Franka's gripper, read once per teleop frame, plus two one-shot
-    snap-to-pose requests (P: assembly placement, J: grasp-editor-yaml grasp approach) consumed
-    exactly once via request_*/consume_*."""
+    snap-to-pose requests (P: assembly placement, J/B/...: grasp-editor-yaml grasp approach for
+    whichever config.GRASP_TARGETS object the key maps to) consumed exactly once via
+    request_*/consume_*. open_position/closed_position start at the global config defaults and are
+    overwritten by set_grasp_widths() once a grasp-approach request has been consumed, so C/O ramp
+    toward whichever object was last selected instead of one fixed global width."""
 
     def __init__(self) -> None:
         self.closed = False
+        self.open_position = config.GRIPPER_OPEN_POSITION
+        self.closed_position = config.GRIPPER_CLOSED_POSITION
         self._assembly_target_requested = False
-        self._grasp_approach_from_file_requested = False
+        self._grasp_approach_object_requested: str | None = None
 
     def set_closed(self, closed: bool) -> None:
         self.closed = closed
+
+    def set_grasp_widths(self, open_position: float, closed_position: float) -> None:
+        self.open_position = open_position
+        self.closed_position = closed_position
 
     def request_assembly_target(self) -> None:
         self._assembly_target_requested = True
@@ -37,25 +51,31 @@ class GripperKeyboardControl:
         self._assembly_target_requested = False
         return requested
 
-    def request_grasp_approach_from_file(self) -> None:
-        self._grasp_approach_from_file_requested = True
+    def request_grasp_approach_from_file(self, object_name: str) -> None:
+        self._grasp_approach_object_requested = object_name
 
-    def consume_grasp_approach_from_file_request(self) -> bool:
-        requested = self._grasp_approach_from_file_requested
-        self._grasp_approach_from_file_requested = False
+    def consume_grasp_approach_from_file_request(self) -> str | None:
+        requested = self._grasp_approach_object_requested
+        self._grasp_approach_object_requested = None
         return requested
 
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
     """Subscribes to keyboard events: C closes the gripper, O opens it, P snaps /World/target to the
-    assembly-placement pose, J snaps it to the Grasp Editor-exported yaml's grasp-approach pose
-    (config.GRASP_EDITOR_YAML_PATH/GRASP_NAME)."""
+    assembly-placement pose, and each config.GRASP_TARGETS entry's own key (J for
+    finger_print_scanner, B for backpanel_support, ...) snaps it to that object's Grasp
+    Editor-exported grasp-approach pose and stages its yaml-specified finger widths."""
     import carb.input
     import omni.appwindow
 
     control = GripperKeyboardControl()
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
     input_iface = carb.input.acquire_input_interface()
+
+    grasp_key_bindings = {
+        getattr(carb.input.KeyboardInput, target["key"]): object_name
+        for object_name, target in config.GRASP_TARGETS.items()
+    }
 
     def _on_keyboard_event(event) -> bool:
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
@@ -65,8 +85,8 @@ def build_gripper_keyboard_control() -> GripperKeyboardControl:
                 control.set_closed(False)
             elif event.input == carb.input.KeyboardInput.P:
                 control.request_assembly_target()
-            elif event.input == carb.input.KeyboardInput.J:
-                control.request_grasp_approach_from_file()
+            elif event.input in grasp_key_bindings:
+                control.request_grasp_approach_from_file(grasp_key_bindings[event.input])
         return True
 
     # Kept alive on the control object so the subscription isn't garbage-collected.
@@ -159,7 +179,7 @@ def run_teleop_loop(
     gripper_control: GripperKeyboardControl | None = None,
 ) -> None:
     """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen plan/apply loop, rebuilding
-    the articulation on every fresh Play and supporting gripper open/close plus P/J grasp/assembly pose snaps."""
+    the articulation on every fresh Play and supporting gripper open/close plus P/J/B grasp/assembly pose snaps."""
     import time
 
     from curobo.types.base import TensorDeviceType
@@ -273,11 +293,21 @@ def run_teleop_loop(
             if gripper_control.consume_assembly_target_request():
                 cube_position, cube_orientation = compute_assembly_grasp_target(ee_link_prim_path)
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
-            elif gripper_control.consume_grasp_approach_from_file_request():
-                cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
-                    config.GRASP_EDITOR_YAML_PATH, config.GRASP_EDITOR_GRASP_NAME
-                )
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
+            else:
+                requested_object = gripper_control.consume_grasp_approach_from_file_request()
+                if requested_object is not None:
+                    grasp_target = config.GRASP_TARGETS[requested_object]
+                    cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
+                        grasp_target["yaml_path"],
+                        grasp_target["grasp_name"],
+                        part_prim_path=grasp_target["part_prim_path"],
+                    )
+                    target.set_world_pose(position=cube_position, orientation=cube_orientation)
+                    open_position, closed_position = compute_grasp_finger_widths_from_file(
+                        grasp_target["yaml_path"], grasp_target["grasp_name"]
+                    )
+                    gripper_control.set_grasp_widths(open_position, closed_position)
+                    gripper_control.set_closed(False)
 
         sim_js = robot.get_joints_state()
         if sim_js is None:
@@ -344,7 +374,7 @@ def run_teleop_loop(
         # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
         # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.
         if gripper_control is not None:
-            gripper_target = config.GRIPPER_CLOSED_POSITION if gripper_control.closed else config.GRIPPER_OPEN_POSITION
+            gripper_target = gripper_control.closed_position if gripper_control.closed else gripper_control.open_position
             if gripper_setpoint is None:
                 gripper_setpoint = gripper_target
             now = time.time()
