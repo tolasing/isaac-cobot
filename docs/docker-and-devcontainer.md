@@ -56,6 +56,18 @@ sends you here.
   pick up the new mounts. Not yet re-verified end-to-end with a live GUI
   launch after this fix — do that before relying on it.
 
+- `git-lfs` — installed via apt in `docker/Dockerfile.base` (inherited by
+  `Dockerfile.curobo`), and `git lfs install && git lfs pull` added to both
+  devcontainers' `postCreateCommand` (alongside the existing
+  `safe.directory` fix — same hook point, since the repo is bind-mounted
+  live and shares one `.git` with the host). **Bug found and fixed**: once
+  `assets/mefron/**` moved to Git LFS tracking, any checkout without the
+  `git-lfs` CLI leaves every tracked `.usd`/CAD file as a ~130-byte pointer
+  stub instead of the real binary — Isaac Sim then fails to open the scene
+  with `Failed to get crate info from file`. Symptom looks like a broken
+  USD file but is actually a missing LFS smudge; fix is `apt-get install
+  git-lfs && git lfs pull`, not anything USD-side.
+
 ## Needs verification
 
 - The devcontainer X11/GUI-forwarding fix above is still unconfirmed

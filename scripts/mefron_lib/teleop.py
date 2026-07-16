@@ -35,6 +35,9 @@ class GripperKeyboardControl:
         self.closed_position = config.GRIPPER_CLOSED_POSITION
         self._assembly_target_requested = False
         self._grasp_approach_object_requested: str | None = None
+        # Last config.GRASP_TARGETS key whose grasp-approach request was made -- lets P look up the
+        # matching config.ASSEMBLY_RELATIONSHIPS entry instead of a single hardcoded object.
+        self.last_grasped_object: str | None = None
 
     def set_closed(self, closed: bool) -> None:
         self.closed = closed
@@ -46,6 +49,12 @@ class GripperKeyboardControl:
     def request_assembly_target(self) -> None:
         self._assembly_target_requested = True
 
+    def has_pending_assembly_target_request(self) -> bool:
+        """Peek without consuming -- lets the teleop loop hold a P request open across frames
+        until the robot goes idle, instead of consuming it (and snapping /World/target) while a
+        plan is still in flight, where the snap would be silently discarded."""
+        return self._assembly_target_requested
+
     def consume_assembly_target_request(self) -> bool:
         requested = self._assembly_target_requested
         self._assembly_target_requested = False
@@ -53,6 +62,7 @@ class GripperKeyboardControl:
 
     def request_grasp_approach_from_file(self, object_name: str) -> None:
         self._grasp_approach_object_requested = object_name
+        self.last_grasped_object = object_name
 
     def consume_grasp_approach_from_file_request(self) -> str | None:
         requested = self._grasp_approach_object_requested
@@ -62,9 +72,10 @@ class GripperKeyboardControl:
 
 def build_gripper_keyboard_control() -> GripperKeyboardControl:
     """Subscribes to keyboard events: C closes the gripper, O opens it, P snaps /World/target to the
-    assembly-placement pose, and each config.GRASP_TARGETS entry's own key (J for
-    finger_print_scanner, B for backpanel_support, ...) snaps it to that object's Grasp
-    Editor-exported grasp-approach pose and stages its yaml-specified finger widths."""
+    assembly-placement pose for whichever object was last grasped, and each config.GRASP_TARGETS
+    entry's own key (J for finger_print_scanner, B for backpanel_support, K for pcb_assembly, ...)
+    snaps it to that object's Grasp Editor-exported grasp-approach pose and stages its
+    yaml-specified finger widths."""
     import carb.input
     import omni.appwindow
 
@@ -218,6 +229,9 @@ def run_teleop_loop(
     # Real elapsed time since the last waypoint was applied, and the plan's intended per-waypoint duration.
     last_cmd_time = None
     interpolation_dt = 0.02
+    # Set by the P handler to the real assembly-placement pose while /World/target is snapped to an
+    # intermediate straight-up lift waypoint first; applied once that lift plan finishes executing.
+    pending_final_pose = None
     obstacles = None
     step_index = 0
     not_playing_frames = 0
@@ -248,6 +262,7 @@ def run_teleop_loop(
             cmd_plan = None
             cmd_idx = 0
             last_cmd_time = None
+            pending_final_pose = None
             obstacles = None
             step_index = 0
             gripper_setpoint = None
@@ -290,9 +305,34 @@ def run_teleop_loop(
         # One-shot P/J snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not before --
         # otherwise cube_position would already reflect the post-snap pose when target_pose is seeded, making the debounce distance 0 forever.
         if gripper_control is not None:
-            if gripper_control.consume_assembly_target_request():
-                cube_position, cube_orientation = compute_assembly_grasp_target(ee_link_prim_path)
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
+            if gripper_control.has_pending_assembly_target_request():
+                # Only actually kick off the align/drop sequence once the robot is idle. Consuming
+                # the request and snapping /World/target while cmd_plan is still in flight (e.g. P
+                # pressed a beat before the previous drag/grasp motion finished settling) would be
+                # silently discarded -- the trigger-if below requires cmd_plan is None to plan
+                # anything -- and the CURRENT in-flight plan's completion would then wrongly consume
+                # pending_final_pose, sending the robot straight from wherever it was to the final
+                # assembly pose with no hover stop at all.
+                if cmd_plan is None:
+                    gripper_control.consume_assembly_target_request()
+                    object_name = gripper_control.last_grasped_object or "finger_print_scanner"
+                    # Looked up by part_prim_path rather than assuming a "{object_name}_on_main_holder"
+                    # key -- not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
+                    part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
+                    relationship_name = next(
+                        name
+                        for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
+                        if relationship["part_prim_path"] == part_prim_path
+                    )
+                    final_position, final_orientation = compute_assembly_grasp_target(ee_link_prim_path, relationship_name)
+                    pending_final_pose = (final_position, final_orientation)
+                    # Snap to an aligned waypoint first -- final X/Y and final orientation, but held at the
+                    # constant ASSEMBLY_LIFT_HEIGHT -- so the only motion left for the second (pending_final_pose)
+                    # leg is a straight drop in Z. A direct plan to the final pose was dragging/clipping the
+                    # carried object through the table and nearby props.
+                    cube_position = np.array([final_position[0], final_position[1], config.ASSEMBLY_LIFT_HEIGHT])
+                    cube_orientation = final_orientation
+                    target.set_world_pose(position=cube_position, orientation=cube_orientation)
             else:
                 requested_object = gripper_control.consume_grasp_approach_from_file_request()
                 if requested_object is not None:
@@ -370,6 +410,10 @@ def run_teleop_loop(
                 if cmd_idx >= len(cmd_plan.position):
                     cmd_idx = 0
                     cmd_plan = None
+                    if pending_final_pose is not None:
+                        final_position, final_orientation = pending_final_pose
+                        pending_final_pose = None
+                        target.set_world_pose(position=final_position, orientation=final_orientation)
 
         # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
         # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.

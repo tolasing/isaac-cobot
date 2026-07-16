@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import omni.kit.commands
 import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
 from pxr import UsdPhysics
@@ -19,6 +20,15 @@ from . import config
 
 def mount_franka() -> None:
     from curobo.util_file import get_assets_path, join_path
+
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(config.ROBOT_PRIM_PATH).IsValid():
+        # mefron.usd is meant to stay Franka-free -- the robot only ever exists in this runtime
+        # session -- but a stray Save can persist it to disk anyway. Without this, import_cr5's
+        # MovePrim silently uniquifies to e.g. /World/Franka_01 instead of landing on ROBOT_PRIM_PATH,
+        # leaving a duplicate robot behind on every subsequent run. Same pattern as
+        # mefron_gripper_probe.py's spawn_gripper_probe().
+        omni.kit.commands.execute("DeletePrims", paths=[config.ROBOT_PRIM_PATH])
 
     urdf_path = Path(join_path(get_assets_path(), config.FRANKA_URDF_RELATIVE_PATH))
     import_cr5(

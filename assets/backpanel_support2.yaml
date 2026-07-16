@@ -1,0 +1,25 @@
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /World/backpanel_support
+gripper_frame: /World/panda_hand
+
+grasps:
+   "grasp_0":
+      confidence: 1.0
+      position: [-0.0013639983041344012, 0.037852825649548484, 0.11875287348213956]
+      orientation: {w: 0.001845266463775387, xyz: [0.9997663731432956, -0.0025140512807097504, -0.02138863412506867]}
+      cspace_position:
+         panda_finger_joint1: 0.00 #2002393826842308
+      pregrasp_cspace_position:
+         panda_finger_joint1: 0.01
+
+   "grasp_1":
+      confidence: 1.0
+      position: [-0.0036379449592057805, 0.03669743256765033, 0.1188451313001625]
+      orientation: {w: -0.0032816559217837007, xyz: [0.9999336891886433, -0.0007113539961434515, -0.011015531557442665]}
+      cspace_position:
+         panda_finger_joint1: 0.00  #20500258542597294
+      pregrasp_cspace_position:
+         panda_finger_joint1: 0.01
+

@@ -31,10 +31,7 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 OBSTACLE_PRIM_PATHS = [
     "/World/packing_table",
     "/World/packing_table_01",
-    "/World/finger_print_scanner",
-    "/World/main_holder",
-    "/World/screen",
-    "/World/backpanel_support",
+    "/World/main_holder_jig",
     MOUNT_PLATE_PRIM_PATH,
 ]
 
@@ -44,6 +41,11 @@ _TELEOP_SETTLE_FRAMES = 20
 _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
 _POSE_DELTA_THRESHOLD = 1.0e-3
 _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
+
+# World-frame Z height P holds while it aligns X/Y/orientation to the assembly-placement pose, before
+# dropping straight down in Z to the actual placement pose -- a direct point-to-point plan_single to
+# the final pose was clipping/dragging the carried object through the table and nearby props.
+ASSEMBLY_LIFT_HEIGHT = 1.3
 
 # Frames to wait after is_playing() first turns True before constructing SingleArticulation --
 # PhysX needs a few real steps before its simulation view is actually ready.
@@ -55,8 +57,8 @@ _TELEOP_TIME_DILATION_FACTOR = 0.3
 
 # Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <= 0.25 as a
 # special case: it swaps in finetune_trajopt_slow.yml and raises maximum_trajectory_dt to compensate; 0.2 stays under that threshold.
-_TELEOP_VELOCITY_SCALE = 0.5
-_TELEOP_ACCELERATION_SCALE = 0.5
+_TELEOP_VELOCITY_SCALE = 0.4
+_TELEOP_ACCELERATION_SCALE = 0.4
 
 # Grasp-physics constants, ported from build_scene_mefron.py's apply_gripper_friction()/stiffen_gripper_drive().
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
@@ -90,19 +92,43 @@ GRASP_TARGETS = {
     },
     "backpanel_support": {
         "key": "B",
-        "yaml_path": REPO_ROOT / "assets" / "backpanel_support.yaml",
+        "yaml_path": REPO_ROOT / "assets" / "backpanel_support2.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
     },
+    "pcb_assembly": {
+        "key": "K",
+        "yaml_path": REPO_ROOT / "assets" / "PCB_assembly.yaml",
+        "grasp_name": "grasp_0",
+        "part_prim_path": "/World/PCB_Assembly_color_fixed",
+    },
 }
 
-# T_H_S: finger_print_scanner's pose expressed in main_holder's own local frame at the correctly
-# assembled position, derived via grasp.compute_relative_pose() after temporarily reparenting in mefron.usd.
+# T_H_S: finger_print_scanner's / backpanel_support's pose expressed in main_holder's own local frame
+# at the correctly assembled position, derived via grasp.compute_relative_pose() from each part's live
+# world pose (no reparenting needed -- see docs/grasp-and-assembly-offsets.md).
 ASSEMBLY_RELATIONSHIPS = {
     "finger_print_scanner_on_main_holder": {
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",
         "local_position": [-0.05765, 0.02069, 0.01565],
-        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
-    }
+        "local_orientation_wxyz": [0.0, 0.0, 0.0, 1.0],
+    },
+    "backpanel_support_on_main_holder": {
+        "part_prim_path": "/World/backpanel_support",
+        "mount_prim_path": "/World/main_holder",
+        "local_position": [0.023463946069672652, -0.013916167562435, 0.006499950486007643],
+        "local_orientation_wxyz": [
+            1.146981958298904e-07,
+            0.9999999999991531,
+            -5.587935447688139e-08,
+            1.2951986718679054e-06,
+        ],
+    },
+    "pcb_assembly_on_backpanel_support": {
+        "part_prim_path": "/World/PCB_Assembly_color_fixed",
+        "mount_prim_path": "/World/backpanel_support",
+        "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.008999995231628418],
+        "local_orientation_wxyz": [0.7063401483274144, 0.0, 0.0, 0.7078725837753616],
+    },
 }
