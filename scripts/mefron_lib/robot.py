@@ -220,8 +220,14 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     starts sitting right on this mesh's own surface) plus a baked-in enabled RigidBodyAPI (confirmed
     live 2026-07-17: PhysX logs "missing xformstack reset when child of another enabled rigid body"
     for this prim under panda_hand once mounted -- a nested-rigid-body hierarchy, not merely a stray
-    collider). Both stripped below so the asset is genuinely visual-only, matching every comment in
-    this module that already assumed that."""
+    collider). Both disabled below via CollisionEnabled/RigidBodyEnabled=False rather than removing
+    the APIs outright: a 2026-07-18 attempt at prim.RemoveAPI(...) instead (to also silence the
+    xformstack warning, which disabling alone doesn't -- that check is structural, on
+    HasAPI(RigidBodyAPI), not on whether the instance is enabled) coincided with the suction gripper
+    mesh going invisible in the user's own GUI run; reverted back to this disable-only version to
+    isolate whether RemoveAPI was actually the cause before trying again. So: the xformstack warning
+    is expected to still appear with this version -- that's the known tradeoff pending a fix that
+    gets both."""
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     gripper_prim_path = f"{prim_path}/panda_hand/{config.SUCTION_GRIPPER_PRIM_NAME}"
