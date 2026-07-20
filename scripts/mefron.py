@@ -146,6 +146,12 @@ def main() -> None:
         "P to place on main_holder.",
         flush=True,
     )
+    conveyor_control = teleop.build_conveyor_control()
+    print(
+        f"[mefron] Conveyor: press {config.CONVEYOR_TOGGLE_KEY} to send main_holder_jig forward to "
+        f"Y={config.CONVEYOR_JIG_FORWARD_Y}, press again to send it back to Y={config.CONVEYOR_JIG_BACKWARD_Y}.",
+        flush=True,
+    )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
     arms = [
             {
@@ -187,7 +193,7 @@ def main() -> None:
             "name": "arm3",
         }
     ]
-    teleop.run_teleop_loop(simulation_app, arms)
+    teleop.run_teleop_loop(simulation_app, arms, conveyor_control=conveyor_control)
     simulation_app.close()
 
 

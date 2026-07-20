@@ -198,6 +198,29 @@ MOUNT_3_POSITION = [3.85262, -3.55485, 0.78]
 MOUNT_3_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_3_PRIM_PATH = "/World/target3"
 
+# ConveyorBelt_A24. Driven directly by teleop.ConveyorControl via PhysX's own
+# PhysxSurfaceVelocityAPI/surfaceVelocity attribute on CONVEYOR_BELT_PRIM_PATH -- NOT through an
+# OmniGraph/IsaacConveyor node. That was tried first (Create > Isaac Sim > Conveyor); abandoned
+# 2026-07-20 after repeated live-confirmed failures: the node's own "Enabled" input ended up
+# unchecked (silently means the node never computes at all), and separately, deleting the graph
+# entirely left a nonzero surfaceVelocity value permanently orphaned on Belt's own USD spec, since
+# that attribute is authored directly on the rigid body and isn't cleared by removing whatever
+# graph/node used to drive it -- only removing the PhysxSurfaceVelocityAPI schema itself stopped
+# PhysX from continuing to apply it. Driving the attribute directly from this one Python class avoids
+# all of that: nothing is hand-authored in mefron.usd for it to depend on.
+CONVEYOR_BELT_PRIM_PATH = "/World/ConveyorBelt_A24/Belt"
+# Local-frame direction (Belt's own axes, not world) confirmed live 2026-07-20 to move the belt
+# forward at this magnitude -- re-verify once ConveyorControl is actually driving it, though: this
+# axis flipped between local X and Y more than once across earlier graph deletions/recreations, so
+# treat this as a starting point, not a settled fact.
+CONVEYOR_LOCAL_VELOCITY_DIRECTION = [1.0, 0.0, 0.0]
+CONVEYOR_SPEED = 1.0
+MAIN_HOLDER_JIG_PRIM_PATH = "/World/main_holder_jig"
+CONVEYOR_JIG_FORWARD_Y = -3.6
+CONVEYOR_JIG_BACKWARD_Y = -4.7
+# Number-row "1", not numpad -- carb.input.KeyboardInput.KEY_1.
+CONVEYOR_TOGGLE_KEY = "KEY_1"
+
 
 # Suction gripper end-effector, added onto arm 2 only (arm 1 keeps the Franka's stock parallel-jaw
 # hand). Custom-designed in SolidWorks for this Franka flange directly (Ø63mm mount face = Franka's
@@ -262,15 +285,24 @@ SUCTION_DETACH_KEY = "L"  # reLease
 
 SCREEN_PRIM_PATH = "/World/screen"
 
-# Exactly the extension set isaacsim.exp.full.kit adds on top of isaacsim.exp.base.python.kit
-# (diffed directly from both .kit files' [dependencies] tables). Mounting a second Franka (a second
-# native URDF import in one process) crashes Kit's isaacsim.asset.importer.urdf plugin if these are
-# already loaded at import time -- confirmed live -- but enabling them AFTER both Frankas are mounted
+# Mostly the extension set isaacsim.exp.full.kit adds on top of isaacsim.exp.base.python.kit (diffed
+# directly from both .kit files' [dependencies] tables). Mounting a second Franka (a second native
+# URDF import in one process) crashes Kit's isaacsim.asset.importer.urdf plugin if these are already
+# loaded at import time -- confirmed live -- but enabling them AFTER both Frankas are mounted
 # reproduces the identical final feature set with zero crash (confirmed live: all 122 enable cleanly,
 # zero failures, matching what mefron.py needs for its Physics debug-viz menu). See
 # robot.mount_franka()'s own docstring and kit_experience.enable_full_experience_extensions().
+#
+# isaacsim.asset.gen.conveyor/.ui are the one deliberate addition beyond that diffed set -- neither is
+# a dependency of either experience. Not required by teleop.ConveyorControl itself anymore (that
+# class now drives ConveyorBelt_A24's PhysxSurfaceVelocityAPI directly, see
+# CONVEYOR_BELT_PRIM_PATH's own comment for why the OmniGraph/IsaacConveyor node approach was
+# abandoned), but kept here since .ui's "Create > Isaac Sim > Conveyor" menu command is still useful
+# for building any of the other ConveyorBelt_A01-A49 assets the same way.
 FULL_EXPERIENCE_EXTRA_EXTENSIONS = [
     "isaacsim.app.setup",
+    "isaacsim.asset.gen.conveyor",
+    "isaacsim.asset.gen.conveyor.ui",
     "isaacsim.asset.gen.omap",
     "isaacsim.asset.gen.omap.ui",
     "isaacsim.asset.importer.heightmap",

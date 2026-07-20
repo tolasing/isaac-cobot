@@ -270,6 +270,131 @@ def build_surface_gripper_keyboard_control(
     return control
 
 
+class ConveyorControl:
+    """Toggled by config.CONVEYOR_TOGGLE_KEY (number-row '1'): drives config.CONVEYOR_BELT_PRIM_PATH's
+    PhysX PhysxSurfaceVelocityAPI directly to carry config.MAIN_HOLDER_JIG_PRIM_PATH between its two
+    measured world-Y end positions -- config.CONVEYOR_JIG_BACKWARD_Y (idle start) and
+    config.CONVEYOR_JIG_FORWARD_Y (the far end) -- reversing direction each press. step() must be
+    called once per teleop frame (see run_teleop_loop()); it both applies a pending toggle request
+    and, while in transit, checks the jig's live world Y against whichever end it's heading toward,
+    zeroing the belt's surfaceVelocity once reached.
+
+    A press mid-transit is ignored (not queued, not a reversal) -- deliberately simple: this belt's
+    only measured, confirmed-safe behavior is a full back-to-front or front-to-back run, and half-way
+    reversals were never asked for or tested.
+
+    Drives the PhysX attribute directly rather than through an OmniGraph/IsaacConveyor node -- see
+    config.CONVEYOR_BELT_PRIM_PATH's own comment for why that approach was abandoned (a disabled
+    node input, and a graph deletion leaving a stale surfaceVelocity value orphaned on the belt
+    forever, both live-confirmed 2026-07-20). Applies PhysxSurfaceVelocityAPI to the belt prim itself
+    on first use if it isn't already there -- idempotent, so this class has no dependency on anything
+    being hand-authored in mefron.usd."""
+
+    def __init__(self) -> None:
+        self._state = "back"  # "back" | "moving_forward" | "front" | "moving_backward"
+        self._toggle_requested = False
+        self._belt_prim = None
+        self._warned_missing_belt = False
+
+    def reset(self) -> None:
+        """Called on every fresh Play (see run_teleop_loop()) -- without this, a '1' press queued
+        before a Stop (or before mefron.py's own forced timeline.stop() during warmup) would sit on
+        this object (built once, outside the per-Play arm-state rebuild) and fire the instant the
+        next Play starts, with no new keypress at all; worse, once "moving" it silently ignores
+        every further press until it reaches an end (see class docstring), making the belt look
+        completely unresponsive to the key. Stop reverts the stage to its initial authored transform,
+        so main_holder_jig is physically back at the start position too -- state="back" matches
+        that. Re-zeroing surfaceVelocity here (not just once ever) also covers Stop reverting
+        Belt's own authored default back to whatever was last saved."""
+        self._state = "back"
+        self._toggle_requested = False
+        self._set_local_velocity([0.0, 0.0, 0.0])
+
+    def request_toggle(self) -> None:
+        self._toggle_requested = True
+
+    def _resolve_belt(self):
+        if self._belt_prim is not None:
+            return self._belt_prim
+        from pxr import PhysxSchema
+
+        stage = omni.usd.get_context().get_stage()
+        prim = stage.GetPrimAtPath(config.CONVEYOR_BELT_PRIM_PATH)
+        if not prim.IsValid():
+            if not self._warned_missing_belt:
+                print(
+                    f"[mefron_lib] WARNING: conveyor belt {config.CONVEYOR_BELT_PRIM_PATH} not "
+                    f"found -- key {config.CONVEYOR_TOGGLE_KEY} will do nothing.",
+                    flush=True,
+                )
+                self._warned_missing_belt = True
+            return None
+        if not prim.HasAPI(PhysxSchema.PhysxSurfaceVelocityAPI):
+            PhysxSchema.PhysxSurfaceVelocityAPI.Apply(prim)
+        self._belt_prim = prim
+        return prim
+
+    def _set_local_velocity(self, vector) -> None:
+        from pxr import Gf, PhysxSchema
+
+        prim = self._resolve_belt()
+        if prim is None:
+            return
+        PhysxSchema.PhysxSurfaceVelocityAPI(prim).GetSurfaceVelocityAttr().Set(Gf.Vec3f(*(float(v) for v in vector)))
+
+    def _jig_world_y(self) -> float:
+        xform = SingleXFormPrim(prim_path=config.MAIN_HOLDER_JIG_PRIM_PATH)
+        position, _ = xform.get_world_pose()
+        return float(position[1])
+
+    def step(self) -> None:
+        if self._toggle_requested:
+            self._toggle_requested = False
+            direction = np.array(config.CONVEYOR_LOCAL_VELOCITY_DIRECTION)
+            # One-time write at toggle time only -- confirmed live 2026-07-20 that reasserting this
+            # every frame (attempted as a smoothness fix) stopped it from moving at all instead, so
+            # reverted back to this despite the jerkiness that motivated trying that in the first
+            # place; root cause of the jerkiness itself is still open.
+            if self._state == "back":
+                self._set_local_velocity(direction * config.CONVEYOR_SPEED)
+                self._state = "moving_forward"
+                print("[mefron] conveyor: moving main_holder_jig forward.", flush=True)
+            elif self._state == "front":
+                self._set_local_velocity(-direction * config.CONVEYOR_SPEED)
+                self._state = "moving_backward"
+                print("[mefron] conveyor: moving main_holder_jig backward.", flush=True)
+            # Mid-transit presses are ignored -- see class docstring.
+
+        if self._state == "moving_forward" and self._jig_world_y() >= config.CONVEYOR_JIG_FORWARD_Y:
+            self._set_local_velocity([0.0, 0.0, 0.0])
+            self._state = "front"
+            print("[mefron] conveyor: main_holder_jig reached forward end.", flush=True)
+        elif self._state == "moving_backward" and self._jig_world_y() <= config.CONVEYOR_JIG_BACKWARD_Y:
+            self._set_local_velocity([0.0, 0.0, 0.0])
+            self._state = "back"
+            print("[mefron] conveyor: main_holder_jig reached backward end.", flush=True)
+
+
+def build_conveyor_control(key: str = config.CONVEYOR_TOGGLE_KEY) -> ConveyorControl:
+    import carb.input
+    import omni.appwindow
+
+    control = ConveyorControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    toggle_input = getattr(carb.input.KeyboardInput, key)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == toggle_input:
+            control.request_toggle()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
 def get_obstacles(robot_prim_path: str = config.ROBOT_PRIM_PATH, target_prim_path: str = config.TARGET_PRIM_PATH):
     from curobo.util.usd_helper import UsdHelper
 
@@ -658,6 +783,7 @@ def run_teleop_loop(
     simulation_app,
     arms: list[dict],
     max_iterations: int | None = None,
+    conveyor_control: ConveyorControl | None = None,
 ) -> None:
     """Drag each arm's own `target` in the GUI viewport; each robot follows via its own cuRobo
     MotionGen plan/apply loop, rebuilding every arm's articulation on every fresh Play and supporting
@@ -666,7 +792,8 @@ def run_teleop_loop(
     "motion_gen", "robot_cfg", "target", "robot_prim_path", "target_prim_path", "mount_position",
     "mount_orientation_wxyz"; "gripper_control" and "name" are optional (name defaults to
     robot_prim_path and must be unique across arms -- it becomes each arm's SingleArticulation view
-    name, and Isaac Sim's core registry requires that to be unique per articulation)."""
+    name, and Isaac Sim's core registry requires that to be unique per articulation). conveyor_control
+    is stepped once per playing frame alongside the arms, independent of any of them."""
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose
     from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
@@ -709,6 +836,8 @@ def run_teleop_loop(
             # Fresh Play (first ever, or after a Stop) -- rebuild everything bound to the previous physics view.
             for arm in arms:
                 arm["_state"] = _fresh_arm_state()
+            if conveyor_control is not None:
+                conveyor_control.reset()
             step_index = 0
             was_playing = True
 
@@ -718,3 +847,6 @@ def run_teleop_loop(
 
         for arm in arms:
             _step_arm(arm, step_index, tensor_args)
+
+        if conveyor_control is not None:
+            conveyor_control.step()
