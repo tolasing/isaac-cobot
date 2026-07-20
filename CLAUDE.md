@@ -217,6 +217,25 @@ Currently open issues (see the linked docs for full diagnosis):
   headlessly, prefer running against a scratch copy of
   `assets/mefron/factory floor/` rather than the real file, to avoid
   adding to the noise.
+- **Accumulated stray robot prims from the above break rendering, not
+  physics.** If a stray Save (or Ctrl+S) ever catches a session mid-run,
+  whatever's currently mounted (`/World/Franka`, `/World/Franka2`,
+  `/World/Franka3`, and/or the historical intermediate `/panda` path —
+  see `mount_franka()`'s docstring for why `/panda` specifically) gets
+  baked into `mefron.usd`'s saved root layer as an orphaned leftover.
+  Confirmed live: leaving these live during `mefron.py`'s 120-frame
+  post-`open_stage()` settle pump lets PhysX/Fabric/Hydra partially
+  register the *stale* prims before `mount_franka()`'s own per-path
+  cleanup (which only runs right before *that* specific import, too late)
+  ever gets a chance to delete+reimport at the same path — the fresh
+  reimport's physics/motion-planning end up correct (each arm is driven
+  by its own exact, freshly-created prim_path), but the viewport visibly
+  desyncs from it: cuRobo successfully plans and drives the joints, the
+  arm just never appears to move. Fixed by `robot.clear_stray_robot_prims()`,
+  called in `mefron.py` right after `open_stage()` and before the settle
+  pump — in-memory `DeletePrims` only, so (like the rewrite itself) this
+  needs to run on every fresh `open_stage()`, not just once. Full
+  diagnosis: `docs/mefron-history.md`.
 - **`SimulationApp` full experience breaks cuRobo's `packaging` import.**
   Passing `experience=.../isaacsim.exp.full.kit` (needed for the Physics
   debug-visualization menu) makes `from packaging import version` resolve

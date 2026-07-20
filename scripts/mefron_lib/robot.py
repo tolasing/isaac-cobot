@@ -18,6 +18,53 @@ from import_cr5 import import_cr5
 
 from . import config
 
+# The pre-MovePrim intermediate path every mount_franka() import lands at before being relocated to
+# its real destination (see that function's own docstring) -- if a stray Save ever catches a session
+# mid-import, before the MovePrim step runs, /panda itself gets baked into mefron.usd's saved root
+# layer as an orphaned leftover, on top of whatever real arm path(s) also got caught mid-Save.
+_STRAY_HISTORICAL_PANDA_PATH = "/panda"
+
+
+def clear_stray_robot_prims() -> None:
+    """Deletes any pre-existing robot prims (config.ROBOT_PRIM_PATH/ROBOT_2_PRIM_PATH/
+    ROBOT_3_PRIM_PATH, plus the historical stray /panda path) already sitting in the stage the
+    moment open_stage() returns -- leftovers baked into mefron.usd's own saved root layer by a past
+    session's stray Save (mefron.usd is meant to stay Franka-free at rest, but nothing here prevents
+    an accidental Ctrl+S from persisting a mounted robot to disk -- see CLAUDE.md's own gotcha about
+    this file getting silently rewritten on every run).
+
+    mount_franka() already deletes whatever's at its OWN target path right before importing into it
+    -- but only right before THAT specific call, which is too late: confirmed live that leaving
+    stray leftovers live during mefron.py's own 120-frame post-open_stage() settle pump lets
+    PhysX/Fabric/Hydra partially register the STALE prims before mount_franka() ever gets a chance
+    to delete+reimport at the same path. The fresh reimport's physics/motion-planning end up correct
+    regardless (each arm is driven by its own exact, freshly-created prim_path), but rendering
+    visibly desyncs from it -- cuRobo successfully plans and drives the joints, but the viewport
+    never shows the arm moving. Call this right after open_stage(), before that settle pump.
+
+    In-memory only (DeletePrims on the live stage, no stage.Save()) -- matches this codebase's
+    existing policy of never persisting mefron.usd from script code, so the stray specs remain on
+    disk and this needs to run on every fresh open_stage(), not just once ever."""
+    stage = omni.usd.get_context().get_stage()
+    stray_paths = [
+        path
+        for path in (
+            config.ROBOT_PRIM_PATH,
+            config.ROBOT_2_PRIM_PATH,
+            config.ROBOT_3_PRIM_PATH,
+            _STRAY_HISTORICAL_PANDA_PATH,
+        )
+        if stage.GetPrimAtPath(path).IsValid()
+    ]
+    if not stray_paths:
+        return
+    print(
+        f"[mefron_lib] clearing stray robot prim(s) left over from a past session's stray Save: {stray_paths}",
+        flush=True,
+    )
+    omni.kit.commands.execute("DeletePrims", paths=stray_paths)
+    omni.kit.app.get_app().update()
+
 
 def mount_franka(
     prim_path: str = config.ROBOT_PRIM_PATH,

@@ -40,6 +40,13 @@ def main() -> None:
     clear_stale_robot_configuration(config.MEFRON_CONFIGURATION_DIR)
 
     omni.usd.get_context().open_stage(str(config.MEFRON_USD))
+    # Must run before the settle pump below -- see robot.clear_stray_robot_prims()'s own docstring:
+    # leftover Franka/Franka2/Franka3/panda prims baked into mefron.usd's saved root layer by a past
+    # stray Save get partially registered by PhysX/Fabric/Hydra during that pump if left alive this
+    # long, desyncing rendering from the CURRENT run's freshly re-mounted robots (physics/cuRobo
+    # motion planning stays correct regardless -- it addresses each arm by its own exact prim_path).
+    robot.clear_stray_robot_prims()
+
     # mefron.usd's own content resolves asynchronously, same reasoning as
     # build_scene.py's own post-build_factory() frame pump.
     for _ in range(120):
@@ -53,6 +60,12 @@ def main() -> None:
     # mount here (before the full experience's extra extensions load) same as arm 1, see
     # robot.mount_franka()'s own docstring.
     robot.mount_franka(config.ROBOT_2_PRIM_PATH, config.MOUNT_2_POSITION, config.MOUNT_2_ORIENTATION_WXYZ)
+
+    # Third arm: same URDF, same friction/drive tuning, only the destination differs -- safe to
+    # mount here (before the full experience's extra extensions load) same as arm 1, see
+    # robot.mount_franka()'s own docstring.
+    robot.mount_franka(config.ROBOT_3_PRIM_PATH, config.MOUNT_3_POSITION, config.MOUNT_3_ORIENTATION_WXYZ)
+
     # Arm 2 is a suction-only arm -- no parallel-jaw fingers, so no friction/drive tuning for them
     # either. See robot.remove_parallel_jaw_gripper()/attach_suction_gripper()'s own docstrings.
     robot.remove_parallel_jaw_gripper(config.ROBOT_2_PRIM_PATH)
@@ -76,6 +89,13 @@ def main() -> None:
         config.ROBOT_2_PRIM_PATH, config.TARGET_2_PRIM_PATH, has_parallel_jaw_gripper=False
     )
     print("[mefron] arm 2 curobo motion_gen: READY", flush=True)
+
+    print("[mefron] warming up cuRobo motion_gen for arm 3...", flush=True)
+    motion_gen_3, robot_cfg_3 = teleop.setup_motion_gen(
+        config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH
+    )
+    print("[mefron] arm 3 curobo motion_gen: READY", flush=True)
+
     # Force a stop unconditionally: if physics was left playing across warmup()'s ~30s unpumped gap,
     # PhysX's simulation view gets corrupted; the loop rebuilds cleanly on the next fresh Play regardless.
     omni.timeline.get_timeline_interface().stop()
@@ -89,6 +109,14 @@ def main() -> None:
     )
     target_2_prim = stage.GetPrimAtPath(config.TARGET_2_PRIM_PATH)
     print(f"[mefron] {config.TARGET_2_PRIM_PATH}: {'OK' if target_2_prim.IsValid() else 'MISSING'}", flush=True)
+
+    target_3 = teleop.build_teleop_target(
+        robot_cfg_3, config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH, config.MOUNT_3_POSITION, config.MOUNT_3_ORIENTATION_WXYZ
+    )
+    target_3_prim = stage.GetPrimAtPath(config.TARGET_3_PRIM_PATH)
+    print(f"[mefron] {config.TARGET_3_PRIM_PATH}: {'OK' if target_3_prim.IsValid() else 'MISSING'}", flush=True)
+
+
 
     if _headless:
         simulation_app.close()
@@ -113,17 +141,17 @@ def main() -> None:
     )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
     arms = [
-        {
-            "motion_gen": motion_gen,
-            "robot_cfg": robot_cfg,
-            "target": target,
-            "gripper_control": gripper_control,
-            "robot_prim_path": config.ROBOT_PRIM_PATH,
-            "target_prim_path": config.TARGET_PRIM_PATH,
-            "mount_position": config.MOUNT_POSITION,
-            "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
-            "name": "arm1",
-        },
+            {
+                "motion_gen": motion_gen,
+                "robot_cfg": robot_cfg,
+                "target": target,
+                "gripper_control": gripper_control,
+                "robot_prim_path": config.ROBOT_PRIM_PATH,
+                "target_prim_path": config.TARGET_PRIM_PATH,
+                "mount_position": config.MOUNT_POSITION,
+                "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
+                "name": "arm1",
+            },
         {
             "motion_gen": motion_gen_2,
             "robot_cfg": robot_cfg_2,
@@ -140,6 +168,17 @@ def main() -> None:
             "assembly_relationship": "screen_on_main_holder",
             "surface_gripper_control": surface_gripper_control,
         },
+        {
+            "motion_gen": motion_gen_3,
+            "robot_cfg": robot_cfg_3,
+            "target": target_3,
+            "gripper_control": None,
+            "robot_prim_path": config.ROBOT_3_PRIM_PATH,
+            "target_prim_path": config.TARGET_3_PRIM_PATH,
+            "mount_position": config.MOUNT_3_POSITION,
+            "mount_orientation_wxyz": config.MOUNT_3_ORIENTATION_WXYZ,
+            "name": "arm3",
+        }
     ]
     teleop.run_teleop_loop(simulation_app, arms)
     simulation_app.close()

@@ -51,11 +51,7 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 # either primitive/cuboid obstacle approximations instead of the raw CAD meshes, or narrowing to
 # specific lightweight sub-prims -- not attempted here; see CLAUDE.md's open-issues list.
 OBSTACLE_PRIM_PATHS = [
-    "/World/main_holder_jig",
-    MOUNT_PLATE_PRIM_PATH,  # /World/ur10_mount -- arm 1's own pedestal
-    "/World/ur10_mount_01",  # arm 2's own pedestal
-    ROBOT_PRIM_PATH,
-    "/World/Franka2",  # must match ROBOT_2_PRIM_PATH below (defined later in this file)
+    "/World/main_holder_jig",  # must match ROBOT_2_PRIM_PATH below (defined later in this file)
 ]
 
 # Loop-timing constants for teleop.run_teleop_loop(), ported from build_scene.py.
@@ -196,6 +192,12 @@ ROBOT_2_PRIM_PATH = "/World/Franka2"
 MOUNT_2_POSITION = [3.796979317755996, -4.7095468668675435, 0.78]
 MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_2_PRIM_PATH = "/World/target2"
+
+ROBOT_3_PRIM_PATH = "/World/Franka3"
+MOUNT_3_POSITION = [3.85262, -3.55485, 0.78]
+MOUNT_3_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
+TARGET_3_PRIM_PATH = "/World/target3"
+
 
 # Suction gripper end-effector, added onto arm 2 only (arm 1 keeps the Franka's stock parallel-jaw
 # hand). Custom-designed in SolidWorks for this Franka flange directly (Ø63mm mount face = Franka's

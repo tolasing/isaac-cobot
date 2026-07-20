@@ -266,6 +266,89 @@ debounce-ordering bug, and the open grasp-centering problem.
   grasp-centering problem (see `docs/grasp-and-assembly-offsets.md`)
   before returning to it.
 
+## Third arm (mounting a 3rd Franka)
+
+A first attempt (mount + bare-hand cuRobo teleop, no tool) was committed as
+`b9cb4c1 BROKEN: Mount arm 3 on ur10_mount_02 with bare-hand cuRobo teleop,
+no tool` and reverted back to `a19b672` after live testing showed all three
+arms going unresponsive — arm 3's own mount, `OBSTACLE_PRIM_PATHS` entries,
+`motion_gen` warmup, and `arms` list wiring were all added in one shot, so
+isolating the actual cause took several wrong turns before landing on the
+real one. Recorded here since the wrong turns are as useful as the right
+answer for next time this scale of change comes up:
+
+- **First guess, ruled out**: a PhysX simulation-view failure (from arm 2's
+  already-known nested-`RigidBodyAPI` xformstack warning on its suction
+  gripper, see `scripts/mefron_lib/robot.py`'s `attach_suction_gripper()`
+  docstring) silently starving `get_joints_state()` for every arm.
+  Disproved by live console output: `[Warning] [curobo] Couldn't find
+  solution with 10 attempts, resetting seeds` showed `plan_single()` was
+  actually running, not silently blocked on empty joint state.
+- **Second guess, ruled out**: arm 3's body/pedestal (mounted only ~1.13m
+  from arm 2 — within two Franka reach envelopes) was read as in-collision
+  against arm 2's own resting pose, so *every* plan attempt failed at the
+  start state. Disproved once `[mefron] armX teleop plan_single
+  success=True` started printing for all three arms — planning was
+  genuinely succeeding.
+- **Third guess, ruled out**: a frame-rate/throughput problem —
+  `_step_arm()`'s trajectory playback (`teleop.py`, the `cmd_plan`
+  execution block) advances at most one waypoint per rendered frame
+  (an `if`, not a `while`, gated on `interpolation_dt`), so a 3rd full
+  Franka's added PhysX/render load could in principle throttle plan
+  execution to a crawl. Never actually confirmed or fixed — superseded by
+  the finding below before this was tested to conclusion. May still be
+  worth revisiting as a secondary/compounding factor if arm count keeps
+  growing.
+- **Fourth guess, ruled out**: arm 1/arm 2/arm 3 sharing the identical
+  bundled `franka_panda.urdf` (`config.FRANKA_URDF_RELATIVE_PATH`) was the
+  cause — tested directly by giving arm 3 a byte-identical duplicate URDF
+  with a unique `<robot name="panda_arm3">` (avoiding the shared
+  intermediate `/panda` `MovePrim` staging path every import goes through,
+  see `mount_franka()`'s docstring) and absolute mesh paths so it didn't
+  need its own `meshes/` copy. Still broken with a fully independent robot
+  identity — ruled out cleanly.
+- **Real root cause, confirmed live**: the user reported the arm was
+  "moving programmatically" (cuRobo's plan executed, joint drives were
+  correctly commanded) but stayed visually frozen in the viewport — a
+  render/physics desync, not a planning or execution failure. Given
+  CLAUDE.md's already-documented finding that *every* mefron entry-point
+  run silently rewrites `mefron.usd`'s saved root layer (growing it by
+  whatever the just-imported Franka(s) add, with no explicit save call
+  anywhere in this repo's code), a session that had accumulated enough
+  runs — or ever caught a stray Ctrl+S mid-import — had orphaned
+  `/World/Franka`, `/World/Franka2`, and the historical intermediate
+  `/panda` prim specs baked directly into the file, sitting there the
+  moment `open_stage()` returned, confirmed by directly inspecting the
+  Stage panel on a fresh open (all three present as top-level siblings of
+  `/Environment` and `/PhysicsScene`, before any script had run). Manually
+  deleting these three stray prims before running `mefron.py` fixed
+  everything immediately.
+
+  Mechanism: `mount_franka()` already deletes whatever's at its own target
+  path right before importing into it — but only right before *that*
+  specific import call. `mefron.py`'s `open_stage()` is followed by a
+  120-frame settle pump (needed for the file's own async content
+  resolution) *before* any `mount_franka()` call runs at all — during
+  those 120 frames, the stale leftover prims are live, valid,
+  physics-schema-bearing articulations, long enough for PhysX/Fabric/Hydra
+  to partially register them before `mount_franka()`'s delete+reimport at
+  the same path ever gets a chance to run. The fresh reimport's own
+  physics/motion-planning ends up correct regardless (each arm is driven
+  by its own exact, freshly-created prim_path, read directly off the live
+  stage), but the render layer visibly desyncs from it — exactly
+  "cuRobo moves it, the viewport doesn't show it."
+
+  Fixed by `robot.clear_stray_robot_prims()`: deletes
+  `config.ROBOT_PRIM_PATH`/`ROBOT_2_PRIM_PATH`/`ROBOT_3_PRIM_PATH` and the
+  historical `/panda` path (whichever currently resolve to a valid prim)
+  via `DeletePrims`, called in `mefron.py` immediately after
+  `open_stage()` and *before* the 120-frame settle pump — not just before
+  each `mount_franka()` call, which is too late for this specific failure
+  mode. In-memory only, no `stage.Save()` — matches this file's existing
+  policy of never persisting `mefron.usd` from script code, so (like the
+  rewrite itself) this needs to run on every fresh `open_stage()`, not
+  just once ever. **Confirmed live: fixed it.**
+
 ## `scripts/mefron_lib/` (package split)
 
 `mefron.py` had grown into one file holding constants, robot mounting,
