@@ -158,8 +158,8 @@ def main() -> None:
     conveyor.setup_conveyor_belt_graph()
     conveyor_control = conveyor.build_conveyor_control()
     print(
-        f"[mefron] Conveyor: press {config.CONVEYOR_TOGGLE_KEY} to send main_holder_jig forward to "
-        f"Y={config.CONVEYOR_JIG_FORWARD_Y}, press again to send it back to Y={config.CONVEYOR_JIG_BACKWARD_Y}.",
+        f"[mefron] Conveyor: press {config.CONVEYOR_TOGGLE_KEY} to send main_holder_jig forward "
+        f"{config.CONVEYOR_TRAVEL_DISTANCE}m, press again to send it back the same distance.",
         flush=True,
     )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)

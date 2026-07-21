@@ -137,24 +137,28 @@ class ConveyorControl:
     """Toggled by config.CONVEYOR_TOGGLE_KEY (number-row '1'): drives the ConveyorBeltGraph's own
     "Velocity" graph variable (set up by setup_conveyor_belt_graph(), evaluated each tick by the
     isaacsim.asset.gen.conveyor OmniGraph node while playing) to carry config.MAIN_HOLDER_JIG_PRIM_PATH
-    between its two measured world-Y end positions -- config.CONVEYOR_JIG_BACKWARD_Y (idle start) and
-    config.CONVEYOR_JIG_FORWARD_Y (the far end) -- reversing direction each press. step() must be
-    called once per teleop frame (see teleop.run_teleop_loop()); it both applies a pending toggle
-    request and, while in transit, checks the jig's live world Y against whichever end it's heading
-    toward, zeroing the velocity once reached.
+    config.CONVEYOR_TRAVEL_DISTANCE each press, forward then back, reversing direction each time.
+    step() must be called once per teleop frame (see teleop.run_teleop_loop()); it both applies a
+    pending toggle request and, while in transit, checks the jig's live world Y against whichever
+    end it's heading toward, zeroing the velocity once reached.
 
     A press mid-transit is ignored (not queued, not a reversal) -- deliberately simple: this belt's
     only measured, confirmed-safe behavior is a full back-to-front or front-to-back run, and half-way
     reversals were never asked for or tested.
 
     Direction is a fixed node input set once by setup_conveyor_belt_graph(), so unlike the previous
-    direct-PhysX version, reversing here is just a sign flip on a scalar, not negating a vector."""
+    direct-PhysX version, reversing here is just a sign flip on a scalar, not negating a vector.
+
+    Each transit's target Y is measured live off the jig's own position at the moment it starts
+    (config.CONVEYOR_TRAVEL_DISTANCE applied from there), not two fixed absolute world-Y endpoints --
+    see config.CONVEYOR_TRAVEL_DISTANCE's own comment for why."""
 
     def __init__(self) -> None:
         self._state = "back"  # "back" | "moving_forward" | "front" | "moving_backward"
         self._toggle_requested = False
         self._velocity_attr = None
         self._warned_missing_velocity_attr = False
+        self._transit_target_y = None
 
     def reset(self) -> None:
         """Called on every fresh Play (see teleop.run_teleop_loop()) -- without this, a '1' press
@@ -168,6 +172,7 @@ class ConveyorControl:
         the graph's own authored default back to whatever was last saved."""
         self._state = "back"
         self._toggle_requested = False
+        self._transit_target_y = None
         self._set_velocity(0.0)
 
     def request_toggle(self) -> None:
@@ -219,20 +224,22 @@ class ConveyorControl:
         if self._toggle_requested:
             self._toggle_requested = False
             if self._state == "back":
+                self._transit_target_y = self._jig_world_y() + config.CONVEYOR_TRAVEL_DISTANCE
                 self._set_velocity(config.CONVEYOR_SPEED)
                 self._state = "moving_forward"
                 print("[mefron] conveyor: moving main_holder_jig forward.", flush=True)
             elif self._state == "front":
+                self._transit_target_y = self._jig_world_y() - config.CONVEYOR_TRAVEL_DISTANCE
                 self._set_velocity(-config.CONVEYOR_SPEED)
                 self._state = "moving_backward"
                 print("[mefron] conveyor: moving main_holder_jig backward.", flush=True)
             # Mid-transit presses are ignored -- see class docstring.
 
-        if self._state == "moving_forward" and self._jig_world_y() >= config.CONVEYOR_JIG_FORWARD_Y:
+        if self._state == "moving_forward" and self._jig_world_y() >= self._transit_target_y:
             self._set_velocity(0.0)
             self._state = "front"
             print("[mefron] conveyor: main_holder_jig reached forward end.", flush=True)
-        elif self._state == "moving_backward" and self._jig_world_y() <= config.CONVEYOR_JIG_BACKWARD_Y:
+        elif self._state == "moving_backward" and self._jig_world_y() <= self._transit_target_y:
             self._set_velocity(0.0)
             self._state = "back"
             print("[mefron] conveyor: main_holder_jig reached backward end.", flush=True)

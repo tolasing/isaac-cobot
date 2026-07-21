@@ -76,8 +76,8 @@ _TELEOP_TIME_DILATION_FACTOR = 0.3
 
 # Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <= 0.25 as a
 # special case: it swaps in finetune_trajopt_slow.yml and raises maximum_trajectory_dt to compensate; 0.2 stays under that threshold.
-_TELEOP_VELOCITY_SCALE = 0.4
-_TELEOP_ACCELERATION_SCALE = 0.4
+_TELEOP_VELOCITY_SCALE = 0.6
+_TELEOP_ACCELERATION_SCALE = 0.1
 
 # Grasp-physics constants, ported from build_scene_mefron.py's apply_gripper_friction()/stiffen_gripper_drive().
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
@@ -233,8 +233,16 @@ CONVEYOR_VELOCITY_VARIABLE_NAME = "Velocity"
 CONVEYOR_LOCAL_VELOCITY_DIRECTION = [1.0, 0.0, 0.0]
 CONVEYOR_SPEED = 1.0
 MAIN_HOLDER_JIG_PRIM_PATH = "/World/main_holder_jig"
-CONVEYOR_JIG_FORWARD_Y = -3.6
-CONVEYOR_JIG_BACKWARD_Y = -4.7
+# Relative travel distance (abs(the old CONVEYOR_JIG_FORWARD_Y=-3.6 minus CONVEYOR_JIG_BACKWARD_Y=-4.7)),
+# not two hardcoded absolute world-Y endpoints -- those assumed main_holder_jig always starts a fresh
+# transit from exactly Y=-4.7, the same "fixed world-frame constant with no relationship to wherever
+# things actually are" class of bug CLAUDE.md already flags for ASSEMBLY_LIFT_HEIGHT. Once J/B/K/P
+# placement activity nudges the jig's actual resting Y (even slightly, well short of anything visible
+# as a rotation), a stale absolute target can demand more or less travel than intended -- suspected
+# (not yet fully confirmed) contributor to the conveyor veering off-axis after several placements.
+# ConveyorControl now measures the jig's live Y at the start of each transit and travels this distance
+# from there, in whichever direction was requested.
+CONVEYOR_TRAVEL_DISTANCE = 1.1
 # Number-row "1", not numpad -- carb.input.KeyboardInput.KEY_1.
 CONVEYOR_TOGGLE_KEY = "KEY_1"
 

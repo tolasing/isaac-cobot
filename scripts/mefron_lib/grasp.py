@@ -48,7 +48,13 @@ def compute_grasp_approach_pose_from_file(
     from isaacsim.robot_setup.grasp_editor import import_grasps_from_file
 
     grasp_spec = import_grasps_from_file(str(yaml_path))
-    part_trans, part_quat = SingleXFormPrim(prim_path=part_prim_path).get_world_pose()
+    # reset_xform_properties=False -- see conveyor.py's ConveyorControl._jig_world_y() for the full
+    # diagnosis: several of these parts (backpanel_support, screen, PCB_Assembly_color_fixed) carry an
+    # xformOp:scale:unitsResolve op compensating their source assets' non-1.0 metersPerUnit, and the
+    # default (True) rewrites the prim's xformOpOrder on the spot to fold/drop that op -- net scale is
+    # preserved, but authoring straight onto a live-simulating rigid body's xform ops like this is
+    # exactly the kind of edit that can inject a one-frame pose/velocity discontinuity into PhysX.
+    part_trans, part_quat = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False).get_world_pose()
     return grasp_spec.compute_gripper_pose_from_rigid_body_pose(grasp_name, part_trans, part_quat)
 
 
@@ -78,7 +84,12 @@ def measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat):
 def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_main_holder"):
     """The part's own target world pose on its mount, independent of any grasp offset."""
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
-    mount_trans, mount_quat = SingleXFormPrim(prim_path=relationship["mount_prim_path"]).get_world_pose()
+    # reset_xform_properties=False -- see compute_grasp_approach_pose_from_file()'s comment above /
+    # conveyor.py's ConveyorControl._jig_world_y() for the full diagnosis. mount_prim_path is always
+    # "/World/main_holder", which carries the same xformOp:scale:unitsResolve op.
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=relationship["mount_prim_path"], reset_xform_properties=False
+    ).get_world_pose()
     return compute_dependent_world_pose(
         mount_trans, mount_quat, relationship["local_position"], relationship["local_orientation_wxyz"]
     )
@@ -104,7 +115,15 @@ def compute_assembly_grasp_target(ee_link_prim_path: str, relationship_name: str
     (not a fixed constant -- J, not G, does the grasp, so there's no separate grasp constant to fall
     back on) is applied on top to get the gripper's target. Computed once, on the P keypress."""
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
-    gripper_trans, gripper_quat = SingleXFormPrim(prim_path=ee_link_prim_path).get_world_pose()
-    part_trans, part_quat = SingleXFormPrim(prim_path=relationship["part_prim_path"]).get_world_pose()
+    # reset_xform_properties=False on both -- see compute_grasp_approach_pose_from_file()'s comment
+    # above / conveyor.py's ConveyorControl._jig_world_y() for the full diagnosis. ee_link_prim_path is
+    # a robot link (no unitsResolve op to lose either way), but relationship["part_prim_path"] can be
+    # backpanel_support/screen/PCB_Assembly_color_fixed, which do carry it.
+    gripper_trans, gripper_quat = SingleXFormPrim(
+        prim_path=ee_link_prim_path, reset_xform_properties=False
+    ).get_world_pose()
+    part_trans, part_quat = SingleXFormPrim(
+        prim_path=relationship["part_prim_path"], reset_xform_properties=False
+    ).get_world_pose()
     offset_trans, offset_quat = measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat)
     return compute_assembly_grasp_target_from_offset(offset_trans, offset_quat, relationship_name)
