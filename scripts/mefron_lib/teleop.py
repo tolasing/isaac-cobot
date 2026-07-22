@@ -18,8 +18,8 @@ from isaacsim.core.utils.types import ArticulationAction
 from pxr import Sdf, UsdPhysics
 
 from . import config
+from .behavior_tree import resolve_relationship_name_for_grasped_object
 from .grasp import (
-    compute_assembly_grasp_target,
     compute_grasp_approach_pose_from_file,
     compute_grasp_finger_widths_from_file,
     compute_part_target_pose,
@@ -418,22 +418,6 @@ def _fresh_arm_state() -> dict:
     }
 
 
-def _snap_target_to_assembly_lift_waypoint(state: dict, target, ee_link_prim_path: str, relationship_name: str):
-    """Shared by every arm's P handling (GripperKeyboardControl for arm 1, AssemblyPlacementControl
-    for arm 2): computes the carried part's final assembly-placement pose via
-    compute_assembly_grasp_target(), stages it in state["pending_final_pose"], and snaps `target` to
-    an intermediate waypoint first -- final X/Y and final orientation, but held at the constant
-    ASSEMBLY_LIFT_HEIGHT -- so the only motion left once that lift plan finishes is a straight drop
-    in Z. A direct plan to the final pose was dragging/clipping the carried object through the table
-    and nearby props. Returns the new (cube_position, cube_orientation) for the caller's locals."""
-    final_position, final_orientation = compute_assembly_grasp_target(ee_link_prim_path, relationship_name)
-    state["pending_final_pose"] = (final_position, final_orientation)
-    cube_position = np.array([final_position[0], final_position[1], config.ASSEMBLY_LIFT_HEIGHT])
-    cube_orientation = final_orientation
-    target.set_world_pose(position=cube_position, orientation=cube_orientation)
-    return cube_position, cube_orientation
-
-
 def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     """One frame's worth of drag-follow-plan/apply + gripper-apply logic for a single arm, mutating
     arm["_state"] in place. Split out of run_teleop_loop() so multiple arms can each run their own
@@ -528,16 +512,17 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 # a fresh Play with nothing actually held.
                 if gripper_control.closed:
                     object_name = gripper_control.last_grasped_object
-                    # Looked up by part_prim_path rather than assuming a "{object_name}_on_main_holder"
-                    # key -- not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
-                    part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
-                    relationship_name = next(
-                        name
-                        for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
-                        if relationship["part_prim_path"] == part_prim_path
-                    )
-                    cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
-                        state, target, ee_link_prim_path, relationship_name
+                    relationship_name = resolve_relationship_name_for_grasped_object(object_name)
+                    # Arms (not immediately ticks) the assembly-placement behavior tree -- see
+                    # docs/behavior-tree-migration.md. Actually ticking happens once, unconditionally,
+                    # per frame below (after this whole gripper_control block), same as every other
+                    # arm's assembly_bt.
+                    arm["assembly_bt"].start(
+                        state=state,
+                        target=target,
+                        ee_link_prim_path=ee_link_prim_path,
+                        relationship_name=relationship_name,
+                        is_holding=lambda gc=gripper_control: gc.closed and gc.last_grasped_object is not None,
                     )
         else:
             requested_object = gripper_control.consume_grasp_approach_from_file_request()
@@ -584,9 +569,25 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         # when it never actually attached to the screen (N/V), since this snap was previously
         # unconditional.
         if surface_gripper_control is None or surface_gripper_control.is_closed():
-            cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
-                state, target, ee_link_prim_path, arm["assembly_relationship"]
+            arm["assembly_bt"].start(
+                state=state,
+                target=target,
+                ee_link_prim_path=ee_link_prim_path,
+                relationship_name=arm["assembly_relationship"],
+                is_holding=lambda sgc=surface_gripper_control: sgc is None or sgc.is_closed(),
             )
+
+    # Ticks whichever arm's assembly-placement behavior tree is currently armed, every frame
+    # (tick() itself no-ops until start() has been called -- see behavior_tree.py) -- both arm 1's
+    # gripper_control branch and arm 2's assembly_control branch above route through this one call.
+    assembly_bt = arm.get("assembly_bt")
+    if assembly_bt is not None:
+        bt_status = assembly_bt.tick()
+        if bt_status is not None:
+            # Refresh the locals the debounce/plan-trigger block below reads -- the tree may have
+            # just moved `target` (SnapToLiftWaypoint), same as the original inline snap reassigning
+            # cube_position/cube_orientation directly.
+            cube_position, cube_orientation = target.get_world_pose()
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
@@ -737,6 +738,9 @@ def run_teleop_loop(
                 gripper_control = arm.get("gripper_control")
                 if gripper_control is not None:
                     gripper_control.reset()
+                assembly_bt = arm.get("assembly_bt")
+                if assembly_bt is not None:
+                    assembly_bt.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
             step_index = 0

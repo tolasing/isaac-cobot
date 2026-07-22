@@ -53,8 +53,9 @@ sends you here.
   xauth file (to `/root/.Xauthority`) and sets `DISPLAY`/`XAUTHORITY`/
   `QT_X11_NO_MITSHM` env vars. Requires `xauth` installed on the **host**
   (not the container) and a full devcontainer rebuild (not just reopen) to
-  pick up the new mounts. Not yet re-verified end-to-end with a live GUI
-  launch after this fix — do that before relying on it.
+  pick up the new mounts. **Confirmed 2026-07-22**: re-verified end-to-end
+  with a live GUI launch — Isaac Sim's non-headless GUI renders correctly
+  through this X11 forwarding setup.
 
 - `git-lfs` — installed via apt in `docker/Dockerfile.base` (inherited by
   `Dockerfile.curobo`), and `git lfs install && git lfs pull` added to both
@@ -67,11 +68,6 @@ sends you here.
   with `Failed to get crate info from file`. Symptom looks like a broken
   USD file but is actually a missing LFS smudge; fix is `apt-get install
   git-lfs && git lfs pull`, not anything USD-side.
-
-## Needs verification
-
-- The devcontainer X11/GUI-forwarding fix above is still unconfirmed
-  end-to-end with a live GUI launch.
 
 ## Provenance / licensing
 

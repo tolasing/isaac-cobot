@@ -32,7 +32,7 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleArticulation, SingleXFormPrim  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
-from mefron_lib import config, grasp, robot, teleop  # noqa: E402
+from mefron_lib import behavior_tree, config, grasp, robot, teleop  # noqa: E402
 
 # 900, not 300: phase 1's discrete MotionGen trajectory needs more real time than 300 frames provides
 # to actually finish (time-dilated playback + headless frames ticking faster than real time) -- the
@@ -77,6 +77,9 @@ def main() -> None:
             "mount_position": config.MOUNT_POSITION,
             "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
             "name": "arm1",
+            "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
+                name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1
+            ),
         }
     ]
 

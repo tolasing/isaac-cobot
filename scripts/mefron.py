@@ -27,7 +27,7 @@ preload_real_packaging()
 import carb.settings  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from mefron_lib import config, conveyor, kit_experience, robot, teleop  # noqa: E402
+from mefron_lib import behavior_tree, config, conveyor, kit_experience, robot, teleop  # noqa: E402
 
 
 def main() -> None:
@@ -174,6 +174,9 @@ def main() -> None:
                 "mount_position": config.MOUNT_POSITION,
                 "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
                 "name": "arm1",
+                "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
+                    name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1
+                ),
             },
         {
             "motion_gen": motion_gen_2,
@@ -190,6 +193,9 @@ def main() -> None:
             "assembly_control": assembly_placement_control,
             "assembly_relationship": "screen_on_main_holder",
             "surface_gripper_control": surface_gripper_control,
+            "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
+                name="arm2", groot2_port=behavior_tree.GROOT2_PORT_ARM2
+            ),
         },
         {
             "motion_gen": motion_gen_3,

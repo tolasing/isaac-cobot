@@ -90,6 +90,8 @@ services:
       args:
         - DOCKER_NAME_SUFFIX=${DOCKER_NAME_SUFFIX-}
         - CUROBO_COMMIT_ARG=${CUROBO_COMMIT}
+        - BT_CPP_COMMIT_ARG=${BT_CPP_COMMIT}
+        - GROOT2_VERSION_ARG=${GROOT2_VERSION}
     image: isaac-cobot-curobo${DOCKER_NAME_SUFFIX-}
     container_name: isaac-cobot-curobo${DOCKER_NAME_SUFFIX-}
     environment: *default-isaac-cobot-environment

@@ -33,6 +33,13 @@ on real hardware.
   abandoned Grasp Editor investigation, the open grasp-centering problem).
 - `docs/docker-and-devcontainer.md` — Docker/devcontainer environment setup
   (generic Isaac Sim/cuRobo infra, not scene-specific).
+- `docs/omnigraph-migration-plan.md` — the OmniGraph adoption investigation
+  (GUI-editable tunables, native-node keyboard dispatch); separately
+  evaluated and declined NVIDIA Cortex as a behavior-tree-style engine.
+- `docs/behavior-tree-migration.md` — migrating the grasp/place placement
+  sequence to a real BehaviorTree.CPP tree + Groot2 (`bt_bridge/`,
+  `scripts/mefron_lib/behavior_tree.py`), including why BT.CPP needed a
+  custom pybind11 bridge and the Docker/build-time-vs-per-container split.
 - `examples/curobo_reference/` — pristine, unmodified copy of cuRobo's own
   interactive teleop demo. **Do not modify these two files**; write a
   separate script instead (`scripts/mefron.py` is exactly that). See
@@ -45,8 +52,16 @@ on real hardware.
   stale-config cleanup, stdlib-only so it's safe to import before
   `SimulationApp` exists), `config.py` (all constants), `grasp.py` (pose
   math), `robot.py` (mount/friction/drive), `teleop.py` (keyboard control +
-  `run_teleop_loop()`). `mefron2.py` (dormant/superseded, see below) keeps
-  its own diverged copies of everything except the packaging-preload block.
+  `run_teleop_loop()`), `behavior_tree.py` (the BehaviorTree.CPP-backed
+  assembly-placement sequence, see `docs/behavior-tree-migration.md`).
+  `mefron2.py` (dormant/superseded, see below) keeps its own diverged
+  copies of everything except the packaging-preload block.
+- `bt_bridge/` — pybind11 bridge onto real BehaviorTree.CPP + Groot2Publisher
+  (see `docs/behavior-tree-migration.md`). Build once per container via
+  `scripts/build_bt_bridge.sh`, which drops the compiled extension into
+  `scripts/mefron_lib/`; not baked into the Docker image (BT.CPP/pybind11
+  themselves are — see `docker/Dockerfile.curobo` — but this is part of the
+  live repo, same as everything else under `scripts/`).
 
 ## Active script + current state
 
@@ -65,11 +80,31 @@ finger widths (`cspace_position`/`pregrasp_cspace_position`) onto the
 pregrasp width — so C/O ramp toward whichever object was grasped last, not
 one fixed global width. P's placement pose is computed by measuring the
 CURRENT live gripper-to-part offset (not a fixed constant) and applying it
-to `finger_print_scanner`'s live-computed target pose on `main_holder` — so
-it self-corrects to whatever grasp J actually produced (P is not yet
-generalized to `backpanel_support`). There is no G key: an earlier
+to whichever object was last grasped's live-computed target pose on
+`main_holder` — reverse-looked-up from `last_grasped_object` against
+`config.ASSEMBLY_RELATIONSHIPS` (already generalized across every
+`GRASP_TARGETS` entry, not just `finger_print_scanner` — see
+`docs/behavior-tree-migration.md`). There is no G key: an earlier
 hand-derived-constant grasp-approach pose has been removed in favor of
 J/B. Opens `mefron.usd` directly via `open_stage()`.
+
+The lift→wait→(auto-)descend sequencing that P/`assembly_control` kick off
+is now a real **BehaviorTree.CPP** tree (`bt_bridge/trees/assembly_placement.xml`),
+ticked once per frame per arm via `scripts/mefron_lib/behavior_tree.py`'s
+`AssemblyPlacementBehaviorTree` (one instance each, `arm["assembly_bt"]`) —
+visualizable/editable live in Groot2 (`localhost:1667`/`1669`, see
+`docs/behavior-tree-migration.md`). Requires `scripts/build_bt_bridge.sh` to
+have been run once per container (builds `bt_bridge/`'s pybind11 extension
+against Isaac Sim's own bundled Python) before `mefron.py` will run —
+and *that* itself requires the `isaac-cobot-curobo` **Docker image to have
+been rebuilt** since this migration landed (`python docker/container.py
+build curobo`, or a devcontainer "Rebuild Container", not just a restart):
+`Dockerfile.curobo` now installs BT.CPP/pybind11/libzmq/libboost/libsqlite3
+and Groot2 at image-build time, none of which exist in a pre-migration
+image. Skipping either step fails with `ModuleNotFoundError: No module
+named 'mefron_bt_bridge'` (skipped `build_bt_bridge.sh`) or that same
+script failing to configure/compile at all (skipped the image rebuild —
+no BT.CPP/pybind11 to build against yet).
 
 `scripts/mefron_gripper_probe.py` imports just the Franka hand +
 `panda_leftfinger`/`panda_rightfinger` + `ee_link` (no arm, no motion_gen)

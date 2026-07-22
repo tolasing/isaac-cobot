@@ -39,6 +39,7 @@ build_if_needed isaac-cobot-curobo \
     --network host \
     -f "${REPO_ROOT}/docker/Dockerfile.curobo" \
     --build-arg CUROBO_COMMIT_ARG="${CUROBO_COMMIT}" \
+    --build-arg BT_CPP_COMMIT_ARG="${BT_CPP_COMMIT}" \
     -t isaac-cobot-curobo \
     "${REPO_ROOT}"
 

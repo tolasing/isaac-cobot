@@ -75,4 +75,54 @@ RUN --mount=type=cache,target=${DOCKER_USER_HOME}/.cache/pip \
     ${ISAACSIM_ROOT_PATH}/python.sh -m pip install --no-build-isolation \
     "nvidia-curobo @ git+https://github.com/NVlabs/curobo.git@${CUROBO_COMMIT_ARG}"
 
+# BehaviorTree.CPP (+ its Groot2Publisher) and pybind11, for bt_bridge/'s pybind11 bridge -- see
+# docs/behavior-tree-migration.md. Installed here (image build time), never live, same rule this
+# repo already enforces for cuRobo's CUDA kernels/ninja. bt_bridge/'s own compiled extension is
+# NOT built here: it's part of the live repo (bind-mounted, not baked into the image -- see this
+# file's own header comment), so it's built by scripts/build_bt_bridge.sh after entering the
+# container instead, against the BT.CPP/pybind11 install this step bakes in.
+#
+# pybind11-dev via apt, not pip: pip itself works fine at build time (see the torch/curobo
+# installs above), but pybind11 is header-only and apt's package needs no live pip call anyway --
+# simplest to keep everything BT-related on the same "apt, not pip" footing as ninja-build.
+RUN --mount=type=cache,target=/var/cache/apt \
+    apt-get update && apt-get install -y --no-install-recommends \
+    libzmq3-dev \
+    libboost-dev \
+    libsqlite3-dev \
+    pybind11-dev && \
+    apt-get -y autoremove && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ARG BT_CPP_COMMIT_ARG
+RUN git clone --branch ${BT_CPP_COMMIT_ARG} --depth 1 \
+    https://github.com/BehaviorTree/BehaviorTree.CPP.git /tmp/behaviortree_cpp && \
+    cmake -S /tmp/behaviortree_cpp -B /tmp/behaviortree_cpp/build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBTCPP_EXAMPLES=OFF \
+    -DBUILD_TESTING=OFF \
+    -DBTCPP_BUILD_TOOLS=OFF \
+    -DBTCPP_GROOT_INTERFACE=ON && \
+    cmake --build /tmp/behaviortree_cpp/build --parallel $(nproc) && \
+    cmake --install /tmp/behaviortree_cpp/build && \
+    ldconfig && \
+    rm -rf /tmp/behaviortree_cpp
+
+# Groot2 (desktop GUI to edit/monitor a BehaviorTree.CPP tree -- see
+# docs/behavior-tree-migration.md), installed in-container since this devcontainer's X11
+# forwarding is confirmed working (docs/docker-and-devcontainer.md) -- run via `groot2` once
+# inside. AppImage, extracted at build time rather than run directly: a plain AppImage needs FUSE
+# to mount itself, which isn't reliably available inside a container (no /dev/fuse by default);
+# --appimage-extract unpacks it once here instead, so no FUSE dependency at runtime.
+ARG GROOT2_VERSION_ARG=1.9.0
+RUN apt-get update && apt-get install -y --no-install-recommends libfuse2 libnss3 libxcomposite1 \
+    libxdamage1 libxrandr2 libxkbcommon0 libxi6 libgl1 && \
+    apt-get -y autoremove && apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    wget -q "https://pub-32cef6782a9e411e82222dee82af193e.r2.dev/Groot2-v${GROOT2_VERSION_ARG}-x86_64.AppImage" \
+    -O /tmp/groot2.AppImage && \
+    chmod +x /tmp/groot2.AppImage && \
+    cd /tmp && ./groot2.AppImage --appimage-extract && \
+    mv squashfs-root /opt/groot2 && \
+    ln -s /opt/groot2/AppRun /usr/local/bin/groot2 && \
+    rm -f /tmp/groot2.AppImage
+
 WORKDIR ${DOCKER_ISAAC_COBOT_PATH}

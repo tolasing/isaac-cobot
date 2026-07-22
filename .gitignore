@@ -29,6 +29,11 @@ docker/.isaac-cobot-docker-history
 # Session scratch output -- never meant to be committed
 scratchpad/*
 
+# bt_bridge/'s compiled pybind11 extension -- built per-container by
+# scripts/build_bt_bridge.sh (see docs/behavior-tree-migration.md), never committed.
+bt_bridge/build/
+scripts/mefron_lib/mefron_bt_bridge*.so
+
 # Editors / OS
 .vscode/
 .idea/
