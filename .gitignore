@@ -11,6 +11,7 @@ venv/
 *.usd.bak
 kit_cache/
 .nvidia-omniverse/
+.thumbs/
 
 # Vendored third-party asset packs, hand-authored scenes, and vendor CAD
 # source were previously excluded here (too large for plain git, and of

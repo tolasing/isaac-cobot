@@ -57,6 +57,49 @@ python docker/container.py stop base       # or: curobo
 Or open this repo in VS Code and use "Reopen in Container" with either
 `.devcontainer/base` or `.devcontainer/curobo`.
 
+## Running the mefron scanner-assembly demo
+
+The above `build_scene.py`/CR5 pipeline is the original scaffolding; the
+actively-worked-on task is `scripts/mefron.py` (see
+[CLAUDE.md](CLAUDE.md)'s "What this repo is") — three cuRobo-driven Franka
+Pandas, teleoperated by dragging targets in the Isaac Sim GUI, picking and
+placing a scanner-assembly mockup on `assets/mefron/`.
+
+From inside the `curobo` container (`python` is aliased there to
+`${ISAACSIM_ROOT_PATH}/python.sh`):
+
+```bash
+python scripts/mefron.py
+```
+
+This opens `assets/mefron/factory floor/mefron.usd` directly, mounts all
+three arms, and warms up cuRobo's `MotionGen` for each (~30s per arm — the
+viewport looks frozen/black during this). Once the console prints
+`[mefron] click Play in the GUI to start teleop.`, click **Play** in the
+Isaac Sim viewport.
+
+Each arm is teleoperated by dragging its own target cube in the viewport
+(`/World/target`, `/World/target2`, `/World/target3`) — cuRobo re-plans a
+collision-aware path to wherever you drop it.
+
+### Keyboard controls
+
+| Key | Arm | Action |
+|---|---|---|
+| `J` | 1 | Snap target to `finger_print_scanner`'s grasp-approach pose |
+| `B` | 1 | Snap target to `backpanel_support`'s grasp-approach pose |
+| `C` | 1 | Close gripper |
+| `O` | 1 | Open gripper |
+| `P` | 1 & 2 | Snap target to the assembly-placement pose for whichever object was last grasped/approached |
+| `N` | 2 | Snap target to `screen`'s suction-approach pose |
+| `M` | 2 | Snap target to `PCB_Assembly_color_fixed`'s suction-approach pose |
+| `V` | 2 | Suction on (attach) |
+| `L` | 2 | Suction off (release) — **see CLAUDE.md's "Currently open issues": this doesn't actually let go yet** without also manually unchecking "Joint Enabled" on `SurfaceGripperJoint` (under `panda_hand` in the Stage panel) |
+| `1` | conveyor | Send `main_holder_jig` forward; press again to send it back |
+
+Arm 3 (screwdriver end effector) has no keyboard controls yet — drag its
+target only.
+
 ## Workspace layout
 
 | Path | What it is |

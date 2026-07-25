@@ -41,6 +41,13 @@ from mefron_lib import config, grasp, robot, teleop  # noqa: E402
 _MAX_ITERATIONS_PER_PHASE = 900
 
 
+def _joint_positions(name: str, j_names: list[str]) -> np.ndarray:
+    verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name=name)
+    verify_robot.initialize()
+    idx_list = [verify_robot.get_dof_index(x) for x in j_names]
+    return verify_robot.get_joint_positions(idx_list)
+
+
 def main() -> None:
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
 
@@ -56,6 +63,22 @@ def main() -> None:
     print("[test_mefron_assembly_headless] warming up cuRobo motion_gen...", flush=True)
     motion_gen, robot_cfg = teleop.setup_motion_gen()
     target = teleop.build_teleop_target(robot_cfg)
+    gripper_control = teleop.GripperKeyboardControl()
+    # Arm 1 only, mirroring mefron.py's own arm-1 dict -- see teleop.run_teleop_loop()'s docstring
+    # for the required per-arm dict shape.
+    arms = [
+        {
+            "motion_gen": motion_gen,
+            "robot_cfg": robot_cfg,
+            "target": target,
+            "gripper_control": gripper_control,
+            "robot_prim_path": config.ROBOT_PRIM_PATH,
+            "target_prim_path": config.TARGET_PRIM_PATH,
+            "mount_position": config.MOUNT_POSITION,
+            "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
+            "name": "arm1",
+        }
+    ]
 
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
@@ -93,19 +116,12 @@ def main() -> None:
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
 
     # Phase 1: simulate pressing J (grasp-approach) before run_teleop_loop() starts.
-    gripper_control = teleop.GripperKeyboardControl()
     gripper_control.request_grasp_approach_from_file("finger_print_scanner")
-    teleop.run_teleop_loop(
-        simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS_PER_PHASE, gripper_control=gripper_control
-    )
+    teleop.run_teleop_loop(simulation_app, arms, max_iterations=_MAX_ITERATIONS_PER_PHASE)
 
-    verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name="verify_robot_phase1")
-    verify_robot.initialize()
-    idx_list = [verify_robot.get_dof_index(x) for x in j_names]
-    phase1_positions = verify_robot.get_joint_positions(idx_list)
+    phase1_positions = _joint_positions("verify_robot_phase1", j_names)
     phase1_delta = float(np.max(np.abs(phase1_positions - start_positions)))
-    print(f"[test_mefron_assembly_headless] phase 1 (grasp approach) max joint delta: {phase1_delta:.4f} rad", flush=True)
-    del verify_robot  # must go out of scope before run_teleop_loop() builds its own again -- see test_mefron_teleop_headless.py
+    print(f"[test_mefron_assembly_headless] phase 1 (J: grasp approach) max joint delta: {phase1_delta:.4f} rad", flush=True)
 
     # Sanity-check compute_assembly_grasp_target() against the post-phase-1 live gripper pose, not
     # retract config -- it now composes main_holder's target with the CURRENT measured gripper-to-part
@@ -127,21 +143,20 @@ def main() -> None:
     # Phase 2: simulate pressing P (assembly target), continuing from wherever
     # phase 1 left the robot.
     gripper_control.request_assembly_target()
-    teleop.run_teleop_loop(
-        simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS_PER_PHASE, gripper_control=gripper_control
-    )
+    teleop.run_teleop_loop(simulation_app, arms, max_iterations=_MAX_ITERATIONS_PER_PHASE)
 
-    verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name="verify_robot_phase2")
-    verify_robot.initialize()
-    idx_list = [verify_robot.get_dof_index(x) for x in j_names]
-    phase2_positions = verify_robot.get_joint_positions(idx_list)
+    phase2_positions = _joint_positions("verify_robot_phase2", j_names)
     phase2_delta = float(np.max(np.abs(phase2_positions - phase1_positions)))
-    print(f"[test_mefron_assembly_headless] phase 2 (assembly target) max joint delta vs phase 1: {phase2_delta:.4f} rad", flush=True)
+    print(f"[test_mefron_assembly_headless] phase 2 (P: assembly target) max joint delta vs phase 1: {phase2_delta:.4f} rad", flush=True)
 
+    # Phase 3 (K: grasp-approach for pcb_assembly) removed 2026-07-22 -- K was retired from
+    # config.GRASP_TARGETS in favor of arm 2's suction cup (see config.SUCTION_TARGETS), so
+    # config.GRASP_TARGETS["pcb_assembly"] no longer exists. This test only wires up arm 1, so
+    # there's no equivalent suction-approach phase to substitute here.
     if phase1_delta < 0.05 or phase2_delta < 0.05:
-        print("[test_mefron_assembly_headless] FAIL: robot did not move meaningfully for one or both phases.", flush=True)
+        print("[test_mefron_assembly_headless] FAIL: robot did not move meaningfully for one or more phases.", flush=True)
     else:
-        print("[test_mefron_assembly_headless] PASS: both J (grasp approach) and P (assembly target) drove the robot.", flush=True)
+        print("[test_mefron_assembly_headless] PASS: J (grasp approach) and P (assembly target) both drove the robot.", flush=True)
 
     simulation_app.close()
 
