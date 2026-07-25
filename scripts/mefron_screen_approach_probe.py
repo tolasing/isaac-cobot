@@ -1,16 +1,7 @@
 """One-time headless derivation: a first-pass suction-gripper approach pose for /World/screen, to
-seed config.ASSEMBLY_RELATIONSHIPS["suction_gripper_approach_on_screen"]. Prints numbers to paste
-by hand -- same manual workflow docs/grasp-and-assembly-offsets.md already establishes for the
-other relative-pose constants. Treat this as a first pass to visually confirm/re-derive once seen,
-not final -- same caveat that doc's own methodology carries.
-
-Mounts arm 2 only, no timeline.play(), no motion_gen/cuRobo -- SingleXFormPrim.get_world_pose()
-reads the USD xformCache directly, so pure USD math is enough (same "Stop mode only" reasoning as
-mefron_gripper_probe.py).
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron_screen_approach_probe.py --headless
-"""
+seed config.ASSEMBLY_RELATIONSHIPS["suction_gripper_approach_on_screen"] -- prints numbers to
+paste by hand, a first pass to re-derive once seen (see docs/mefron-history.md's config.py section
+for why it was later superseded). Mounts arm 2 only, no timeline.play()/motion_gen needed."""
 
 from __future__ import annotations
 

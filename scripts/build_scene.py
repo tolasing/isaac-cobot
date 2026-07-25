@@ -1,25 +1,7 @@
-"""Builds /World/Factory (backdrop), two reused ErgoTable desks near the
-robot, imports+mounts the CR5 cobot (or, temporarily, a Franka Panda --
-see cr5_mount.robot_override) between them, warms up a matching cuRobo
-MotionGen (best-effort -- skipped if cuRobo isn't installed, e.g. the
-`base` Docker profile), and -- when cuRobo is available and not running
---headless -- runs an interactive teleop loop: drag the ghost end-effector
-target in the GUI viewport and the robot follows via MotionGen.plan_single().
-
-Verified against a live Isaac Sim 5.1.0 install (isaac-cobot-base
-container, real GPU). The factory backdrop asset loads asynchronously --
-main() pumps a bounded number of frames after building so a one-shot
---headless run sees it fully resolved before pruning/mounting/printing.
-
-Only creates its own SimulationApp when run standalone (`__main__`), same
-reasoning as import_cr5.py -- safe to import as a library from a script
-that already has one running (confirmed the hard way: importing this
-module after a second SimulationApp already exists segfaults instead of
-raising).
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/build_scene.py
-"""
+"""Builds /World/Factory, two ErgoTable desks, imports+mounts the CR5 cobot (or, temporarily, a
+Franka Panda -- see cr5_mount.robot_override), and runs an interactive cuRobo teleop loop.
+Superseded by build_scene_mefron.py -- see README.md. Run standalone:
+${ISAACSIM_ROOT_PATH}/python.sh scripts/build_scene.py"""
 
 from __future__ import annotations
 
@@ -61,13 +43,9 @@ def build_factory(cfg: dict) -> None:
 
 
 def build_ergo_tables(cfg: dict) -> None:
-    """Copies the vendored ErgoTable desk prop to two positions near the
-    robot, for holding assembly parts.
-
-    CopyPrim (not MovePrim -- see mount_cr5_pedestal's docstring for why)
-    duplicates the source's composition arcs cleanly, so each copy renders
-    with full geometry independent of the original.
-    """
+    """Copies the vendored ErgoTable desk prop to two positions near the robot. CopyPrim (not
+    MovePrim -- see mount_cr5_pedestal's docstring) duplicates the source's composition arcs
+    cleanly, so each copy renders with full geometry independent of the original."""
     ergo_cfg = cfg["ergo_tables"]
     source_path = ergo_cfg["source_prim_path"]
     for instance in ergo_cfg["instances"]:
@@ -80,25 +58,10 @@ def build_ergo_tables(cfg: dict) -> None:
 
 
 def build_assembly_parts(cfg: dict) -> None:
-    """References external assembly-part USD files (CAD, converted outside
-    this repo's own vendored-asset pipeline -- see assembly_parts' own
-    config comments) onto the work surfaces.
-
-    Uses add_reference_to_stage (like build_factory), not CopyPrim (like
-    build_ergo_tables): these are standalone external USD files, not prims
-    already living on this stage.
-
-    instance.rigid_body: true makes the part a dynamic PhysX rigid body
-    (via omni.physx.scripts.utils.setRigidBody(), the same helper behind
-    the GUI's own Add > Physics > Rigid Body action -- confirmed that
-    action isn't reachable from this stage's right-click menu at all, the
-    physics UI extension's menu contribution isn't loaded here). Applies
-    a convexHull collision approximation recursively to every mesh under
-    the part (setRigidBody's own behavior for an Xformable prim), so it
-    behaves as one compound rigid body, not per-sub-mesh independent
-    pieces. NOT kinematic: this is meant to be picked up and moved by the
-    robot, not a fixed prop like the table/pedestal.
-    """
+    """References external assembly-part USD files onto the work surfaces, via
+    add_reference_to_stage (not CopyPrim -- these are standalone files, not prims already on this
+    stage). instance.rigid_body: true applies setRigidBody's convexHull approximation, NOT
+    kinematic: it's meant to be picked up and moved, not a fixed prop like the table/pedestal."""
     assembly_cfg = cfg.get("assembly_parts")
     if not assembly_cfg:
         return
@@ -150,23 +113,10 @@ def mount_cr5(cfg: dict) -> None:
 
 
 def mount_cr5_pedestal(cfg: dict) -> None:
-    """Repositions the reused RobotPedestal prim (see
-    factory.prune_name_startswith's comment in table_layout.yaml) so the
-    robot isn't left floating.
-
-    Overrides pose in place rather than moving/renaming the prim out of the
-    welding line's hierarchy: RobotPedestal's mesh comes from nested
-    `reference` arcs several levels deep in the vendored asset, and
-    MovePrim on a prim like that leaves an empty shell behind (0 children).
-
-    Uses set_local_pose(), not set_world_pose(): pedestal.local_translation/
-    local_orientation_wxyz (configs/scene/table_layout.yaml) are LOCAL
-    values read directly from the GUI's Property panel, since
-    RobotPedestal's parent chain has a large offset baked into the vendored
-    asset -- set_world_pose() would instead compute a different local
-    transform needed to reach that number as a *world* position, which is
-    not what these values represent.
-    """
+    """Repositions the reused RobotPedestal prim so the robot isn't left floating. Overrides pose
+    in place rather than moving it: MovePrim on this deeply-referenced vendored prim leaves an
+    empty shell behind. Uses set_local_pose(), not set_world_pose(): the config values are LOCAL,
+    read directly from the GUI's Property panel, since the parent chain has a large baked-in offset."""
     pedestal_cfg = cfg["cr5_mount"]["pedestal"]
     xform = SingleXFormPrim(prim_path=pedestal_cfg["prim_path"])
     xform.set_local_pose(
@@ -177,20 +127,10 @@ def mount_cr5_pedestal(cfg: dict) -> None:
 
 
 def build_teleop_target(cfg: dict, robot_prim_path: str, robot_cfg: dict) -> SingleXFormPrim:
-    """Creates a draggable target the operator moves in the GUI to command
-    the robot's end-effector pose via cuRobo -- a detached copy of the
-    robot's own end-effector visual mesh, not a plain marker, so it shows
-    exactly what will arrive at that pose.
-
-    CopyPrim correctly preserves the instanceable mesh reference Isaac
-    Sim's URDF importer uses for per-link visual geometry: confirmed live
-    that the copy shares the same USD prototype as the original and
-    renders with full geometry, even though a plain Usd.PrimRange
-    traversal of either one shows zero children (instance-proxy content is
-    hidden from traversal by default; Usd.TraverseInstanceProxies() is
-    needed to see it -- rendering and set_world_pose()/get_world_pose()
-    work regardless, without needing that special traversal at all).
-    """
+    """Creates a draggable target the operator moves to command the end-effector pose via cuRobo
+    -- a detached copy of the robot's own end-effector visual mesh, not a plain marker. CopyPrim
+    correctly preserves the instanceable mesh reference the URDF importer uses, so the copy
+    renders with full geometry despite the source showing zero children under plain traversal."""
     target_cfg = cfg["teleop_target"]
     ee_link = robot_cfg["kinematics"]["ee_link"]
     source_path = f"{robot_prim_path}/{ee_link}/visuals"
@@ -204,18 +144,10 @@ def build_teleop_target(cfg: dict, robot_prim_path: str, robot_cfg: dict) -> Sin
 
 
 def get_teleop_obstacles(cfg: dict, robot_prim_path: str):
-    """Scans a deliberately narrow set of prims for cuRobo collision
-    obstacles -- just the ergo tables and the pedestal, not the whole
-    factory backdrop. /World/Factory has thousands of small meshes
-    (walkways, fences, racks, part racks); scanning all of that into a
-    cuRobo WorldConfig on every refresh would be slow for no benefit, since
-    nothing else in the backdrop is within the robot's actual reach.
-
-    Derives the scan scope from ergo_tables/cr5_mount.pedestal's own
-    config rather than a separately-maintained path list in
-    teleop_target -- a single source of truth, so there's nothing to keep
-    in sync if those prims are ever repositioned or renamed.
-    """
+    """Scans just the ergo tables and pedestal for cuRobo collision obstacles, not the whole
+    /World/Factory backdrop (thousands of small meshes, none in the robot's actual reach). Derives
+    the scan scope from ergo_tables/cr5_mount.pedestal's own config, not a separately-maintained
+    path list, so there's nothing to keep in sync if those prims move."""
     from curobo.util.usd_helper import UsdHelper
 
     target_cfg = cfg["teleop_target"]
@@ -232,30 +164,10 @@ def get_teleop_obstacles(cfg: dict, robot_prim_path: str):
 
 
 def setup_curobo_motion_gen(cfg: dict):
-    """Builds and warms up a cuRobo MotionGen for whichever robot is
-    actually mounted at cr5_mount.
-
-    Returns (motion_gen, robot_cfg) -- both None (printing why) if cuRobo
-    isn't installed, since build_scene.py must keep working in the `base`
-    profile, which has no cuRobo, so this step is best-effort rather than a
-    hard dependency. `robot_cfg` is the robot's kinematics-schema dict
-    (i.e. the *contents* of a robot yml's top-level `robot_cfg` key, not
-    the file-shaped wrapper around it) -- returned so callers building the
-    teleop target/loop (which need e.g. robot_cfg["kinematics"]["ee_link"]
-    and ["cspace"]["joint_names"]) use the exact same robot config
-    MotionGen was actually warmed up against, instead of re-resolving the
-    robot_override branch a second time and risking the two drifting apart.
-
-    Passes a real, populated world (get_teleop_obstacles's pedestal + ergo
-    table scan) to MotionGenConfig.load_from_robot_config() up front rather
-    than leaving world_model at its None default -- confirmed live that an
-    empty/absent world leaves motion_gen.world_coll_checker as None
-    (update_world() then fails with AttributeError), and separately that
-    the MESH collision checker's warmup() itself fails ("Primitive
-    Collision has no obstacles") if the *first* world it ever sees is
-    empty. run_teleop_loop's periodic rescan calls update_world() again
-    later with the same scoped scan to pick up any changes.
-    """
+    """Builds and warms up a cuRobo MotionGen for whichever robot is mounted at cr5_mount. Returns
+    (motion_gen, robot_cfg) -- both None if cuRobo isn't installed (the `base` Docker profile).
+    Passes a real, populated world up front, not the None default -- confirmed live that an
+    empty/absent world leaves world_coll_checker as None and warmup() itself fails."""
     try:
         from curobo.types.base import TensorDeviceType
         from curobo.util_file import get_robot_configs_path, join_path, load_yaml
@@ -305,47 +217,18 @@ def run_teleop_loop(
     robot_prim_path: str,
     max_iterations: int | None = None,
 ) -> None:
-    """Drag `target` in the GUI viewport; the robot follows via cuRobo's
-    MotionGen. A from-scratch port of the debounce/plan/apply pattern in
-    examples/curobo_reference/motion_gen_reacher.py's main loop (see that
-    file -- not modified, just used as a reference), adapted to:
-      - This repo's own SingleArticulation convention (see
-        scripts/teach_waypoint.py) instead of the reference's
-        omni.isaac.core.robots.Robot.
-      - No isaacsim.core.api.World: `step_index` is a plain local counter
-        (equivalent to World.current_time_step_index for this loop's
-        purposes -- staged-startup gating and rescan cadence, neither of
-        which cares where the count comes from), and
-        omni.timeline.get_timeline_interface().is_playing() replaces
-        World.is_playing() -- introducing World here would add machinery
-        (stage units, default ground plane, physics-scene-creation timing)
-        this file doesn't otherwise touch, for no behavioral gain.
-      - robot_cfg-sourced joint names/retract pose (never hardcoded), so
-        this works whether the CR5 or the Franka override is mounted.
-      - No hardcoded set_max_efforts(5000, ...) -- that's a Franka-tuned
-        guess in the reference example, not derived from anything. This
-        repo already has a working, per-robot-correct mechanism for pose
-        tracking (import_cr5.py's default_drive_strength/
-        default_position_drive_damping).
-
-    `max_iterations`: None for the real interactive case (runs until the
-    Isaac Sim window closes); set to a finite number for headless
-    scripted verification (see the module's own testing notes).
-    """
+    """Drag `target` in the GUI viewport; the robot follows via cuRobo's MotionGen. A from-scratch
+    port of examples/curobo_reference/motion_gen_reacher.py's debounce/plan/apply pattern, adapted
+    to this repo's SingleArticulation convention and robot_cfg-sourced joint names/retract pose.
+    max_iterations: None for interactive use; finite for headless verification."""
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose
     from curobo.types.state import JointState
     from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
-    # import_cr5() imports with create_physics_scene=False (see its own
-    # docstring -- it only authors joint/drive/collider schemas, not a
-    # runtime physics scene), so nothing on this stage has created one.
-    # SingleArticulation.initialize() needs an actual physics simulation
-    # view, which PhysX only produces once a PhysicsScene prim exists --
-    # confirmed live that without this, get_physics_sim_view() stays None
-    # even after the timeline is playing, and .initialize() raises
-    # AttributeError deep in isaacsim.core.prims. This one-line Define()
-    # is the minimal fix, well short of introducing isaacsim.core.api.World.
+    # import_cr5() imports with create_physics_scene=False, so nothing has created one yet --
+    # SingleArticulation.initialize() needs a real PhysicsScene prim to produce a simulation view,
+    # confirmed live it raises AttributeError deep in isaacsim.core.prims otherwise.
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/physicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -354,15 +237,9 @@ def run_teleop_loop(
     plan_config = MotionGenPlanConfig()
     timeline = omni.timeline.get_timeline_interface()
 
-    # motion_gen's kinematics/IK/trajopt all operate in the robot's own
-    # base-link frame, not USD world space -- confirmed live that passing
-    # the target's raw world pose as the IK goal made every plan fail with
-    # MotionGenStatus.IK_FAIL, since our robot is mounted away from the USD
-    # world origin (cr5_mount.position/orientation_wxyz), unlike the
-    # reference example's robot, which happens to sit at world origin so
-    # world pose and base-frame pose are numerically identical there. The
-    # mount pose is static once set by mount_cr5(), so compute it once here
-    # rather than re-deriving it every frame.
+    # motion_gen operates in the robot's own base-link frame, not USD world space -- confirmed
+    # live that passing the target's raw world pose as the IK goal made every plan fail with
+    # IK_FAIL, since this robot (unlike the reference example's) isn't mounted at world origin.
     mount_cfg = cfg["cr5_mount"]
     robot_base_pose = Pose(
         position=tensor_args.to_device(np.array(mount_cfg["position"])),
@@ -375,18 +252,9 @@ def run_teleop_loop(
     pose_delta_threshold = target_cfg["pose_delta_threshold"]
     static_joint_velocity_threshold = target_cfg["static_joint_velocity_threshold"]
 
-    # robot.initialize() needs an actual PhysX simulation view, which only
-    # exists once physics has actually stepped at least once -- confirmed
-    # live that defining /physicsScene alone isn't enough:
-    # SimulationManager.get_physics_sim_view() stays None until *after*
-    # timeline.play() plus a few simulation_app.update() calls. Calling
-    # initialize() unconditionally here (before the loop below ever checks
-    # is_playing()) crashed with the same AttributeError this function's
-    # own physics-scene fix was supposed to solve, because the timeline
-    # isn't playing yet at that point -- the user hasn't clicked Play. So,
-    # like the reference example (which only calls
-    # robot._articulation_view.initialize() once my_world.is_playing()),
-    # defer this until the loop below confirms physics is actually running.
+    # robot.initialize() needs a real PhysX simulation view, which only exists once physics has
+    # actually stepped -- confirmed live that calling it before the loop checks is_playing() below
+    # crashes, since Play hasn't started yet. Defer until the loop confirms physics is running.
     robot = SingleArticulation(prim_path=robot_prim_path, name="teleop_robot")
     idx_list = None
     articulation_controller = None
@@ -410,14 +278,8 @@ def run_teleop_loop(
                 print("[build_scene] Click Play to start cuRobo teleop.", flush=True)
             continue
 
-        # step_index only advances on frames where physics is actually
-        # stepping -- matching World.current_time_step_index in the
-        # reference example, which likewise only ticks while playing. If
-        # this counted every simulation_app.update() call regardless of
-        # play state (as an earlier version of this function did), a user
-        # who takes more than a few seconds to click Play would blow past
-        # _TELEOP_INIT_FRAMES/_TELEOP_SETTLE_FRAMES before physics ever
-        # started, skipping the settle phase entirely.
+        # step_index only advances while playing -- otherwise a user who takes a while to click
+        # Play would blow past _TELEOP_INIT_FRAMES/_TELEOP_SETTLE_FRAMES before physics even started.
         step_index += 1
         if max_iterations is not None and step_index > max_iterations:
             return
@@ -504,24 +366,10 @@ def run_teleop_loop(
 
 
 def prune_factory_dressing(cfg: dict) -> list[str]:
-    """Deactivates the welding line's sliding rail and robot pedestals
-    under /World/Factory, leaving every other prim (fences, feeders,
-    process nodes, roof racks, robot controllers/arms, ErgoTable, etc.)
-    untouched.
-
-    Two matching modes, both against `factory` (configs/scene/table_layout.yaml):
-      - `prune_name_startswith`: case-insensitive *prefix* (not substring)
-        match against a prim's name, applied anywhere under /World/Factory
-        -- e.g. "rail" matches `Rail`/`Rail_U20__U23_7` but not `Handrail`
-        or `GuardRail`, since those don't start with it.
-      - `prune_exact_paths`: exact full prim paths, for names too generic
-        to safely prefix-match anywhere in the tree (e.g. "Link1", which
-        also names our own CR5's first arm link).
-    Verified against a live install: see CLAUDE.md.
-
-    Deactivation (Prim.SetActive(False)), not deletion: reversible, and
-    never touches the vendored Factory.usd file on disk.
-    """
+    """Deactivates the welding line's sliding rail and robot pedestals under /World/Factory,
+    leaving every other prim untouched -- two matching modes against `factory` config:
+    prune_name_startswith (prefix match) and prune_exact_paths (for over-generic names, e.g.
+    "Link1"). Deactivation, not deletion: reversible, never touches Factory.usd on disk."""
     factory_cfg = cfg["factory"]
     prefixes = [p.lower() for p in factory_cfg.get("prune_name_startswith", [])]
     exact_paths = factory_cfg.get("prune_exact_paths", [])
@@ -547,15 +395,9 @@ def prune_factory_dressing(cfg: dict) -> list[str]:
     return pruned
 
 
-# TEMPORARY -- testing GitHub isaac-sim/IsaacSim#191 (drag-and-drop from the
-# Content browser breaks after a URDF import, confirmed live: the corruption
-# survives even a save+reopen-fresh cycle, so it's baked into the composed
-# stage itself, not just runtime state). Set True to skip mount_cr5()/cuRobo
-# setup/teleop-target entirely, so the rest of the scene (factory, ergo
-# tables, assembly_parts) still builds and can be used to confirm drag-drop
-# works fine when no URDF import has happened. Revert to False (or delete
-# this flag and the guards using it) once that's confirmed either way --
-# this is not meant to be a permanent mode.
+# TEMPORARY -- testing GitHub isaac-sim/IsaacSim#191 (drag-and-drop breaks after a URDF import).
+# True skips mount_cr5()/cuRobo/teleop-target entirely so the rest of the scene still builds and
+# can confirm drag-drop works with no URDF import. Not meant to be a permanent mode.
 _SKIP_ROBOT_FOR_DRAGDROP_TEST = True
 
 
@@ -593,11 +435,8 @@ def main() -> None:
         mount_cr5(cfg)
         mount_cr5_pedestal(cfg)
 
-        # motion_gen.warmup() blocks the main thread with real GPU work (kernel
-        # compilation/loading, pre-tracing batched IK/trajopt solves) and calls
-        # no simulation_app.update() of its own -- the viewport will go black
-        # and look frozen for however long this takes (seconds to a couple
-        # minutes depending on kernel caching). That's expected, not a hang.
+        # motion_gen.warmup() blocks the main thread with real GPU work and calls no
+        # simulation_app.update() of its own -- the viewport going black/frozen is expected, not a hang.
         print("[build_scene] warming up cuRobo motion_gen (viewport will look frozen/black until this finishes)...", flush=True)
         motion_gen, robot_cfg = setup_curobo_motion_gen(cfg)
         print(f"[build_scene] curobo motion_gen: {'READY' if motion_gen else 'SKIPPED'}", flush=True)

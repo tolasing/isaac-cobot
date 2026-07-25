@@ -1,9 +1,6 @@
-"""Headless regression test for mefron_lib's J/P one-shot grasp-approach and
-assembly-target snap requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_headless.py --headless
-"""
+"""Headless regression test for mefron_lib's J/P one-shot grasp-approach and assembly-target snap
+requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py. Run standalone:
+${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_headless.py --headless"""
 
 from __future__ import annotations
 

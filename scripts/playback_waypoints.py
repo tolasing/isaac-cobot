@@ -1,11 +1,6 @@
-"""Plays back recorded waypoints on the CR5 via cuRobo's plan_single_js().
-
-FIRST DRAFT / UNVERIFIED: written against the isaacsim 5.1 / cuRobo API
-surface known at authoring time, not run against a live install.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/playback_waypoints.py
-"""
+"""Plays back recorded waypoints on the CR5 via cuRobo's plan_single_js(). FIRST DRAFT /
+UNVERIFIED: not run against a live install.
+Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/playback_waypoints.py"""
 
 from __future__ import annotations
 

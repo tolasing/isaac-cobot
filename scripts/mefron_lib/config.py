@@ -9,19 +9,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 MEFRON_USD = REPO_ROOT / "assets" / "mefron" / "factory floor" / "mefron.usd"
-# Disk-persisted "Robot Description" dir the URDF importer writes on every import into this
-# file-backed stage; see kit_bootstrap.clear_stale_robot_configuration().
+# Disk-persisted "Robot Description" dir the URDF importer writes on every import; see
+# kit_bootstrap.clear_stale_robot_configuration().
 MEFRON_CONFIGURATION_DIR = MEFRON_USD.parent / "configuration"
 
 ROBOT_PRIM_PATH = "/World/Franka"
 TARGET_PRIM_PATH = "/World/target"
-# UR10 mount pedestal (Isaac asset: Props/Mounts/ur10_mount.usd) the Franka mounts on -- replaced
-# the original SEKTION cabinet plate (itself a replacement for Pedestal_plates/Cube_05) once the
-# packing table was swapped for a conveyor line. MOUNT_POSITION below is taken directly from this
-# prim's own authored xformOp:translate (first-pass -- its payload can't be inspected offline to
-# confirm whether its local origin sits at the top mounting flange, same as every other mount
-# position in this file, pending the user's own GUI check).
-# No /Factory prefix: mefron.py opens mefron.usd directly, one level shallower than build_scene_mefron.py's reference.
+# UR10 mount pedestal the Franka mounts on; position is this prim's own xformOp:translate
+# (unconfirmed whether that's the top mounting flange).
+# No /Factory prefix -- mefron.py opens mefron.usd directly, one level shallower than
+# build_scene_mefron.py's reference.
 MOUNT_PLATE_PRIM_PATH = "/World/ur10_mount"
 MOUNT_POSITION = [2.625260866887235, -4.7019853821770115, 0.8093334035921127]
 MOUNT_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
@@ -31,25 +28,9 @@ FRANKA_DRIVE_STRENGTH = 1047.19751
 FRANKA_DRIVE_DAMPING = 52.35988
 FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 
-# Nearby scene objects within the Franka's reach envelope, not the whole /World/Factory backdrop
-# (which would add scan time for no benefit). Includes both robots' own prim paths so each arm's
-# cuRobo world treats the OTHER arm as a real collision obstacle -- teleop.get_obstacles() excludes
-# an arm from its own obstacle world via ignore_substring, not by leaving it out of this list.
-# packing_table/packing_table_01 (the previous entries here) no longer exist on the stage -- the
-# packing table was replaced by a conveyor line (assets/mefron/factory floor/Conveyors/), and both
-# mount pedestals are included below since they now sit close enough together (~0.65m apart) that
-# each arm needs to see the OTHER arm's own pedestal as an obstacle, not just the other arm itself.
-# Deliberately NOT including the new ConveyorBelt_*/container_h20 prims here: confirmed live that
-# adding them (even just the 5 conveyor + 4 container top-level Xforms) made
-# get_obstacles_from_stage()'s mesh-collision-world construction (past "Creating new Mesh cache: 95"
-# -- cuRobo recurses each Xform into every child mesh, so 9 top-level prims expanded into ~95
-# individual meshes) hang for over an hour with zero forward progress and steady CPU/GPU load --
-# real industrial conveyor-line CAD assemblies (rollers, frame, guards, motor housing, etc., see
-# the 13-113MB per-file sizes under Conveyors/) are far more geometrically complex than the single
-# packing_table prop they replaced, well past what cuRobo's mesh-based collision checker can
-# preprocess in reasonable time. Getting conveyor/container collision-awareness working needs
-# either primitive/cuboid obstacle approximations instead of the raw CAD meshes, or narrowing to
-# specific lightweight sub-prims -- not attempted here; see CLAUDE.md's open-issues list.
+# Reach-envelope obstacles for both arms, not the whole /World/Factory backdrop. Excludes the
+# conveyor/container prims -- hangs cuRobo's mesh-collision-world construction; see CLAUDE.md's
+# open issues.
 OBSTACLE_PRIM_PATHS = [
     "/World/main_holder_jig",
 ]
@@ -61,46 +42,31 @@ _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
 _POSE_DELTA_THRESHOLD = 1.0e-3
 _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
 
-# World-frame Z height P holds while it aligns X/Y/orientation to the assembly-placement pose, before
-# dropping straight down in Z to the actual placement pose -- a direct point-to-point plan_single to
-# the final pose was clipping/dragging the carried object through the table and nearby props.
+# World-frame Z height P holds while aligning X/Y/orientation before descending -- see CLAUDE.md's
+# open issues (not yet relationship-relative).
 ASSEMBLY_LIFT_HEIGHT = 1.21
 
 # Frames to wait after is_playing() first turns True before constructing SingleArticulation --
-# PhysX needs a few real steps before its simulation view is actually ready.
+# PhysX needs a few real steps before its simulation view is ready.
 _ROBOT_INIT_SETTLE_FRAMES = 5
 
-# Uniformly re-times the already-planned trajectory to play out slower; does not change the
-# optimizer's relative speed profile or planning success. See _TELEOP_VELOCITY_SCALE for capping actual limits.
+# Re-times the already-planned trajectory to play out slower; doesn't change the optimizer's
+# relative speed profile or planning success.
 _TELEOP_TIME_DILATION_FACTOR = 0.3
 
-# Tried forcing MotionGenPlanConfig's use_start_state_as_retract to False here (regularize IK's
-# null-space/redundant-branch choice toward robot_cfg's fixed retract_config instead of the arm's
-# current joint state), on the theory that it would stop the gripper twisting in place when K
-# (pcb_assembly) is pressed right after a B (backpanel_support) grasp+place cycle leaves the arm far
-# from retract_config. Confirmed live 2026-07-22 this made things WORSE -- with the current state no
-# longer the regularization reference, EVERY part's grasp/approach after B now got pulled toward
-# whichever branch is nearest retract_config regardless of how far the arm currently was from it,
-# instead of just occasionally diverging for specific target/current-pose pairs like before. Reverted
-# (teleop.py's MotionGenPlanConfig(...) call no longer references this). Left here as a record of a
-# ruled-out fix, not a lead to retry -- see CLAUDE.md's currently-open-issues list for this bug.
-# _TELEOP_USE_START_STATE_AS_RETRACT = False
-
-# Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <= 0.25 as a
-# special case: it swaps in finetune_trajopt_slow.yml and raises maximum_trajectory_dt to compensate; 0.2 stays under that threshold.
+# Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <=
+# 0.25 as a special case (swaps in finetune_trajopt_slow.yml); 0.2 stays under that threshold.
 _TELEOP_VELOCITY_SCALE = 0.6
 _TELEOP_ACCELERATION_SCALE = 0.1
 
 # Grasp-physics constants, ported from build_scene_mefron.py's apply_gripper_friction()/stiffen_gripper_drive().
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
-# Narrowed from the full 0-0.04m stroke to bracket finger_print_scanner's actual 12mm grip width
-# (measured via UsdGeom.BBoxCache local bound) -- the full stroke let one finger contact and drag the
-# part sideways well before the other closed the remaining distance. CLOSED is the symmetric half-width
-# (6mm/side); OPEN adds a 4mm/side clearance margin for approach.
+# Narrowed to bracket finger_print_scanner's 12mm grip width -- the full stroke let one finger
+# drag the part sideways. See docs/mefron-history.md.
 GRIPPER_OPEN_POSITION = 0.010
 GRIPPER_CLOSED_POSITION = 0.000
-# Rate (m/s) the commanded gripper position is ramped toward open/closed, instead of stepping instantly --
-# avoids a snap shut under the high drive stiffness. 0.02 m/s takes ~0.2s for the now-narrowed 0.004m travel.
+# Rate (m/s) the commanded gripper position ramps toward open/closed, instead of stepping
+# instantly -- avoids a snap shut under the high drive stiffness.
 GRIPPER_CLOSE_SPEED = 0.02
 GRIPPER_FRICTION_MATERIAL_PATH = "/World/GripperFrictionMaterial"
 GRIPPER_STATIC_FRICTION = 1.5
@@ -110,10 +76,8 @@ GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 200.0
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
-# Grasp Editor-exported grasp-approach poses + per-object finger widths, keyed by object name and
-# wired to a keyboard key in teleop.build_gripper_keyboard_control(). "key" is a carb.input.KeyboardInput
-# attribute name (resolved via getattr in teleop.py, since this module stays free of omni/curobo imports).
-# See grasp.compute_grasp_approach_pose_from_file()/compute_grasp_finger_widths_from_file().
+# Grasp Editor-exported poses + per-object finger widths, keyed by object name and wired to a key
+# in teleop.build_gripper_keyboard_control(). See grasp.compute_grasp_approach_pose_from_file().
 GRASP_TARGETS = {
     "finger_print_scanner": {
         "key": "J",
@@ -127,17 +91,12 @@ GRASP_TARGETS = {
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
     },
-    # pcb_assembly (K, parallel-jaw grasp of PCB_Assembly_color_fixed) retired 2026-07-22 in favor of
-    # arm 2's suction cup instead (see SUCTION_TARGETS below) -- K's grasp-approach, reached from
-    # certain prior arm poses (confirmed live: after B then P), landed on a different redundant
-    # self-motion branch than reaching it fresh did, visibly twisting the wrist/gripper in place even
-    # though the target pose itself was correct. Root cause not resolved (see CLAUDE.md's
-    # currently-open-issues list); switching end effectors sidesteps it rather than fixing it.
+    # pcb_assembly (K) retired 2026-07-22 for arm 2's suction cup instead -- redundant-branch
+    # twisting on approach, root cause + ruled-out fix in docs/mefron-history.md.
 }
 
-# T_H_S: finger_print_scanner's / backpanel_support's pose expressed in main_holder's own local frame
-# at the correctly assembled position, derived via grasp.compute_relative_pose() from each part's live
-# world pose (no reparenting needed -- see docs/grasp-and-assembly-offsets.md).
+# T_H_S: each part's pose expressed in main_holder's own local frame at the correctly assembled
+# position, derived via grasp.compute_relative_pose() -- see docs/grasp-and-assembly-offsets.md.
 ASSEMBLY_RELATIONSHIPS = {
     "finger_print_scanner_on_main_holder": {
         "part_prim_path": "/World/finger_print_scanner",
@@ -168,32 +127,17 @@ ASSEMBLY_RELATIONSHIPS = {
         "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.008999995231628418],
         "local_orientation_wxyz": [0.7063401483274144, 0.0, 0.0, 0.7078725837753616],
     },
-    # Not a part-on-mount relationship like the other 3 -- reuses the same generic "dependent pose
-    # relative to a reference frame" math (grasp.compute_part_target_pose() never reads
-    # part_prim_path on this call path). mount_prim_path=part_prim_path=screen on purpose: this is
-    # the suction gripper's own *approach target*, expressed in screen's live frame, not a carried
-    # part's mount pose. Re-derived live 2026-07-17 by hand-jogging target2 until the cup tip sat
-    # dead-center on screen's top face (tip at [0.0007, -0.0008, -0.0049] in screen's frame) and
-    # reading back target2-wrt-screen via grasp.compute_relative_pose() -- same methodology as
-    # docs/grasp-and-assembly-offsets.md. This supersedes the first-pass
-    # scripts/mefron_screen_approach_probe.py bbox-top derivation, which was wrong twice over: it
-    # ignored the 100mm cup length (put the *ee* ~12mm from screen's origin), and it had local z
-    # positive-side-up -- screen's own frame is flipped ~180deg about X (local +Z points DOWN in
-    # world), so "above the screen" is NEGATIVE local z. Measured contact pose was
-    # [0.00028, -0.00024, -0.10558]; the z below has SURFACE_GRIPPER_APPROACH_CLEARANCE (0.01) of
-    # hover baked in (more negative = higher in world), so S snaps to a 10mm hover from which V's
-    # SurfaceGripper (maxGripDistance 0.03) can still reach and attach.
+    # Suction gripper's own approach target expressed in screen's live frame, not a carried part's
+    # mount pose (mount_prim_path=part_prim_path=screen on purpose). Derivation + measured values:
+    # docs/mefron-history.md.
     "suction_gripper_approach_on_screen": {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
         "local_position": [0.00028, -0.00024, -0.11558],
         "local_orientation_wxyz": [0.382330, -0.000471, -0.000099, 0.924026],
     },
-    # Derived live 2026-07-22 by hand-placing the suction gripper (target2) against
-    # PCB_Assembly_color_fixed in the GUI, then reading back target2-wrt-part via
-    # grasp.compute_relative_pose() -- same methodology as suction_gripper_approach_on_screen above.
-    # First-pass Z (0.10492) let V report attached but not actually lift the part; this Z (~1cm
-    # further out) confirmed live to grip and lift cleanly.
+    # Suction approach target for pcb_assembly, same derivation as suction_gripper_approach_on_screen
+    # above -- see docs/mefron-history.md.
     "suction_gripper_approach_on_pcb_assembly": {
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
         "mount_prim_path": "/World/PCB_Assembly_color_fixed",
@@ -202,15 +146,9 @@ ASSEMBLY_RELATIONSHIPS = {
     },
 }
 
-# --- Second arm (see docs/mefron-history.md / the "second arm" plan) -------------------------
-# `/World/ur10_mount_01` is the second UR10 mount pedestal the user placed by hand in the GUI for
-# the second Franka to stand on -- replaced an earlier second SEKTION cabinet
-# (`sektion_cabinet_instanceable_01`, still present on the stage but now ~2m away, out of reach)
-# once the packing table became a conveyor line. MOUNT_2_POSITION is taken directly from this
-# prim's own authored xformOp:translate, same first-pass caveat as MOUNT_POSITION above.
-# MOUNT_2_ORIENTATION_WXYZ keeps the previously-confirmed 180deg-about-Z orientation
-# (wxyz [0, 0, 0, 1]) as a starting point -- unrelated to the mount swap, still pending the user's
-# own GUI check like every other pose constant here.
+# --- Second arm (see docs/mefron-history.md) --------------------------------------------------
+# Second UR10 mount pedestal (user-placed in the GUI), replacing an earlier SEKTION cabinet ~2m
+# away. Position/orientation pending user GUI confirmation, like MOUNT_POSITION above.
 ROBOT_2_PRIM_PATH = "/World/Franka2"
 MOUNT_2_POSITION = [3.796979317755996, -4.7095468668675435, 0.78]
 MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
@@ -221,123 +159,73 @@ MOUNT_3_POSITION = [3.85262, -3.55485, 0.78]
 MOUNT_3_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 TARGET_3_PRIM_PATH = "/World/target3"
 
-# ConveyorBelt_A24. Driven by conveyor.ConveyorControl through Isaac Sim's own
-# isaacsim.asset.gen.conveyor OmniGraph node (CreateConveyorBelt command), built once at startup by
-# conveyor.setup_conveyor_belt_graph(). This exact OmniGraph route was tried once before (Create >
-# Isaac Sim > Conveyor) and abandoned 2026-07-20 after two live-confirmed failures: the node's own
-# "Enabled" input ended up unchecked (silently means the node never computes at all), and separately,
-# deleting the graph left a nonzero surfaceVelocity value permanently orphaned on Belt's own USD spec
-# (that attribute is authored directly on the rigid body, not cleared by removing the graph/node that
-# drove it). The session fell back to driving PhysxSurfaceVelocityAPI directly instead, which worked
-# but felt like bypassing "the right way" to do it -- this retry engineers around both failures rather
-# than repeating them: setup_conveyor_belt_graph() explicitly forces the node's inputs:enabled to True
-# and reads it back (never trusts the default), and deletes any stray graph at
-# CONVEYOR_ACTION_GRAPH_PATH plus re-zeros the belt's surfaceVelocity directly before rebuilding, so a
-# leftover orphaned value from a prior run's graph can never survive into a fresh one. Note the native
-# node is not a different physics mechanism than the direct-write fallback -- its own changelog
-# confirms it writes to the same PhysxSurfaceVelocityAPI attribute, just wrapped in an ActionGraph
-# (OnPlaybackTick -> IsaacConveyor node) for authoring convenience.
+# Drives ConveyorBelt_A24 via Isaac Sim's isaacsim.asset.gen.conveyor OmniGraph node
+# (CreateConveyorBelt), not a direct PhysX write -- see docs/mefron-history.md for why (two
+# confirmed failure modes on the naive route).
 CONVEYOR_BELT_PRIM_PATH = "/World/ConveyorBelt_A24/Belt"
-# Path CreateConveyorBelt creates the ActionGraph at (prim_name under CONVEYOR_BELT_PRIM_PATH's
-# parent) -- kept deterministic on purpose so setup_conveyor_belt_graph() can find and delete a stray
-# survivor from a previous run before rebuilding, rather than letting the command auto-uniquify to a
-# new name every time.
+# ActionGraph path CreateConveyorBelt creates at -- kept deterministic so
+# setup_conveyor_belt_graph() can find/delete a stray survivor before rebuilding.
 CONVEYOR_ACTION_GRAPH_PRIM_NAME = "ConveyorBeltGraph"
 CONVEYOR_ACTION_GRAPH_PATH = "/World/ConveyorBelt_A24/ConveyorBeltGraph"
-# Graph variable CreateConveyorBelt wires its ReadVariable node's output into the IsaacConveyor node's
-# inputs:velocity -- so ConveyorControl must set this variable, not the node's inputs:velocity
-# directly (that gets overwritten every tick by the ReadVariable node).
+# ConveyorControl must set this graph variable, not the node's inputs:velocity directly (that gets
+# overwritten every tick by the ReadVariable node).
 CONVEYOR_VELOCITY_VARIABLE_NAME = "Velocity"
-# Local-frame direction (Belt's own axes, not world), set once as the IsaacConveyor node's fixed
-# inputs:direction by setup_conveyor_belt_graph() -- confirmed live 2026-07-20 to move the belt
-# forward at this magnitude under the old direct-PhysX approach; re-verify now that the OmniGraph
-# node is driving it, though: this axis flipped between local X and Y more than once across earlier
-# graph deletions/recreations, so treat this as a starting point, not a settled fact.
+# Belt-local direction (not world) -- this axis has flipped between local X/Y across graph
+# rebuilds before; treat as a starting point, not a settled fact.
 CONVEYOR_LOCAL_VELOCITY_DIRECTION = [1.0, 0.0, 0.0]
 CONVEYOR_SPEED = 1.0
 MAIN_HOLDER_JIG_PRIM_PATH = "/World/main_holder_jig"
-# Relative travel distance (abs(the old CONVEYOR_JIG_FORWARD_Y=-3.6 minus CONVEYOR_JIG_BACKWARD_Y=-4.7)),
-# not two hardcoded absolute world-Y endpoints -- those assumed main_holder_jig always starts a fresh
-# transit from exactly Y=-4.7, the same "fixed world-frame constant with no relationship to wherever
-# things actually are" class of bug CLAUDE.md already flags for ASSEMBLY_LIFT_HEIGHT. Once J/B/K/P
-# placement activity nudges the jig's actual resting Y (even slightly, well short of anything visible
-# as a rotation), a stale absolute target can demand more or less travel than intended -- suspected
-# (not yet fully confirmed) contributor to the conveyor veering off-axis after several placements.
-# ConveyorControl now measures the jig's live Y at the start of each transit and travels this distance
-# from there, in whichever direction was requested.
+# Relative travel distance, not fixed world-Y endpoints -- same "fixed constant with no
+# relationship to where things are" issue as ASSEMBLY_LIFT_HEIGHT (see CLAUDE.md).
 CONVEYOR_TRAVEL_DISTANCE = 1.1
 # Number-row "1", not numpad -- carb.input.KeyboardInput.KEY_1.
 CONVEYOR_TOGGLE_KEY = "KEY_1"
 
 
-# Suction gripper end-effector, added onto arm 2 only (arm 1 keeps the Franka's stock parallel-jaw
-# hand). Custom-designed in SolidWorks for this Franka flange directly (Ø63mm mount face = Franka's
-# own ISO 9409-1-50 flange OD, Ø50mm suction tip -- see robots/franka_panda/Props/ for the exported
-# asset), superseding the earlier borrowed robots/ur10_suction/short_gripper.usd (still kept, see its
-# own SOURCE.md, but no longer referenced here). Referenced under panda_hand, cuRobo's own franka.yml
-# ee_link (see grasp.py's docstring), so it rides along rigidly with the gripper frame.
+# Custom Franka-flange suction gripper (arm 2 only) -- see docs/mefron-history.md for the
+# asset-alignment derivation.
 SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "suction gripper.usd"
 SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
-# Unlike the borrowed UR10 asset (which needed a solved offset+rotation because its internal "wrist"
-# reference frame didn't line up with panda_hand's own axes), this asset's own root IS its mount face
-# already: verified live that both wrapper Xforms above the Mesh are identity, the Ø63mm base ring
-# sits exactly at local (0, 0, 0), and +Z runs base->tip (0 to 0.1m) -- matching panda_hand's own
-# convention of origin = flange point, +Z toward the fingers (confirmed via panda_finger_joint1/2's
-# localPos0 = (0, 0, 0.0584) on the panda_hand body). So the asset's root is already coincident with
-# panda_hand's frame with no correction needed.
+# Asset root is already coincident with panda_hand's frame -- no offset/rotation correction
+# needed (unlike the borrowed UR10 asset). See docs/mefron-history.md.
 SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
-# Electric-screwdriver end-effector, added onto arm 3 only. Same panda_hand-child mounting pattern as
+# Electric-screwdriver end-effector, arm 3 only. Same panda_hand-child mounting pattern as
 # SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
 SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver.usd"
 SCREWDRIVER_PRIM_NAME = "electric_screwdriver"
-# The asset's own root Xform is correctly scaled (0.001) inside electric_screwdriver.usd itself now --
-# this forces attach_screwdriver_gripper()'s own reference-holding wrapper prim to identity scale so
-# nothing in robot.py compounds an extra scale factor on top of that.
+# Asset's own root Xform is already correctly scaled (0.001) -- forces the wrapper prim to
+# identity so robot.py doesn't compound an extra scale factor.
 SCREWDRIVER_LOCAL_SCALE = [1.0, 1.0, 1.0]
 SCREWDRIVER_LOCAL_POSITION = [0.0, 0.0, 0.0]
-# Derived from the user's live-jogged GUI pose (Orient X/Y/Z = 90/45/90 degrees, USD's rotateXYZ
-# convention: composed as Rx * Ry * Rz, i.e. Z applied first, then Y, then X), converted to wxyz.
+# User's live-jogged GUI pose (Orient X/Y/Z = 90/45/90deg, USD rotateXYZ = Rx*Ry*Rz), converted
+# to wxyz.
 SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501, 0.6532814824]
 
-# Real isaacsim.robot.schema/isaacsim.robot.surface_gripper physics, distinct from the SUCTION_GRIPPER_*
-# constants above (which are pure visual geometry with zero physics of its own). Kept deliberately
-# minimal -- no hand-authored PhysicsLimitAPI/PhysicsDriveAPI compliance tuning, no touching any other
-# prim's existing physics setup -- just the bare structural minimum the extension itself requires: one
-# joint tagged as an attachment point, and the IsaacSurfaceGripper bookkeeping prim pointing at it.
+# Real isaacsim.robot.schema/surface_gripper physics (distinct from the pure-visual
+# SUCTION_GRIPPER_* above) -- bare structural minimum only, no compliance tuning.
 SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"
 SURFACE_GRIPPER_PRIM_NAME = "SurfaceGripper"
-# Joint's frame on panda_hand's side: coincident with the cup's physical tip, 0.1m out along
-# panda_hand's own +Z -- same base->tip convention as SUCTION_GRIPPER_LOCAL_POSITION/ORIENTATION_WXYZ
-# above, just offset to the tip instead of the base.
+# Joint's frame on panda_hand's side: cup's physical tip, 0.1m out along +Z (base->tip, like
+# SUCTION_GRIPPER_LOCAL_* above).
 SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.1]
 SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # isaac:maxGripDistance -- how far the attachment point searches for something to grab. Schema
-# default is 0.01m; widened slightly for first-pass teleop-approach tolerance.
+# default is 0.01m, widened slightly for first-pass teleop-approach tolerance.
 SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
-# Hover clearance for the *teleop approach pose* (distinct from the joint's own search radius
-# above) -- how far above the measured contact pose the S key's approach target sits. Baked into
-# ASSEMBLY_RELATIONSHIPS["suction_gripper_approach_on_screen"]'s local z (it can't be referenced
-# there directly -- that dict literal is defined earlier in this file), so changing this value
-# alone does nothing: re-bake the relationship's z too.
+# Hover clearance for the approach pose (distinct from the joint's search radius above) -- baked
+# into suction_gripper_approach_on_screen's local z, so change both together.
 SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
 
-# Arm 2 keys -- none collide with arm 1's J/B/P/C/O or dormant mefron2.py's G. S, H, and R were
-# all tried first (approach/screen and release, respectively) and confirmed live 2026-07-17 to
-# double as Kit's own viewport hotkeys, firing that Kit UI/action alongside our handler -- N and L
-# instead, neither a Kit viewport manipulator hotkey. M added alongside N once arm 1's K
-# (parallel-jaw grasp of pcb_assembly) was retired in favor of arm 2's suction cup -- see
-# SUCTION_TARGETS below.
+# Arm 2 keys, none colliding with arm 1's J/B/P/C/O. S/H/R were tried first and confirmed live to
+# double as Kit viewport hotkeys -- see docs/mefron-history.md.
 SUCTION_ATTACH_KEY = "V"  # Vacuum on
 SUCTION_DETACH_KEY = "L"  # reLease
 
-# Arm 2's per-object suction approach targets -- same shape/purpose as GRASP_TARGETS above but for
-# the suction cup instead of the parallel-jaw yaml grasps: "key" snaps target2 to
-# approach_relationship (an ASSEMBLY_RELATIONSHIPS entry, hand-derived the same way as
-# suction_gripper_approach_on_screen -- see docs/grasp-and-assembly-offsets.md), and P looks up
-# assembly_relationship for whichever object teleop.SuctionApproachControl last had an approach
-# request for (mirrors GripperKeyboardControl.last_grasped_object's role for arm 1).
+# Arm 2's per-object suction approach targets, same shape/purpose as GRASP_TARGETS but for the
+# suction cup: "key" snaps target2 to approach_relationship, P looks up assembly_relationship for
+# whichever object was last approached.
 SUCTION_TARGETS = {
     "screen": {
         "key": "N",  # sNap arm 2's target to the screen-approach pose
@@ -353,19 +241,10 @@ SUCTION_TARGETS = {
 
 SCREEN_PRIM_PATH = "/World/screen"
 
-# Mostly the extension set isaacsim.exp.full.kit adds on top of isaacsim.exp.base.python.kit (diffed
-# directly from both .kit files' [dependencies] tables). Mounting a second Franka (a second native
-# URDF import in one process) crashes Kit's isaacsim.asset.importer.urdf plugin if these are already
-# loaded at import time -- confirmed live -- but enabling them AFTER both Frankas are mounted
-# reproduces the identical final feature set with zero crash (confirmed live: all 122 enable cleanly,
-# zero failures, matching what mefron.py needs for its Physics debug-viz menu). See
-# robot.mount_franka()'s own docstring and kit_experience.enable_full_experience_extensions().
-#
-# isaacsim.asset.gen.conveyor/.ui are the one deliberate addition beyond that diffed set -- neither is
-# a dependency of either experience. isaacsim.asset.gen.conveyor (non-UI) is required again:
-# conveyor.setup_conveyor_belt_graph() calls its CreateConveyorBelt command directly, see
-# CONVEYOR_BELT_PRIM_PATH's own comment for the history. .ui is kept since its "Create > Isaac Sim >
-# Conveyor" menu command is still useful for building any of the other ConveyorBelt_A01-A49 assets.
+# isaacsim.exp.full.kit's extra extensions over isaacsim.exp.base.python.kit, enabled only after
+# both Frankas are mounted (crashes the URDF importer if loaded earlier -- see
+# docs/mefron-history.md). isaacsim.asset.gen.conveyor(.ui) is the one deliberate addition beyond
+# that diff, needed by conveyor.setup_conveyor_belt_graph().
 FULL_EXPERIENCE_EXTRA_EXTENSIONS = [
     "isaacsim.app.setup",
     "isaacsim.asset.gen.conveyor",

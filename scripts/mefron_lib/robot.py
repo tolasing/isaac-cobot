@@ -1,6 +1,5 @@
-"""Mounting the Franka onto mefron.usd's SEKTION cabinet plate, and the gripper physics tuning
-(friction material, drive stiffness) needed for a stable grasp.
-"""
+"""Mounting the Franka onto its UR10 pedestal, plus gripper physics tuning (friction material,
+drive stiffness) for a stable grasp."""
 
 from __future__ import annotations
 
@@ -18,33 +17,16 @@ from import_cr5 import import_cr5
 
 from . import config
 
-# The pre-MovePrim intermediate path every mount_franka() import lands at before being relocated to
-# its real destination (see that function's own docstring) -- if a stray Save ever catches a session
-# mid-import, before the MovePrim step runs, /panda itself gets baked into mefron.usd's saved root
-# layer as an orphaned leftover, on top of whatever real arm path(s) also got caught mid-Save.
+# Pre-MovePrim intermediate path every mount_franka() import lands at -- if a stray Save catches a
+# session mid-import, /panda gets baked into mefron.usd as an orphaned leftover.
 _STRAY_HISTORICAL_PANDA_PATH = "/panda"
 
 
 def clear_stray_robot_prims() -> None:
-    """Deletes any pre-existing robot prims (config.ROBOT_PRIM_PATH/ROBOT_2_PRIM_PATH/
-    ROBOT_3_PRIM_PATH, plus the historical stray /panda path) already sitting in the stage the
-    moment open_stage() returns -- leftovers baked into mefron.usd's own saved root layer by a past
-    session's stray Save (mefron.usd is meant to stay Franka-free at rest, but nothing here prevents
-    an accidental Ctrl+S from persisting a mounted robot to disk -- see CLAUDE.md's own gotcha about
-    this file getting silently rewritten on every run).
-
-    mount_franka() already deletes whatever's at its OWN target path right before importing into it
-    -- but only right before THAT specific call, which is too late: confirmed live that leaving
-    stray leftovers live during mefron.py's own 120-frame post-open_stage() settle pump lets
-    PhysX/Fabric/Hydra partially register the STALE prims before mount_franka() ever gets a chance
-    to delete+reimport at the same path. The fresh reimport's physics/motion-planning end up correct
-    regardless (each arm is driven by its own exact, freshly-created prim_path), but rendering
-    visibly desyncs from it -- cuRobo successfully plans and drives the joints, but the viewport
-    never shows the arm moving. Call this right after open_stage(), before that settle pump.
-
-    In-memory only (DeletePrims on the live stage, no stage.Save()) -- matches this codebase's
-    existing policy of never persisting mefron.usd from script code, so the stray specs remain on
-    disk and this needs to run on every fresh open_stage(), not just once ever."""
+    """Deletes any pre-existing robot prims (config.ROBOT_*_PRIM_PATH, plus the historical stray
+    /panda path) sitting in the stage the moment open_stage() returns -- leftovers baked into
+    mefron.usd by a past session's stray Save. Must run right after open_stage(), before the
+    settle pump -- see docs/mefron-history.md for why mount_franka()'s own cleanup is too late."""
     stage = omni.usd.get_context().get_stage()
     stray_paths = [
         path
@@ -71,37 +53,19 @@ def mount_franka(
     mount_position=config.MOUNT_POSITION,
     mount_orientation_wxyz=config.MOUNT_ORIENTATION_WXYZ,
 ) -> None:
-    """Mounts cuRobo's bundled Franka Panda at prim_path/mount_position. Defaults to the first arm's
-    own constants; the second arm calls this with config.ROBOT_2_PRIM_PATH/MOUNT_2_POSITION/
-    MOUNT_2_ORIENTATION_WXYZ instead -- same URDF, same drive tuning, only the destination differs.
-
-    A second real call to this function (i.e. a second native URDF import in the same process)
-    reliably crashes Kit's isaacsim.asset.importer.urdf plugin -- but ONLY when the full experience's
-    ~120 extra extensions (isaacsim.exp.full.kit, used for the Physics debug-viz menu) are already
-    loaded at the time of the second import; confirmed live it's specifically about them being
-    *present during* that second import call, not merely present in the process at all -- mounting
-    both Frankas first under the plain base experience, then enabling those same extra extensions
-    afterward, reproduces the identical final feature set with zero crash. See
-    kit_experience.enable_full_experience_extensions(), which mefron.py calls right after this
-    function's second (arm 2) call returns, and docs/mefron-history.md for the full diagnosis
-    (an AddInternalReference()-based workaround was tried and rejected first: the imported URDF's
-    joints all use absolute-path body0/body1 relationships, so a referenced copy's joints still
-    target the original robot's rigid bodies instead of its own -- confirmed live, not just theorized)."""
+    """Mounts cuRobo's bundled Franka Panda at prim_path/mount_position (arm 1's constants by
+    default; arms 2/3 pass their own ROBOT_N_PRIM_PATH/MOUNT_N_POSITION/ORIENTATION). Mounting a
+    second/third Franka crashes Kit's URDF importer if the full-experience extensions are already
+    loaded -- enable those only after all arms are mounted. See docs/mefron-history.md."""
     from curobo.util_file import get_assets_path, join_path
 
     stage = omni.usd.get_context().get_stage()
     if stage.GetPrimAtPath(prim_path).IsValid():
-        # mefron.usd is meant to stay Franka-free -- the robot only ever exists in this runtime
-        # session -- but a stray Save can persist it to disk anyway. Without this, import_cr5's
-        # MovePrim silently uniquifies to e.g. /World/Franka_01 instead of landing on prim_path,
-        # leaving a duplicate robot behind on every subsequent run. Same pattern as
-        # mefron_gripper_probe.py's spawn_gripper_probe().
+        # A stray Save can persist a prior robot to disk -- without this, import_cr5's MovePrim
+        # silently uniquifies to e.g. /World/Franka_01 instead of landing on prim_path.
         omni.kit.commands.execute("DeletePrims", paths=[prim_path])
-        # A frame pump so the deletion is fully committed to the stage before import_cr5() runs its
-        # own uniqueness check below -- without this, a still-in-flight delete can make the importer
-        # think prim_path is still occupied and uniquify to prim_path + "_01" instead, leaving both
-        # the just-deleted and the freshly-imported robot behind. Confirmed live this happens for a
-        # stray Save left over from interactive testing (a real, not hypothetical, failure mode).
+        # Frame pump so the deletion commits before import_cr5()'s own uniqueness check runs --
+        # otherwise a still-in-flight delete leaves both the old and new robot behind.
         omni.kit.app.get_app().update()
 
     urdf_path = Path(join_path(get_assets_path(), config.FRANKA_URDF_RELATIVE_PATH))
@@ -118,11 +82,10 @@ def mount_franka(
     )
 
 
-# Same hand/panda_leftfinger/panda_rightfinger/ee_link subtree as franka_panda.urdf's, just rooted at a
-# free-floating base_link instead of panda_link8 (dropping panda_hand_joint's -45 degree yaw so
-# base_link == panda_hand's own frame, since there's no arm frame left to stay consistent with).
-# Mesh filenames are baked in as absolute paths resolved from cuRobo's own assets at generation time
-# (see write_hand_only_urdf()), so this template doesn't need to live next to the original's meshes/.
+# Same hand/panda_leftfinger/panda_rightfinger/ee_link subtree as franka_panda.urdf's, rooted at a
+# free-floating base_link instead of panda_link8. Mesh filenames are baked in as absolute paths at
+# generation time (see write_hand_only_urdf()), so this template doesn't need to live next to the
+# original's meshes/.
 _HAND_ONLY_URDF_TEMPLATE = """<?xml version="1.0" ?>
 <robot name="panda_gripper_only">
   <link name="base_link"/>
@@ -205,19 +168,9 @@ def mount_franka_hand_only(prim_path: str) -> str:
 
 
 def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
-    """Deactivates the Franka's parallel-jaw finger links + their drive joints on prim_path, for an
-    arm that's being converted to a suction end-effector instead (see attach_suction_gripper()).
-    Leaves panda_hand/ee_link/right_gripper alone -- only the two finger links + their prismatic
-    joints go.
-
-    Deactivates rather than deletes -- same choice docs/mefron-history.md already made for the
-    duplicate /PhysicsScene issue, and for the same reason: reversible, in-memory only, never
-    touches the file on disk. Not just a style preference here: confirmed live that
-    `omni.kit.commands.execute("DeletePrims", ...)` silently no-ops for these specific prims
-    (returns success, no error, but the prims stay valid/active) since their specs live across
-    the URDF importer's disk-persisted, multi-layer `configuration/` stack (see CLAUDE.md's
-    importer-side-effect gotcha) rather than purely on the current edit target. `Usd.Prim.SetActive
-    (False)` authors directly on the stage's current edit target regardless, and works."""
+    """Deactivates (not deletes) the Franka's parallel-jaw finger links + drive joints on
+    prim_path, for an arm converted to a suction end-effector (see attach_suction_gripper()).
+    DeletePrims silently no-ops for these specific prims instead -- see docs/mefron-history.md."""
     stage = omni.usd.get_context().get_stage()
     paths = [f"{prim_path}/{name}" for name in config.GRIPPER_FINGER_LINK_NAMES] + [
         f"{prim_path}/joints/{name}" for name in config.GRIPPER_JOINT_NAMES
@@ -231,24 +184,10 @@ def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> No
 
 
 def hide_hand_housing(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
-    """Makes prim_path's panda_hand/visuals invisible -- for an arm converted to suction-only, where
-    the bare Franka parallel-jaw housing (minus fingers, see remove_parallel_jaw_gripper()) still
-    reads as "a gripper is still there" even with the fingers gone.
-
-    Visibility only, deliberately NOT deactivation, and deliberately leaves panda_hand/collisions
-    alone: panda_hand itself must stay active (it's cuRobo's franka.yml ee_link, and
-    ee_link/suction_gripper are both parented under it) -- only its own visuals sub-scope is hidden.
-    Its collisions sub-scope is left active on purpose: config.OBSTACLE_PRIM_PATHS includes each arm's
-    own root path so cuRobo treats the OTHER arm as a real collision obstacle -- dropping panda_hand's
-    collision geometry would make arm 1's planner stop seeing it there at all, which is a physics-
-    behavior change, not the purely visual fix this function is for.
-
-    The URDF importer makes imported mesh geometry instanceable by default -- since every arm imports
-    the identical franka_panda.urdf, panda_hand/visuals across all three Frankas can end up sharing
-    one native-instancing prototype. Authoring visibility directly on an instance-proxy prim isn't a
-    real per-instance override in that case; walking up to the nearest instance root and setting
-    SetInstanceable(False) un-shares that ONE arm's subtree from the prototype first, so the
-    MakeInvisible() below only affects this prim_path's own Franka, not the others."""
+    """Makes prim_path's panda_hand/visuals invisible for an arm converted to suction-only.
+    Visibility only -- panda_hand and its collisions stay active (cuRobo's ee_link; dropping
+    collision geometry would change planning, not just looks). See docs/mefron-history.md for why
+    the nearest instance root gets un-shared first."""
     stage = omni.usd.get_context().get_stage()
     visuals_path = f"{prim_path}/panda_hand/visuals"
     prim = stage.GetPrimAtPath(visuals_path)
@@ -271,29 +210,10 @@ def hide_hand_housing(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
 
 
 def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
-    """References config.SUCTION_GRIPPER_USD (see robots/ur10_suction/SOURCE.md) as a child of
-    prim_path's panda_hand -- cuRobo's franka.yml ee_link, the same frame grasp.py's poses are
-    already expressed in, so the gripper rides along rigidly with the hand. Does not remove/hide
-    the Franka's own hand -- callers converting an arm to suction-only should also call
-    remove_parallel_jaw_gripper()/hide_hand_housing() first (see mefron.py). No suction control
-    (attach/detach, keyboard key) is wired up yet. Positioned at config.SUCTION_GRIPPER_LOCAL_POSITION/ORIENTATION_WXYZ --
-    see that constant's own comment for how it was derived from the asset's own geometry.
-
-    Unlike the borrowed UR10 asset, this custom SolidWorks-exported flange comes in with a baked-in
-    collider on its own mesh (confirmed live 2026-07-17: a PhysX raycast from the cup tip along
-    panda_hand's own +Z self-hit this asset's Revolve1/Mesh at distance 0.0, before ever reaching
-    outward -- silently breaking attach_surface_gripper_physics()'s grab raycast, since the ray
-    starts sitting right on this mesh's own surface) plus a baked-in enabled RigidBodyAPI (confirmed
-    live 2026-07-17: PhysX logs "missing xformstack reset when child of another enabled rigid body"
-    for this prim under panda_hand once mounted -- a nested-rigid-body hierarchy, not merely a stray
-    collider). Both disabled below via CollisionEnabled/RigidBodyEnabled=False rather than removing
-    the APIs outright: a 2026-07-18 attempt at prim.RemoveAPI(...) instead (to also silence the
-    xformstack warning, which disabling alone doesn't -- that check is structural, on
-    HasAPI(RigidBodyAPI), not on whether the instance is enabled) coincided with the suction gripper
-    mesh going invisible in the user's own GUI run; reverted back to this disable-only version to
-    isolate whether RemoveAPI was actually the cause before trying again. So: the xformstack warning
-    is expected to still appear with this version -- that's the known tradeoff pending a fix that
-    gets both."""
+    """References config.SUCTION_GRIPPER_USD as a child of panda_hand (cuRobo's ee_link) so it
+    rides along rigidly. Does not remove/hide the Franka's hand -- call
+    remove_parallel_jaw_gripper()/hide_hand_housing() first. Disables the asset's own baked-in
+    collider/RigidBodyAPI below -- see docs/mefron-history.md for why."""
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     gripper_prim_path = f"{prim_path}/panda_hand/{config.SUCTION_GRIPPER_PRIM_NAME}"
@@ -320,22 +240,10 @@ def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
 
 
 def attach_screwdriver_gripper(prim_path: str = config.ROBOT_3_PRIM_PATH) -> None:
-    """References config.SCREWDRIVER_USD as a child of prim_path's panda_hand -- cuRobo's franka.yml
-    ee_link, the same frame grasp.py's poses are already expressed in, so the tool rides along
-    rigidly with the hand. Does not remove/hide the Franka's own hand -- callers converting an arm to
-    screwdriver-only should also call remove_parallel_jaw_gripper()/hide_hand_housing() first (see
-    mefron.py). No screw-driving control is wired up yet -- this only mounts the tool visually/for
-    collision. Positioned at config.SCREWDRIVER_LOCAL_POSITION/ORIENTATION_WXYZ (the latter derived
-    from the user's live-jogged GUI pose -- see that constant's own comment) and scaled to
-    config.SCREWDRIVER_LOCAL_SCALE, overriding whatever scale this reference would otherwise compose
-    with (see that constant's own comment for the 0.001-scale asset issue this works around).
-
-    Disables any baked-in CollisionAPI/RigidBodyAPI on the referenced mesh the same way
-    attach_suction_gripper() does for its own SolidWorks-exported flange -- confirmed live for that
-    asset that a baked-in collider/rigid body silently breaks raycasts and logs a PhysX
-    "missing xformstack reset" hierarchy warning; not yet separately confirmed for this screwdriver
-    asset, but disabling unconditionally here is a no-op if it turns out clean, so left in as the
-    same defensive default pending its own live check."""
+    """References config.SCREWDRIVER_USD as a child of panda_hand (cuRobo's ee_link), scaled to
+    config.SCREWDRIVER_LOCAL_SCALE. Mounts the tool visually/for collision only -- no
+    screw-driving control wired up yet. Disables baked-in CollisionAPI/RigidBodyAPI the same
+    defensive way attach_suction_gripper() does (not separately confirmed needed here)."""
     from isaacsim.core.utils.stage import add_reference_to_stage
 
     tool_prim_path = f"{prim_path}/panda_hand/{config.SCREWDRIVER_PRIM_NAME}"
@@ -363,29 +271,10 @@ def attach_screwdriver_gripper(prim_path: str = config.ROBOT_3_PRIM_PATH) -> Non
 
 
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
-    """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
-    prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by
-    attach_suction_gripper() has zero physics of its own -- that function strips any collider/rigid-
-    body its USD source brings in, see its own docstring for why that stripping is load-bearing here).
-    One plain UsdPhysics.Joint tagged with IsaacAttachmentPointAPI, plus PhysicsLimitAPI/
-    PhysicsDriveAPI compliance tuning (values taken directly from NVIDIA's own bundled reference,
-    isaacsim.robot.surface_gripper's data/SurfaceGripper_gantry.usda) so the joint actually
-    constrains the grabbed object once attached -- confirmed live 2026-07-17 that without this, the
-    joint is a fully-free D6 (the schema's own documented default): the manager reports
-    Closed/gripped correctly, but nothing physically holds the object, so lifting leaves it behind.
-    transX/transY are locked (schema semantics: low > high == locked, per PhysicsLimitAPI's own
-    doc); transZ gets a small compliant range + spring (give along the suction axis, like a real cup
-    flexing slightly); rotX/rotY get a looser spring (tilt compliance); rotZ is much stiffer
-    (resists the object spinning about the suction axis itself). This authoring happens before
-    Play/attach, so the low>high locked-axis convention is honored by the initial parse -- hot-
-    patching an already-live joint mid-session needs a tiny valid range instead, not an inverted one.
-    plus the IsaacSurfaceGripper bookkeeping prim pointing at it. body1 left unbound; the
-    SurfaceGripperManager rebinds it live to whatever it finds within max_grip_distance at close
-    time -- see robots/ur10_suction/short_gripper.usd's own Suction_Joint for the equivalent pattern
-    on the borrowed asset this one supersedes.
-    excludeFromArticulation is the one physics attribute that ISN'T optional here: panda_hand is a
-    real articulation link, and without it PhysX tries to fold this joint into the Franka's own
-    reduced-coordinate solve instead of treating it as an auxiliary maximal-coordinate constraint."""
+    """Authors the real isaacsim.robot.schema/surface_gripper attach mechanism on panda_hand: one
+    UsdPhysics.Joint (IsaacAttachmentPointAPI) with PhysicsLimitAPI/DriveAPI compliance tuning --
+    without it the joint is a free D6 and lifting leaves the object behind. excludeFromArticulation
+    is required since panda_hand is a real link. Values/rationale: docs/mefron-history.md."""
     from usd.schema.isaac import robot_schema
 
     stage = omni.usd.get_context().get_stage()

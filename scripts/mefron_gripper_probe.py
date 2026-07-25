@@ -1,17 +1,7 @@
 """Standalone Franka hand+fingers+ee_link probe, for measuring grasp offsets against mefron.usd's
-parts without the full 7-DOF arm/IK in the way. Opens mefron.usd directly (same pattern as mefron.py)
-but skips mount_franka()/motion_gen entirely -- this is a static-measurement tool, not a teleop script.
-
-Drag /World/GripperProbe's base_link in the viewport (Stop mode -- a fixed-base articulation ignores
-Xform edits once Play starts driving it) to position ee_link against the real part mesh, then read back
-its world pose the same way docs/grasp-and-assembly-offsets.md's compute_relative_pose() does.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron_gripper_probe.py
-
-Can also be imported from mefron.py's own Script Editor (see spawn_gripper_probe()) to add the probe
-to an already-open session instead of opening a second stage.
-"""
+parts without the full 7-DOF arm/IK in the way. Drag /World/GripperProbe's base_link in the
+viewport (Stop mode) against the real part mesh, then read its pose via compute_relative_pose().
+Can also be imported from mefron.py's Script Editor (see spawn_gripper_probe())."""
 
 from __future__ import annotations
 

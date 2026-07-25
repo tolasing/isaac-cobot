@@ -1,9 +1,6 @@
-"""Diagnostic scene built to chase a Grasp Editor bug on a fresh anonymous
-stage; kept as a working artifact. Full investigation: docs/grasp-and-assembly-offsets.md.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/franka_grasp_editor_scene.py
-"""
+"""Diagnostic scene built to chase a Grasp Editor bug on a fresh anonymous stage; kept as a
+working artifact. Full investigation: docs/grasp-and-assembly-offsets.md.
+Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/franka_grasp_editor_scene.py"""
 
 from __future__ import annotations
 

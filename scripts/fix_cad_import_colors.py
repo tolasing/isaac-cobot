@@ -1,27 +1,7 @@
-"""Corrects a real color-space bug in Isaac Sim's CAD Converter extension
-(omni.kit.converter.cad, HOOPS Exchange-based): STEP's COLOUR_RGB entities
-are sRGB (display-referred) values, but the converter writes them verbatim
-into UsdPreviewSurface's diffuseColor/emissiveColor inputs, which USD/Hydra
-convention treats as linear (scene-referred) color for PBR rendering.
-Skipping the sRGB->linear decode produces washed-out, hue-shifted colors
-under RTX's PBR pipeline compared to the source CAD tool's own viewport.
-
-Confirmed by diffing a converted file's diffuseColor values against the raw
-COLOUR_RGB entities in its source STEP file: they matched bit-for-bit
-(modulo float32/float64 storage precision), proving zero colorspace
-conversion happens during import. Not yet confirmed whether this affects
-every omni.kit.converter.cad conversion or only STEP inputs specifically --
-treat as a general post-import fixup for any CAD-Converter-produced USD
-until proven otherwise.
-
-Writes to a new file by default (never overwrites the input) so the
-correction can be reviewed before replacing anything -- pass --in-place to
-overwrite the input file itself once you've confirmed the result looks
-right.
-
-Run:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/fix_cad_import_colors.py <path/to/file.usd>
-"""
+"""Corrects a color-space bug in Isaac Sim's CAD Converter: STEP's COLOUR_RGB entities are sRGB,
+but the converter writes them verbatim into diffuseColor/emissiveColor, which USD/Hydra treats as
+linear -- confirmed by diffing a converted file's values against the source STEP bit-for-bit.
+Writes to a new file by default; --in-place to overwrite."""
 
 from __future__ import annotations
 
@@ -48,12 +28,9 @@ def srgb_to_linear(c: float) -> float:
 
 
 def fix_colors(usd_path: Path) -> list[tuple[str, str, tuple, tuple]]:
-    """Converts every diffuseColor/emissiveColor on a UsdPreviewSurface
-    shader from (assumed) sRGB to linear, in place on the open stage.
-
-    Returns a list of (prim_path, input_name, old_value, new_value) for
-    everything actually changed, so callers can print/verify before saving.
-    """
+    """Converts every diffuseColor/emissiveColor on a UsdPreviewSurface shader from (assumed) sRGB
+    to linear, in place on the open stage. Returns (prim_path, input_name, old_value, new_value)
+    for everything changed, so callers can print/verify before saving."""
     stage = Usd.Stage.Open(str(usd_path))
     if stage is None:
         raise RuntimeError(f"Could not open {usd_path}")

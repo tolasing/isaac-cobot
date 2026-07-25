@@ -196,6 +196,18 @@ confirmed findings:
   settle frames fixes it. Fixed by forcing it on explicitly at the top of
   `main()`: `carb.settings.get_settings().set_bool("/app/player/playSimulations", True)`.
   Confirmed via a headless regression test (`scripts/test_mefron_teleop_headless.py`).
+- **`/app/player/useFixedTimeStepping`, forced on in `main()`.** Decouples
+  physics stepping from real elapsed wall-clock time between
+  `simulation_app.update()` calls. Without it, a heavier per-frame Python
+  cost (three arms' worth of cuRobo planning here, vs. near-zero in a
+  lightweight demo like the standalone Conveyor Builder scene) makes
+  physics take bigger/bunched-up catch-up steps to keep pace with real
+  time, which destabilizes friction-coupled mechanisms like
+  `ConveyorBelt_A24`'s `PhysxSurfaceVelocityAPI` — confirmed live
+  2026-07-21: an identical belt/jig/friction setup was smooth in the
+  Conveyor Builder demo but vibrated/rotated under `mefron.py`'s own
+  heavier loop. Forces every `update()` call to advance physics by exactly
+  one fixed-size step regardless of how long the Python code took.
 
 → See `docs/grasp-and-assembly-offsets.md` for how T_H_S/T_S_G (the
 grasp and assembly relative-pose constants) were derived, the abandoned
@@ -390,6 +402,141 @@ Two non-cosmetic things fell out of this, not just file-moving:
   before importing, so it lands under `/World` regardless of prior
   selection state.
 
+## `scripts/mefron_lib/kit_experience.py` — the viewport-blanking regression
+
+A prior version of `enable_full_experience_extensions()` scaled back to a
+small hand-picked subset (just `omni.physx.bundle`, for the Physics
+debug-viz menu) after observing the full
+`config.FULL_EXPERIENCE_EXTRA_EXTENSIONS` list (~122 names) blank the
+viewport shortly after enabling. That subset traded away real
+functionality piecemeal and unpredictably (Script Editor, then
+`isaacsim.robot_setup.grasp_editor`'s `import_grasps_from_file()` needed
+manual Window→Extensions enabling or crashed outright with
+`ModuleNotFoundError`) — so it went back to enabling the full list.
+
+Root cause of the "blanking" (confirmed by reading `isaacsim.app.setup`'s
+own source, not guessed): it isn't a rendering/menu issue at all —
+`isaacsim.app.setup.CreateSetupExtension.on_startup()` reads the carb
+setting `/isaac/startup/create_new_stage`, and if true (its own
+`extension.toml` default), schedules an async task a few frames out that
+unconditionally opens a brand-new stage, discarding whatever's loaded.
+Since `enable_full_experience_extensions()` runs after `mefron.usd` is
+already open and both Frankas are mounted, that fires late and wipes the
+running scene — not "too many extensions at once". Forcing the setting
+off (`carb.settings.get_settings().set_bool("/isaac/startup/create_new_stage",
+False)`) before enabling fixes it without dropping anything from the full
+list.
+
+## `scripts/mefron_lib/config.py` — constants derivation notes
+
+**`GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` narrowing.** Narrowed
+from the full 0–0.04m stroke to bracket `finger_print_scanner`'s actual
+12mm grip width (measured via `UsdGeom.BBoxCache` local bound) — the full
+stroke let one finger contact and drag the part sideways well before the
+other closed the remaining distance. `CLOSED` is the symmetric half-width
+(6mm/side); `OPEN` adds a 4mm/side clearance margin for approach.
+
+**`pcb_assembly`'s K key, retired 2026-07-22, root cause.** Tried forcing
+`MotionGenPlanConfig`'s `use_start_state_as_retract` to `False`
+(regularize IK's null-space/redundant-branch choice toward `robot_cfg`'s
+fixed `retract_config` instead of the arm's current joint state), on the
+theory it would stop the gripper twisting in place when K was pressed
+right after a B (`backpanel_support`) grasp+place cycle left the arm far
+from `retract_config`. Confirmed live this made things WORSE — every
+part's grasp/approach after B got pulled toward whichever branch is
+nearest `retract_config` regardless of current distance from it, instead
+of only occasionally diverging for specific target/current-pose pairs
+like before. Reverted; root cause of the original twisting itself was
+never resolved — switching K's object (`pcb_assembly`) to arm 2's suction
+cup instead sidesteps the bug rather than fixing it.
+
+**Suction/screwdriver asset alignment.** Both
+`robots/franka_panda/Props/suction gripper.usd` (custom-designed in
+SolidWorks for this exact Franka flange — Ø63mm mount face matching
+Franka's ISO 9409-1-50 flange OD, Ø50mm suction tip) and
+`robots/grippers/electric_screwdriver.usd` mount as `panda_hand` children
+needing zero offset/rotation correction: verified live that both assets'
+own root Xforms are already coincident with `panda_hand`'s frame
+(origin = flange point, +Z toward the fingers) — unlike the earlier
+borrowed `robots/ur10_suction/short_gripper.usd`, which needed a solved
+offset+rotation because its internal "wrist" frame didn't line up.
+`SCREWDRIVER_LOCAL_ORIENTATION_WXYZ` is the user's live-jogged GUI pose
+(Orient X/Y/Z = 90/45/90°, USD `rotateXYZ` = Rx·Ry·Rz), converted to wxyz.
+
+**Suction approach pose derivation (`screen`, `pcb_assembly`).** Both
+derived the same way as `docs/grasp-and-assembly-offsets.md`'s
+`compute_relative_pose()` methodology: hand-jog the suction target against
+the live part in the GUI until the cup tip sits correctly, then read back
+target-wrt-part. `screen`'s pose supersedes a first-pass bbox-top
+derivation (`scripts/mefron_screen_approach_probe.py`) that was wrong
+twice over — it ignored the 100mm cup length, and assumed local +Z was
+"up" when `screen`'s own frame is flipped ~180° about X. `pcb_assembly`'s
+first-pass Z (0.10492) reported attached but didn't actually lift the
+part; the current value (~1cm further out) lifts cleanly.
+
+**Conveyor: OmniGraph route, not direct PhysX writes.**
+`conveyor.setup_conveyor_belt_graph()` drives `ConveyorBelt_A24` through
+Isaac Sim's `isaacsim.asset.gen.conveyor` OmniGraph node
+(`CreateConveyorBelt`), not a direct `PhysxSurfaceVelocityAPI` write. This
+exact route was tried once before (Create > Isaac Sim > Conveyor) and
+abandoned 2026-07-20 after two live-confirmed failures: the node's own
+"Enabled" input ended up unchecked (silently means the node never computes
+at all), and deleting the graph left a nonzero `surfaceVelocity` value
+permanently orphaned on the belt's USD spec (authored directly on the
+rigid body, not cleared by removing the graph that drove it). That session
+fell back to the direct-PhysX write, which worked but bypassed "the right
+way." This retry engineers around both failures instead of repeating them:
+`setup_conveyor_belt_graph()` explicitly forces `inputs:enabled` to `True`
+and reads it back, and deletes any stray graph plus re-zeros
+`surfaceVelocity` before rebuilding. The native node isn't a different
+physics mechanism than the direct-write fallback — its own changelog
+confirms it writes to the same `PhysxSurfaceVelocityAPI` attribute, just
+wrapped in an ActionGraph (`OnPlaybackTick` → `IsaacConveyor`) for
+authoring convenience. `CONVEYOR_LOCAL_VELOCITY_DIRECTION`'s axis flipped
+between local X and Y more than once across earlier graph
+deletions/recreations — treat the current value as a starting point, not
+a settled fact.
+
+**`FULL_EXPERIENCE_EXTRA_EXTENSIONS` load-order crash.** Mounting a second
+Franka (a second native URDF import in one process) crashes Kit's
+`isaacsim.asset.importer.urdf` plugin if these extensions are already
+loaded at import time — confirmed live. Enabling them AFTER both Frankas
+are mounted reproduces the identical final feature set with zero crash
+(confirmed live: all 122 enable cleanly). See `robot.mount_franka()`'s
+docstring and `kit_experience.enable_full_experience_extensions()`.
+
+## `scripts/mefron_lib/conveyor.py` — investigation detail
+
+**`ConveyorControl`'s state machine + `reset()`.** A '1' press toggles
+between a full back-to-front or front-to-back run (forward then back,
+reversing direction each time) — a press mid-transit is ignored (not
+queued, not a reversal): this belt's only measured, confirmed-safe
+behavior is a full run, and half-way reversals were never asked for or
+tested. `reset()` matters because `ConveyorControl` is built once, outside
+the per-Play arm-state rebuild: without it, a '1' press queued before a
+Stop would fire the instant the next Play starts with no new keypress at
+all, and once "moving" it silently ignores every further press until it
+reaches an end, making the belt look completely unresponsive. Stop reverts
+the stage (and the jig) to its initial position, so `reset()` sets
+`state="back"` and re-zeros the velocity variable to match, covering Stop
+also reverting the graph's own authored default.
+
+**Conveyor vibration, root cause (2026-07-21).** `_jig_world_y()` measures
+`main_holder_jig`'s live Y every frame during transit via a fresh
+`SingleXFormPrim`. `main_holder_jig`'s `xformOpOrder` is `[translate,
+orient, scale, scale:unitsResolve]` (the last op compensates the source
+asset's `metersPerUnit=0.001` down to this stage's meters), but
+`SingleXFormPrim`'s default (`reset_xform_properties=True`) forces every
+prim it wraps down to exactly `[translate, orient, scale]` post-init,
+silently stripping `unitsResolve`. Since a fresh `SingleXFormPrim`
+constructs every frame during transit, leaving the default on was
+re-stripping that op every single frame while the belt moved, violently
+disrupting the jig's effective scale/transform each step — confirmed live
+as the actual cause of the vibration/rotation (a manual edit of the
+graph's own Velocity variable, which never touches `SingleXFormPrim`,
+moved the same jig smoothly). Fixed by passing
+`reset_xform_properties=False`.
+
 ## `scripts/test_mefron_teleop_headless.py`
 
 Headless regression test for `mefron.py`'s `run_teleop_loop()` (reuses
@@ -569,6 +716,82 @@ this file and `scripts/mefron.py` for consistency.
   each plan's own `result.interpolation_dt` instead of one waypoint per
   render frame.
 
+## `scripts/mefron_lib/robot.py` — mount/gripper investigation detail
+
+**`remove_parallel_jaw_gripper()`: deactivate, not delete.** Converting arm
+2 to a suction end-effector needed its finger links/joints gone, but
+`omni.kit.commands.execute("DeletePrims", ...)` silently no-ops for these
+specific prims — returns success, no error, but the prims stay
+valid/active — since their specs live across the URDF importer's
+disk-persisted, multi-layer `configuration/` stack rather than purely on
+the current edit target. `Usd.Prim.SetActive(False)` authors directly on
+the stage's current edit target regardless, and works.
+
+**`hide_hand_housing()`: un-instancing before hiding.** The URDF importer
+makes imported mesh geometry instanceable by default, and since all three
+arms import the identical `franka_panda.urdf`, `panda_hand/visuals` across
+all three can share one native-instancing prototype — authoring visibility
+directly on an instance-proxy prim isn't a real per-instance override in
+that case. Walking up to the nearest instance root and calling
+`SetInstanceable(False)` un-shares that one arm's subtree from the
+prototype first, so `MakeInvisible()` only affects that arm's own Franka.
+`panda_hand` itself stays active (it's cuRobo's `franka.yml` `ee_link`) and
+its collisions sub-scope stays active too (dropping it would stop the
+other arm's planner from seeing it as an obstacle) — only the visuals
+sub-scope is hidden.
+
+**`attach_suction_gripper()`: baked-in collider/rigid-body on the custom
+asset.** Unlike the borrowed UR10 asset, the custom SolidWorks-exported
+suction flange comes in with a baked-in collider on its own mesh —
+confirmed live 2026-07-17: a PhysX raycast from the cup tip along
+`panda_hand`'s own +Z self-hit this asset's `Revolve1/Mesh` at distance
+0.0, before ever reaching outward, silently breaking
+`attach_surface_gripper_physics()`'s grab raycast. It also carries a
+baked-in enabled `RigidBodyAPI` (PhysX logs "missing xformstack reset when
+child of another enabled rigid body" once mounted — a nested-rigid-body
+hierarchy, not merely a stray collider). Both are disabled via
+`CollisionEnabled`/`RigidBodyEnabled = False` rather than removing the APIs
+outright: a 2026-07-18 attempt at `prim.RemoveAPI(...)` (to also silence
+the xformstack warning, which disabling alone doesn't since that check is
+structural, on `HasAPI(RigidBodyAPI)`, not on whether the instance is
+enabled) coincided with the suction gripper mesh going invisible in the
+user's own GUI run; reverted back to disable-only to isolate whether
+`RemoveAPI` was actually the cause before retrying. The xformstack warning
+is expected to still appear with the current version — a known tradeoff
+pending a fix that gets both.
+
+**`attach_surface_gripper_physics()`: compliance tuning.** The visual
+`suction_gripper` child (from `attach_suction_gripper()`) has zero physics
+of its own — that function strips any collider/rigid-body its USD source
+brings in, which is load-bearing here since this function authors the
+*real* attach mechanism separately: one `UsdPhysics.Joint` tagged with
+`IsaacAttachmentPointAPI`, plus `PhysicsLimitAPI`/`PhysicsDriveAPI`
+compliance values taken directly from NVIDIA's own bundled reference
+(`isaacsim.robot.surface_gripper`'s `data/SurfaceGripper_gantry.usda`) so
+the joint actually constrains the grabbed object once attached — confirmed
+live 2026-07-17 that without this, the joint is a fully-free D6 (the
+schema's own documented default): the manager reports Closed/gripped
+correctly, but nothing physically holds the object, so lifting leaves it
+behind. `transX`/`transY` are locked (low > high, per `PhysicsLimitAPI`'s
+own schema doc); `transZ` gets a small compliant range + spring (give
+along the suction axis, like a real cup flexing slightly); `rotX`/`rotY`
+get a looser spring (tilt compliance); `rotZ` is much stiffer (resists the
+object spinning about the suction axis). This authoring happens before
+Play/attach, so the low>high locked-axis convention is honored by the
+initial parse — hot-patching an already-live joint mid-session would need
+a tiny valid range instead, not an inverted one. `body1` is left unbound;
+the `SurfaceGripperManager` rebinds it live to whatever it finds within
+`max_grip_distance` at close time. `excludeFromArticulation` is the one
+physics attribute that isn't optional: `panda_hand` is a real articulation
+link, and without it PhysX tries to fold this joint into the Franka's own
+reduced-coordinate solve instead of treating it as an auxiliary
+maximal-coordinate constraint. Not `robot_schema.ApplyAttachmentPointAPI()`
+for the schema apply itself: that helper calls
+`Classes.ATTACHMENT_POINT_API.name` (the plain Enum's Python identifier)
+instead of `.value` (the real schema name, `IsaacAttachmentPointAPI`) —
+every sibling `Apply*()` in that module correctly uses `.value`, only this
+one doesn't, so the real token is authored directly instead.
+
 ## `scripts/mefron2.py`
 
 A simplified sibling of `scripts/mefron.py` built for a "everything
@@ -681,6 +904,93 @@ real schema files, not memory) confirmed:
   be reproduced by code. **Not yet applied/tested** as of the last check
   (`mefron.usd` isn't tracked in git, so this can't be re-verified from
   the repo alone — check live before assuming it's still pending).
+
+## Open issues — full investigation detail
+
+CLAUDE.md keeps only a short pointer to each of these; this is the full detail.
+
+**Assembly placement (P) redesign, reverted 2026-07-17.** Tried a proper
+lift/translate/rotate/descend sequence (the original 2-stage lift baked the
+*final* X/Y into the lift waypoint, so cuRobo swung sideways instead of
+lifting straight; a 3-stage version fixed that but its combined
+rotate+translate leg made cuRobo hold the old orientation until the very end
+of that leg and snap to final right at the align→descend handoff, a violent
+kickstart). Reverted all of it after finding a deeper, unrelated issue:
+`ASSEMBLY_LIFT_HEIGHT` is a fixed world-frame Z constant — unlike every
+other pose in this system, which is computed relative to a live prim
+(`main_holder` for `ASSEMBLY_RELATIONSHIPS`, the part itself for grasp
+approach) — so moving `main_holder` (or repositioning the assembly
+generally) breaks the staged sequence outright. Next attempt should make the
+lift clearance relative instead — e.g. a margin above whichever of the
+current/final Z is higher — rather than an absolute world height. May or
+may not also be the same grasp-centering issue (see
+`docs/grasp-and-assembly-offsets.md`); not confirmed either way.
+
+**Conveyor collision hang, confirmed live 2026-07-18.** Adding the new
+`ConveyorBelt_*`/`container_h20*` prims to `OBSTACLE_PRIM_PATHS` (even just
+the 5 conveyor + 4 container top-level Xforms) made
+`get_obstacles_from_stage()`'s mesh-collision-world construction hang (past
+its own "Creating new Mesh cache: 95" log line) for over an hour with zero
+forward progress, steady CPU/GPU load, and no crash/OOM to even signal
+failure — had to be killed. Each top-level Xform recurses into every child
+mesh (9 prims → ~95 individual meshes), and real conveyor-line CAD
+assemblies (rollers, frame, guards, motor housing — 13–113MB per file under
+`Conveyors/`) are far more geometrically complex than the single
+`packing_table` prop they replaced, well past what cuRobo's mesh-based
+collision checker can preprocess in reasonable time. Next attempt should use
+primitive/cuboid obstacle approximations instead of the raw CAD meshes
+(cuRobo's `WorldConfig` supports cuboid obstacles directly), or narrow to
+specific lightweight sub-prims rather than whole assemblies.
+
+**Arm 2's suction release (L key) doesn't actually let go.** Pressing L
+calls `open_gripper()` (the real `isaacsim.robot.surface_gripper` runtime
+interface), which flips the manager's status to Open, but the object stays
+physically stuck — the only working fix so far is manually selecting
+`SurfaceGripperJoint` under `panda_hand` in the Stage panel and unchecking
+its "Joint Enabled" property by hand every time. Tried scripting that exact
+toggle (`UsdPhysics.Joint`'s `physics:jointEnabled`, via
+`GetJointEnabledAttr()`) from `SurfaceGripperKeyboardControl.open()`/
+`close()` across three variants, all confirmed live and all reverted:
+
+1. `open()` sets `jointEnabled=False` right after `open_gripper()`;
+   `close()` sets it back `True` right before `close_gripper()`. L then
+   released correctly, but switching target objects mid-session (V on
+   `pcb_assembly` right after a prior L+N/M cycle on `screen`) sent the arm
+   violently snapping back toward `screen`'s location.
+2. Same, but gated re-enabling on `is_closed()` polled once per frame from
+   `_step_arm()` instead of doing it synchronously in `close()`. Deadlocked
+   instead — V never attached again, apparently because the manager can't
+   reach `Closed` status while its own joint is disabled.
+3. Re-added `joint.GetBody1Rel().ClearTargets(True)` alongside the
+   jointEnabled toggle (on the theory that a stale `body1` binding to the
+   previous object was the cause of variant 1's snap) — no change, same
+   violent snap-to-previous-object as variant 1.
+
+Root cause per `isaacsim.robot.surface_gripper`'s own shipped headers
+(`SurfaceGripperManager.h`/`SurfaceGripperComponent.h` —
+`/isaac-sim/exts/isaacsim.robot.surface_gripper/include/...`): the real C++
+`SurfaceGripperManager` tracks gripped objects, attachment points, and
+per-joint settling counters (`m_settlingDelay = 10` physics steps) in its
+own memory (`m_writeToUsd` defaults **false**) and processes attach/detach
+as **queued** PhysX/USD actions drained on its own `onPhysicsStep`, not
+synchronously within the Python call. `SurfaceGripperJoint` is also
+registered as this manager's own attachment point
+(`IsaacAttachmentPointAPI`), so it's independently watching that exact prim
+for USD change notifications. Editing `jointEnabled`/`body1` on it directly
+from Python races the manager's own deferred queue and its
+`onComponentChange` listener, producing a different broken symptom each time
+depending on exactly when the edit lands relative to the manager's own
+processing — not a bug in the manager, but us fighting its ownership of
+that prim. Current code is back to plain `open_gripper()`/`close_gripper()`
+only (matching `isaacsim.robot.manipulators`' own `SurfaceGripper` wrapper
+and the reference `OgnSurfaceGripper` node — neither ever touches the joint
+directly), i.e. **the manual Stage-panel workaround is still required**.
+Next attempt should look at whether the manual "uncheck" is even doing
+anything physically real (vs. the elapsed time spent navigating the UI being
+what actually lets the manager's own retry/settling logic clear itself)
+before trying to automate it again, or look for a genuine reset/detach entry
+point in `isaacsim.robot.surface_gripper._surface_gripper`'s interface
+beyond `open_gripper()`/`close_gripper()`.
 
 ## Needs verification
 

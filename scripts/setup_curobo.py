@@ -1,11 +1,6 @@
-"""Builds a warmed-up cuRobo MotionGen for the CR5.
-
-FIRST DRAFT / UNVERIFIED: written against the cuRobo API pinned in
-../docker/.env.curobo, not run against that install (no GPU available in
-this environment). See configs/curobo/cr5.yml's KNOWN GAP note about the
-URDF's degenerate velocity/effort limits before expecting motion
-generation to actually succeed.
-"""
+"""Builds a warmed-up cuRobo MotionGen for the CR5. FIRST DRAFT / UNVERIFIED: not run against a
+live install. See configs/curobo/cr5.yml's KNOWN GAP note about the URDF's degenerate
+velocity/effort limits before expecting motion generation to actually succeed."""
 
 from __future__ import annotations
 

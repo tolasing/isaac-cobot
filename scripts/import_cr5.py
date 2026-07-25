@@ -1,17 +1,7 @@
-"""Imports the vendored CR5 URDF into /World/CR5 as a sibling of /World/Factory.
-
-Verified against a live Isaac Sim 5.1.0 install (real GPU), both standalone
-and imported as a library by build_scene.py.
-
-Only creates its own SimulationApp when run standalone (`__main__`); when
-imported (e.g. by build_scene.py, which already has one running),
-import_cr5() reuses the caller's Kit process instead of starting a second
-one -- the isaacsim/omni imports below just need *some* Kit app to already
-be up, not specifically the one this module would create.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/import_cr5.py
-"""
+"""Imports the vendored CR5 URDF into /World/CR5 as a sibling of /World/Factory. Only creates its
+own SimulationApp when run standalone; when imported (e.g. by build_scene.py), reuses the
+caller's already-running Kit process instead of starting a second one.
+Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/import_cr5.py"""
 
 from __future__ import annotations
 
@@ -34,16 +24,10 @@ def import_cr5(
     default_drive_strength: float = 1e5,
     default_position_drive_damping: float = 1e4,
 ) -> str:
-    """Imports a URDF (the CR5 by default) via URDFParseAndImportFile.
-
-    `default_drive_strength`/`default_position_drive_damping` default to
-    the CR5's own tuning -- a workaround for its URDF's degenerate
-    effort="0" velocity="0" joints (see robots/cr5/SOURCE.md), not a
-    generally-correct value for any robot. Callers importing a different,
-    properly-specified URDF (e.g. build_scene.py's temporary Franka swap,
-    which passes cuRobo's own tuned 1047.19751 / 52.35988) should override
-    both.
-    """
+    """Imports a URDF (the CR5 by default) via URDFParseAndImportFile. default_drive_strength/
+    default_position_drive_damping default to the CR5's own tuning -- a workaround for its URDF's
+    degenerate effort="0" velocity="0" joints (see robots/cr5/SOURCE.md), not generally correct
+    for any robot. Callers importing a different, properly-specified URDF should override both."""
     # isaacsim.asset.importer.urdf doesn't export a directly-constructible
     # config class -- the URDFCreateImportConfig command is the only way to
     # get a properly-initialized isaacsim.asset.importer.urdf._urdf.ImportConfig.

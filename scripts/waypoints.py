@@ -1,8 +1,5 @@
-"""Joint-space waypoint schema shared by teach_waypoint.py and playback_waypoints.py.
-
-Waypoints are joint-space, not Cartesian (see CLAUDE.md's Conventions
-section) -- radians, 6 values for joint1..joint6.
-"""
+"""Joint-space waypoint schema shared by teach_waypoint.py and playback_waypoints.py. Waypoints
+are joint-space, not Cartesian -- radians, 6 values for joint1..joint6."""
 
 from __future__ import annotations
 

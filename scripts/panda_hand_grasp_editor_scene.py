@@ -1,13 +1,7 @@
 """Grasp Editor scene using our own hand-only Franka import (no arm) on a fresh anonymous stage --
-combines franka_grasp_editor_scene.py's anonymous-stage workaround (avoids the layered-import bug that
-breaks Grasp Editor's Frames-of-Reference dropdown against mefron.usd directly) with
-mefron_gripper_probe.py's trimmed hand-only URDF (avoids whatever full-arm-only issue makes
-panda_leftfinger/panda_rightfinger's meshes fail to resolve on an anonymous stage -- confirmed empty via
-a direct Usd.PrimRange check, not just a visibility flag). Full investigation: docs/grasp-and-assembly-offsets.md.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/panda_hand_grasp_editor_scene.py
-"""
+combines franka_grasp_editor_scene.py's anonymous-stage workaround with
+mefron_gripper_probe.py's trimmed hand-only URDF. Full investigation:
+docs/grasp-and-assembly-offsets.md. Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/panda_hand_grasp_editor_scene.py"""
 
 from __future__ import annotations
 

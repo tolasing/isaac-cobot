@@ -11,12 +11,9 @@ from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
 if __name__ == "__main__":
-    # ALWAYS the plain base experience at construction time, even for interactive runs -- mounting a
-    # second Franka (a second native URDF import) crashes Kit's URDF importer plugin if the full
-    # experience's extra extensions are already loaded when that happens. Loading them AFTER both
-    # Frankas are mounted (kit_experience.enable_full_experience_extensions(), below) reproduces the
-    # exact same feature set (Physics debug-viz menu included) with zero crash -- see
-    # robot.mount_franka()'s own docstring for the full diagnosis.
+    # ALWAYS the plain base experience at construction time -- mounting a second/third Franka
+    # crashes Kit's URDF importer if the full experience's extensions are already loaded. See
+    # robot.mount_franka()'s own docstring.
     simulation_app = SimulationApp({"headless": _headless})
 
 # Must run before any omni/curobo import -- see mefron_lib/kit_bootstrap.py's docstring.
@@ -34,14 +31,9 @@ def main() -> None:
     # Ensures Play actually creates a PhysX simulation view -- otherwise this is a GUI toggle that's
     # easy to have off, in which case is_playing() lies and SingleArticulation.initialize() never gets a real view.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
-    # Decouples physics stepping from real elapsed wall-clock time between simulation_app.update()
-    # calls -- without this, a heavier per-frame Python cost (3 arms' worth of cuRobo planning here,
-    # vs. near-zero in a lightweight demo like the standalone Conveyor Builder scene) makes physics
-    # take bigger/bunched-up catch-up steps to keep pace with real time, which destabilizes
-    # friction-coupled mechanisms like ConveyorBelt_A24's PhysxSurfaceVelocityAPI (confirmed live
-    # 2026-07-21: identical belt/jig/friction setup was smooth in the Conveyor Builder demo but
-    # vibrated/rotated under mefron.py's own heavier loop). Forces every update() call to advance
-    # physics by exactly one fixed-size step regardless of how long the Python code took.
+    # Decouples physics stepping from real wall-clock time -- without it, heavier per-frame Python
+    # cost (3 arms' worth of cuRobo planning) destabilizes friction-coupled mechanisms like the
+    # conveyor. See docs/mefron-history.md.
     carb.settings.get_settings().set_bool("/app/player/useFixedTimeStepping", True)
 
     # Must run BEFORE open_stage(): mefron.usd has a persisted, broken /panda prim reference, and
@@ -49,11 +41,7 @@ def main() -> None:
     clear_stale_robot_configuration(config.MEFRON_CONFIGURATION_DIR)
 
     omni.usd.get_context().open_stage(str(config.MEFRON_USD))
-    # Must run before the settle pump below -- see robot.clear_stray_robot_prims()'s own docstring:
-    # leftover Franka/Franka2/Franka3/panda prims baked into mefron.usd's saved root layer by a past
-    # stray Save get partially registered by PhysX/Fabric/Hydra during that pump if left alive this
-    # long, desyncing rendering from the CURRENT run's freshly re-mounted robots (physics/cuRobo
-    # motion planning stays correct regardless -- it addresses each arm by its own exact prim_path).
+    # Must run before the settle pump below -- see robot.clear_stray_robot_prims()'s own docstring.
     robot.clear_stray_robot_prims()
 
     # mefron.usd's own content resolves asynchronously, same reasoning as

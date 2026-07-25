@@ -1,15 +1,7 @@
 """ConveyorBelt_A24 setup + keyboard control, driven through Isaac Sim's own
-isaacsim.asset.gen.conveyor OmniGraph node (CreateConveyorBelt command) rather than a hand-authored
-PhysX attribute write. See config.CONVEYOR_BELT_PRIM_PATH's own comment for why this retries a route
-abandoned on 2026-07-20, and what's different this time (explicit inputs:enabled assertion,
-deterministic-path stray-graph cleanup + explicit surfaceVelocity re-zeroing before rebuild).
-
-setup_conveyor_belt_graph() is one-time-per-script-run setup (call after
-kit_experience.enable_full_experience_extensions(), which is what actually enables
-isaacsim.asset.gen.conveyor); ConveyorControl is the per-frame runtime piece, structurally identical
-to before except it now writes a signed float to the graph's own "Velocity" variable instead of a
-Gf.Vec3f to PhysxSurfaceVelocityAPI directly.
-"""
+isaacsim.asset.gen.conveyor OmniGraph node rather than a hand-authored PhysX attribute write --
+see docs/mefron-history.md for why. setup_conveyor_belt_graph() is one-time-per-script-run setup
+(after kit_experience.enable_full_experience_extensions()); ConveyorControl is the per-frame piece."""
 
 from __future__ import annotations
 
@@ -20,23 +12,10 @@ from . import config
 
 
 def setup_conveyor_belt_graph() -> None:
-    """Builds config.CONVEYOR_ACTION_GRAPH_PATH via the CreateConveyorBelt kit command, driving
-    config.CONVEYOR_BELT_PRIM_PATH -- the supported, NVIDIA-maintained entry point
-    (isaacsim.asset.gen.conveyor), not a hand-authored graph. Must run after
-    kit_experience.enable_full_experience_extensions() (which enables isaacsim.asset.gen.conveyor and
-    omni.graph.bundle.action via config.FULL_EXPERIENCE_EXTRA_EXTENSIONS) -- so only ever called from
-    mefron.py's non-headless branch, right before build_conveyor_control().
-
-    Two defensive steps map 1:1 onto the two confirmed 2026-07-20 failures:
-    - Deletes any prim already at CONVEYOR_ACTION_GRAPH_PATH (a stray survivor of a previous run's
-      silent mefron.usd resave, or of this function re-running) and re-zeros the belt's own
-      surfaceVelocity directly first -- since deleting a graph does NOT clear that attribute (it lives
-      on the rigid body, not the graph), a leftover nonzero value would otherwise drive the belt
-      forever with no graph left to stop it.
-    - Explicitly forces the new node's inputs:enabled to True and reads it back, rather than trusting
-      whatever the command/node template defaults to -- the prior attempt's node silently ended up
-      unchecked and never computed at all.
-    """
+    """Builds config.CONVEYOR_ACTION_GRAPH_PATH via the CreateConveyorBelt kit command -- the
+    supported entry point, not a hand-authored graph. Must run after
+    kit_experience.enable_full_experience_extensions(). Deletes any stray prior graph, re-zeros
+    surfaceVelocity, and forces+reads back inputs:enabled -- see docs/mefron-history.md for why."""
     import omni.kit.app
     import omni.kit.commands
     from pxr import Gf, PhysxSchema
@@ -134,24 +113,10 @@ def setup_conveyor_belt_graph() -> None:
 
 
 class ConveyorControl:
-    """Toggled by config.CONVEYOR_TOGGLE_KEY (number-row '1'): drives the ConveyorBeltGraph's own
-    "Velocity" graph variable (set up by setup_conveyor_belt_graph(), evaluated each tick by the
-    isaacsim.asset.gen.conveyor OmniGraph node while playing) to carry config.MAIN_HOLDER_JIG_PRIM_PATH
-    config.CONVEYOR_TRAVEL_DISTANCE each press, forward then back, reversing direction each time.
-    step() must be called once per teleop frame (see teleop.run_teleop_loop()); it both applies a
-    pending toggle request and, while in transit, checks the jig's live world Y against whichever
-    end it's heading toward, zeroing the velocity once reached.
-
-    A press mid-transit is ignored (not queued, not a reversal) -- deliberately simple: this belt's
-    only measured, confirmed-safe behavior is a full back-to-front or front-to-back run, and half-way
-    reversals were never asked for or tested.
-
-    Direction is a fixed node input set once by setup_conveyor_belt_graph(), so unlike the previous
-    direct-PhysX version, reversing here is just a sign flip on a scalar, not negating a vector.
-
-    Each transit's target Y is measured live off the jig's own position at the moment it starts
-    (config.CONVEYOR_TRAVEL_DISTANCE applied from there), not two fixed absolute world-Y endpoints --
-    see config.CONVEYOR_TRAVEL_DISTANCE's own comment for why."""
+    """Toggled by config.CONVEYOR_TOGGLE_KEY: drives the ConveyorBeltGraph's "Velocity" variable to
+    carry main_holder_jig config.CONVEYOR_TRAVEL_DISTANCE each press, forward then back. step()
+    applies a pending toggle each teleop frame and zeros velocity once the jig reaches the target.
+    See docs/mefron-history.md for the state-machine/mid-transit-press rationale."""
 
     def __init__(self) -> None:
         self._state = "back"  # "back" | "moving_forward" | "front" | "moving_backward"
@@ -161,15 +126,10 @@ class ConveyorControl:
         self._transit_target_y = None
 
     def reset(self) -> None:
-        """Called on every fresh Play (see teleop.run_teleop_loop()) -- without this, a '1' press
-        queued before a Stop (or before mefron.py's own forced timeline.stop() during warmup) would
-        sit on this object (built once, outside the per-Play arm-state rebuild) and fire the instant
-        the next Play starts, with no new keypress at all; worse, once "moving" it silently ignores
-        every further press until it reaches an end (see class docstring), making the belt look
-        completely unresponsive to the key. Stop reverts the stage to its initial authored transform,
-        so main_holder_jig is physically back at the start position too -- state="back" matches
-        that. Re-zeroing the velocity variable here (not just once ever) also covers Stop reverting
-        the graph's own authored default back to whatever was last saved."""
+        """Called on every fresh Play. Without this, a '1' press queued before a Stop would fire the
+        instant the next Play starts with no new keypress, and once "moving" it silently ignores
+        further presses until reaching an end. Stop reverts the stage (and the jig) to its start
+        position, so state="back" matches -- see docs/mefron-history.md."""
         self._state = "back"
         self._toggle_requested = False
         self._transit_target_y = None
@@ -205,17 +165,9 @@ class ConveyorControl:
         attr.Set(float(value))
 
     def _jig_world_y(self) -> float:
-        # reset_xform_properties=False is required here -- main_holder_jig's xformOpOrder is
-        # [translate, orient, scale, scale:unitsResolve] (that last op compensates the source
-        # asset's metersPerUnit=0.001 down to this stage's meters), but SingleXFormPrim's default
-        # (reset_xform_properties=True) forces every prim it wraps down to exactly
-        # [translate, orient, scale] "post-init" -- silently stripping unitsResolve. Since this
-        # constructs fresh every frame during transit (matching this codebase's Stop/Play-safety
-        # convention of never caching PhysX/Fabric-backed handles across a Stop), leaving the
-        # default on was re-stripping that op every single frame while the belt moved, violently
-        # disrupting the jig's effective scale/transform each step -- confirmed live 2026-07-21 as
-        # the actual cause of the conveyor vibration/rotation (a manual edit of the graph's own
-        # Velocity variable, which never touches SingleXFormPrim, moved the same jig smoothly).
+        # reset_xform_properties=False is required -- the default silently strips main_holder_jig's
+        # unitsResolve xformOp every frame, which was the confirmed root cause of conveyor
+        # vibration. See docs/mefron-history.md.
         xform = SingleXFormPrim(prim_path=config.MAIN_HOLDER_JIG_PRIM_PATH, reset_xform_properties=False)
         position, _ = xform.get_world_pose()
         return float(position[1])

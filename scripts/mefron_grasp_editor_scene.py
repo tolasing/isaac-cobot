@@ -1,8 +1,6 @@
 """Diagnostic scene for the Grasp Editor SingleArticulation-ownership race (see
 docs/grasp-and-assembly-offsets.md): no teleop loop, no cuRobo, robot left idle.
-
-Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron_grasp_editor_scene.py
-"""
+Run standalone: ${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron_grasp_editor_scene.py"""
 
 from __future__ import annotations
 

@@ -1,57 +1,7 @@
-"""Headless verification that dragging the teleop target actually drives the
-mounted robot via cuRobo's MotionGen.
-
-scripts/build_scene.py's own main() only calls run_teleop_loop() in the
-interactive (non---headless) path -- with --headless it builds the scene,
-prints status, and closes before ever reaching the teleop loop (there is no
-Play button and no mouse to drag headlessly). This script exercises
-run_teleop_loop() directly instead, faking a mouse-drag by monkeypatching
-target.get_world_pose(): it returns the target's real starting pose for
-enough frames to clear run_teleop_loop's own init/settle phase (so the
-debounce logic sees a genuinely static target, exactly like
-CLAUDE.md's prior ad-hoc verification of this same chain), then jumps to a
-second, nearby pose -- what run_teleop_loop sees is indistinguishable from a
-real drag.
-
-Reuses build_scene.py's own functions as a library rather than duplicating
-scene-build logic. Two gotchas specific to that reuse:
-
-  - run_teleop_loop() (like build_scene.main()) references a module-level
-    `simulation_app` global inside build_scene's own namespace, only ever
-    set there under `if __name__ == "__main__"` -- since this script is the
-    one creating the real SimulationApp when run standalone, it must assign
-    `build_scene.simulation_app` explicitly before calling
-    run_teleop_loop(), or that name lookup fails with NameError.
-  - run_teleop_loop() only defines the `/physicsScene` prim (via
-    `UsdPhysics.Scene.Define()`) at its own top, right before its while
-    loop -- build_scene.py's normal interactive flow never plays the
-    timeline before calling run_teleop_loop(), so that ordering is never a
-    problem there. Confirmed live that calling `timeline.play()` (plus a
-    few `simulation_app.update()`s) *before* run_teleop_loop() steps
-    physics with no PhysicsScene prim on the stage yet, which corrupts
-    PhysX's tensor simulationView -- run_teleop_loop's own later
-    `SingleArticulation(...)` construction then crashes with
-    `AttributeError: 'NoneType' object has no attribute 'link_names'` deep
-    in isaacsim.core.prims, even though that construction is the *first*
-    SingleArticulation on this prim (ruled out via a separate repro: the
-    same crash happens whether or not this script also builds its own
-    SingleArticulation beforehand). Fixed by defining `/physicsScene`
-    ourselves before calling `timeline.play()`, matching the order
-    run_teleop_loop's own docstring/comments already establish as required
-    (see build_scene.py) -- run_teleop_loop's own `IsValid()` guard then
-    just finds it already there and moves on.
-  - Also avoid holding two separate SingleArticulation instances on the
-    same prim at once regardless: this script reads the guaranteed
-    starting pose from `robot_cfg["kinematics"]["cspace"]["retract_config"]`
-    (what run_teleop_loop's own init phase drives the robot to) instead of
-    constructing its own SingleArticulation before calling
-    run_teleop_loop(), and only builds one afterward, once
-    run_teleop_loop's internal instance has gone out of scope, to read the
-    ending pose.
-
-Run standalone:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_teleop_headless.py --headless
-"""
+"""Headless verification that dragging the teleop target drives the robot via cuRobo's MotionGen
+-- exercises build_scene.run_teleop_loop() directly, faking a drag by monkeypatching
+target.get_world_pose(). Reuses build_scene.py as a library: must assign
+build_scene.simulation_app explicitly, and define /physicsScene before timeline.play()."""
 
 from __future__ import annotations
 
@@ -123,11 +73,8 @@ def main() -> None:
     for _ in range(5):
         simulation_app.update()
 
-    # The guaranteed starting pose -- run_teleop_loop's own init phase drives
-    # the robot here for its first _TELEOP_INIT_FRAMES frames, so there's no
-    # need for a separate SingleArticulation just to observe it (see this
-    # module's own docstring for why that would break run_teleop_loop's own
-    # later one).
+    # The guaranteed starting pose -- run_teleop_loop's own init phase drives the robot here, so
+    # there's no need for a separate SingleArticulation just to observe it.
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
     start_positions = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
 

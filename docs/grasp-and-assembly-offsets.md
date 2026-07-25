@@ -86,6 +86,14 @@ remain in the repo as working diagnostic artifacts for future parts, in
 case the Grasp Editor is worth retrying against a from-scratch stage for a
 robot/asset combination that doesn't hit this same layered-import bug.
 
+`scripts/panda_hand_grasp_editor_scene.py` combines that anonymous-stage
+workaround with `mefron_gripper_probe.py`'s trimmed hand-only URDF (no
+arm), for testing Grasp Editor against just the hand — but the full-arm
+URDF's `panda_leftfinger`/`panda_rightfinger` meshes fail to resolve at
+all on an anonymous stage (confirmed empty via a direct `Usd.PrimRange`
+check, not just a visibility flag), a separate issue from the
+layered-import bug above.
+
 ## T_S_G: gripper grasp pose relative to `finger_print_scanner`
 
 **First derivation** — via `compute_relative_pose()` on the Franka's

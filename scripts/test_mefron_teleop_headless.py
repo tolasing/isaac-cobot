@@ -1,8 +1,6 @@
-"""Headless regression test for mefron_lib.teleop's run_teleop_loop(): fakes a mouse
-drag by monkeypatching target.get_world_pose(), then asserts the robot moved.
-
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_teleop_headless.py --headless
-"""
+"""Headless regression test for mefron_lib.teleop's run_teleop_loop(): fakes a mouse drag by
+monkeypatching target.get_world_pose(), then asserts the robot moved.
+Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_teleop_headless.py --headless"""
 
 from __future__ import annotations
 

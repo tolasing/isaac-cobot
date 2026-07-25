@@ -1,13 +1,7 @@
 """One-time (re-runnable) vendoring of just the suction-gripper asset out of Isaac Sim's bundled
-UR10 (whose `ur10.usd` has a `Gripper` VariantSet with `Short_Suction`/`Long_Suction` options) into
-robots/ur10_suction/, via omni.kit.usd.collect's Collector -- the same "Collect Asset" mechanism
-robots/franka_panda/SOURCE.md documents doing manually through the Content Browser, just scripted
-instead. Collects grippers/short_gripper.usd directly (NOT the whole ur10.usd), so the ~21MB UR10
-arm body/configuration never gets pulled in -- only the gripper end-effector is needed, to attach to
-scripts/mefron.py's arm 2. See robots/ur10_suction/SOURCE.md for why this asset was vendored.
-
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/vendor_ur10_suction.py --headless
-"""
+UR10 into robots/ur10_suction/, via omni.kit.usd.collect's Collector. Collects
+grippers/short_gripper.usd directly (not the whole ~21MB ur10.usd) -- see
+robots/ur10_suction/SOURCE.md. Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/vendor_ur10_suction.py --headless"""
 
 from __future__ import annotations
 

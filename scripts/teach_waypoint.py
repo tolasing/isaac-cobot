@@ -1,13 +1,7 @@
-"""Records the CR5's current joint state as a new waypoint.
-
-FIRST DRAFT / UNVERIFIED: written against the isaacsim 5.1 Python API
-surface known at authoring time, not run against a live Isaac Sim install.
-
-Run inside a session where /World/CR5 already exists (build_scene.py +
-import_cr5.py) and has been posed to the pose you want to teach, e.g. via
-the GUI's joint drives:
-    ${ISAACSIM_ROOT_PATH}/python.sh scripts/teach_waypoint.py --name approach
-"""
+"""Records the CR5's current joint state as a new waypoint. FIRST DRAFT / UNVERIFIED: written
+against the isaacsim 5.1 API surface, not run against a live install. Run inside a session where
+/World/CR5 already exists and has been posed via the GUI's joint drives:
+${ISAACSIM_ROOT_PATH}/python.sh scripts/teach_waypoint.py --name approach"""
 
 from __future__ import annotations
 
