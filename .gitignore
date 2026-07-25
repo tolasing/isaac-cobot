@@ -34,6 +34,11 @@ scratchpad/*
 bt_bridge/build/
 scripts/mefron_lib/mefron_bt_bridge*.so
 
+# Grasp/placement trees generated from config.py on every GraspObjectBehaviorTree/
+# PlaceObjectBehaviorTree construction (behavior_tree.generate_grasp_tree_xml()/
+# generate_placement_tree_xml()) -- regenerated every run, never hand-edited, never committed.
+bt_bridge/trees/generated/
+
 # Editors / OS
 .vscode/
 .idea/

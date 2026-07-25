@@ -1,10 +1,22 @@
 # Migrating mefron's grasp/place sequencing to real BehaviorTree.CPP + Groot2
 
-> Implemented 2026-07-22 on the `behaviour-tree` branch. Scope: only the
+> Phase 1 implemented 2026-07-22 on the `behaviour-tree` branch: only the
 > grasp→lift→align→descend→place sequence (arm 1's `gripper_control` P
-> handling and arm 2's `assembly_control` P handling in `_step_arm()`). The
-> per-frame drag-follow cuRobo plan/apply loop, obstacle rescans, gripper
-> ramp, and keyboard dispatch are all untouched.
+> handling and arm 2's `assembly_control` P handling in `_step_arm()`).
+>
+> Phase 2 implemented 2026-07-23, same branch: generalized every grasp/
+> approach request (arm 1's J/B/K, arm 2's N) into the tree too (previously
+> only P/placement was tree-driven — J/B/K/N's yaml-load/pose-compute/snap
+> step stayed inline Python), and replaced per-arm Python-closure
+> parameterization with real BT.CPP ports + blackboard + generated
+> per-object `<SubTree>` dispatch, so per-object data (which yaml, which
+> tolerances, which end effector) is real tree/blackboard data — visible
+> and editable in Groot2's XML — not a Python dict lookup a tree merely
+> gates on. See Architecture below.
+> The per-frame drag-follow cuRobo plan/apply loop, obstacle rescans,
+> gripper ramp, and keyboard *dispatch* (which key maps to which request)
+> are still untouched — this is about what happens once a request is
+> armed, not how it's triggered.
 
 ## Why
 
@@ -47,15 +59,22 @@ straight into `scripts/mefron_lib/`.
 - `bt_bridge/CMakeLists.txt` + `bt_bridge/src/bt_bridge.cpp`: a pybind11
   extension exposing `BTExecutor` (wraps `BT::BehaviorTreeFactory` +
   `BT::Tree` + `BT::Groot2Publisher`, loads a tree from an XML file so Groot2
-  can open/edit the tree directly) and `register_callback(name, fn)` (a
+  can open/edit the tree directly), `register_callback(name, fn)` (a
   process-global registry from an XML leaf's `callback_name` attribute to a
-  Python callable). One generic `PyActionNode` C++ type — registered under
-  both `PyAction` and `PyCondition` XML tags — looks up and calls whichever
-  Python callable its `callback_name` names, mapping the returned
-  `'SUCCESS'`/`'FAILURE'`/`'RUNNING'` string to a `BT::NodeStatus`. This is
-  the same principle `docs/omnigraph-migration-plan.md` already used for
-  cuRobo: the bridge owns control-flow sequencing only, never the actual
-  grasp/place math, which stays in `grasp.py`.
+  Python callable), and `BTExecutor.set_blackboard(key, value)` (writes a
+  string onto the tree's root blackboard). One generic `PyActionNode` C++
+  type — registered under both `PyAction` and `PyCondition` XML tags — looks
+  up its `callback_name`, resolves whichever of a fixed set of *optional*
+  ports (`object_name`, `pose_source`, `yaml_path`, `grasp_name`,
+  `part_prim_path`, `relationship_name`, `end_effector_kind`,
+  `position_tolerance`, `orientation_tolerance`, `delay_seconds`,
+  `requested_object`, `requested_relationship`) are actually set on that XML
+  tag, and calls the Python callable with a `dict[str, str]` of those —
+  mapping the returned `'SUCCESS'`/`'FAILURE'`/`'RUNNING'` string to a
+  `BT::NodeStatus`. This is the same principle `docs/omnigraph-migration-plan.md`
+  already used for cuRobo: the bridge owns control-flow *and* per-object
+  parameter plumbing only, never the actual grasp/place math, which stays in
+  `grasp.py`.
 - **Module name is `mefron_bt_bridge`, not `bt_bridge`.** Confirmed live:
   naming the compiled module `bt_bridge` — the same name as its own source
   directory — silently broke on import. `bt_bridge/` has no `__init__.py`,
@@ -65,33 +84,33 @@ straight into `scripts/mefron_lib/`.
   `AttributeError: module 'bt_bridge' has no attribute 'BTExecutor'`, no
   import error at all to signal the problem. A distinct module name
   sidesteps this regardless of `sys.path` ordering.
-- **`bt_bridge/trees/assembly_placement.xml`**: the one canonical,
-  Groot2-editable tree — a `Sequence` of `IsHoldingSomething` (condition),
-  `SnapToLiftWaypoint` (action), `WaitForSequenceIdle` (action).
-  **Only two steps actually needed migrating in.** The original code's
-  "descend to the real final pose once the lift plan finishes" step was
-  never part of P-handling at all — it's `_step_arm()`'s own per-frame
-  plan/apply loop auto-applying `state["pending_final_pose"]` whenever any
-  `cmd_plan` finishes, deliberately untouched by this migration. So
-  `WaitForSequenceIdle`'s `SUCCESS` condition is "both the lift flight *and*
-  that auto-triggered descend flight have finished" (`cmd_plan is None and
-  pending_final_pose is None`), not just the first plan. An earlier draft of
-  this design had a fourth node (`SnapToFinalPose`) that would have
-  re-applied `pending_final_pose` a second time, redundantly — caught before
-  it shipped by tracing exactly where the original code consumed it.
-- **`scripts/mefron_lib/behavior_tree.py`**: `AssemblyPlacementBehaviorTree`,
-  one instance per arm (constructed in `mefron.py`, stored as
-  `arm["assembly_bt"]`). `start()` arms it with that arm's live
-  `state`/`target`/`ee_link_prim_path`/`relationship_name`/`is_holding`
-  callable; `tick()` is called unconditionally every frame from
+- **`bt_bridge/trees/generated/grasp_main.xml` / `placement_main.xml`**:
+  regenerated from `config.py` on every `GraspObjectBehaviorTree`/
+  `PlaceObjectBehaviorTree` construction (`behavior_tree.generate_grasp_tree_xml()`/
+  `generate_placement_tree_xml()`, gitignored like `bt_bridge/build/` — never
+  hand-edited, never committed). Supersedes phase 1's single hand-written
+  `assembly_placement.xml`; each file's `MainTree` is a `Fallback` of one
+  branch per config entry (see the ports list two bullets up), each a
+  `PyCondition` gate on a `requested_object`/`requested_relationship`
+  blackboard value guarding a `<SubTree>` instantiation of one shared,
+  hand-written-once `GraspObjectImpl`/`PlaceObjectImpl`.
+- **`scripts/mefron_lib/behavior_tree.py`**: `GraspObjectBehaviorTree` and
+  `PlaceObjectBehaviorTree`, one instance of each per arm (constructed in
+  `mefron.py`, stored as `arm["grasp_bt"]`/`arm["place_bt"]`). `start()` arms
+  an instance with that arm's live bindings (`target`, `ee_link_prim_path`,
+  and for `PlaceObjectBehaviorTree` also `state`/`is_holding`) and writes the
+  requested object/relationship name onto that instance's own tree
+  blackboard; `tick()` is called unconditionally every frame from
   `_step_arm()` (a no-op, returning `None`, until `start()` has armed it).
-  Both arms share the one static XML and the same four callback names —
-  safe because `_step_arm()` only ever ticks one arm at a time
-  (`run_teleop_loop()`'s `for arm in arms` loop is plain sequential, never
-  concurrent): each instance's `tick()` re-registers its own closures under
-  those names immediately before calling `tick_once()`, so there's never a
-  moment where the wrong arm's callback is registered when a tick actually
-  fires. `reset()` (called on every fresh Play, same as
+  Both arms share the same two generated files — safe because `_step_arm()`
+  only ever ticks one arm at a time (`run_teleop_loop()`'s `for arm in arms`
+  loop is plain sequential, never concurrent): each instance's `tick()`
+  re-registers its own closures under the fixed callback names immediately
+  before calling `tick_once()`, so there's never a moment where the wrong
+  arm's callback is registered when a tick actually fires — now additionally
+  reinforced by each `BTExecutor` having its own isolated blackboard, a
+  second, independent source of per-instance separation beyond just registry
+  timing. `reset()` (called on every fresh Play, same as
   `GripperKeyboardControl.reset()`) halts the tree and clears the armed
   state, so a sequence armed just before a Stop doesn't stay "in flight"
   against a `state` dict `_fresh_arm_state()` has since replaced.
@@ -130,9 +149,13 @@ Fixed by requesting `COMPONENTS Interpreter Development`.
 Two ways to run it, both valid:
 
 1. **On your own desktop** (no devcontainer changes needed): "Monitor" mode
-   pointed at `localhost:1667` (arm 1) or `localhost:1669` (arm 2) while
-   `mefron.py` runs in the container — `network_mode: host` makes this a
-   direct connection, no forwarding needed.
+   pointed at whichever port covers what you want to watch —
+   `localhost:1667` (arm 1 placement), `1669` (arm 2 placement), `1671`
+   (arm 1 grasp/approach), or `1673` (arm 2 grasp/approach; see
+   `behavior_tree.GROOT2_PORT_ARM1_PLACE`/`ARM2_PLACE`/`ARM1_GRASP`/
+   `ARM2_GRASP`) — while `mefron.py` runs in the container —
+   `network_mode: host` makes this a direct connection, no forwarding
+   needed.
 2. **Inside the devcontainer**, now that this project's X11/GUI forwarding
    is confirmed working end-to-end (`docs/docker-and-devcontainer.md`):
    `Dockerfile.curobo` installs Groot2 (pinned version in
@@ -141,7 +164,7 @@ Two ways to run it, both valid:
    `/usr/local/bin/groot2`) — not run directly as a `.AppImage`, since a
    plain AppImage needs FUSE to mount itself and a container has no
    `/dev/fuse` by default. Just run `groot2` once inside the container and
-   point it at `localhost:1667`/`1669` the same way.
+   point it at the same ports.
 
 Either way, the same XML can also be opened in Groot2's editor mode
 independent of a live connection.
@@ -166,6 +189,40 @@ extract-instead-of-run approach work in practice, not just in theory.
   `RUNNING` handling, `SUCCESS` completion, and `FAILURE` short-circuit at
   the condition node (downstream actions never called) all confirmed
   correct.
+- **Phase 2 (ports + blackboard) standalone dispatch check**: a dummy
+  2-object `Fallback`-of-`SubTree` tree confirmed `set_blackboard()` +
+  the new `dict[str, str]` callback convention correctly select and run
+  only the requested branch, skipping the other's `SnapToObjectPose`-
+  equivalent entirely. Repeated against the **real, config-generated**
+  `grasp_main.xml`/`placement_main.xml` (no Isaac Sim, mock callbacks): all
+  4 grasp branches (`finger_print_scanner`/`backpanel_support`/
+  `pcb_assembly`/`screen`) and all 4 placement branches dispatch correctly
+  with real `config.py` data (real yaml paths, real relationship names)
+  arriving as real port values, not just the dummy's placeholder strings.
+- **Phase 2 live check, real scene**: confirmed via a direct
+  `_step_arm()`-driving script (bypassing `run_teleop_loop()`, see below)
+  that `GraspObjectBehaviorTree.start()`/`.tick()` correctly arm and
+  execute `SnapToObjectPose` against the real robot/scene — the callback
+  reached `grasp.compute_grasp_approach_pose_from_file()` and attempted a
+  real yaml load. That call needs `isaacsim.robot_setup.grasp_editor`,
+  which (same as `test_mefron_assembly_headless.py`'s own header comment
+  already notes) only the full Kit experience loads — a verification
+  script gap (missing `experience=.../isaacsim.exp.full.kit`), not a bug
+  in the shipped code. **Not yet reached**: a full run under the full
+  experience stalled the same way the note below describes, before
+  completing far enough to confirm the auto-engage step too.
+- **Found, not fixed (pre-existing, out of scope)**: `run_teleop_loop()`
+  resets `gripper_control`/`grasp_bt`/`place_bt` on the first "playing"
+  iteration of *every call*, since `was_playing` is a fresh local variable
+  each call — harmless for `mefron.py` (one continuous call per session,
+  so the reset only ever fires on a real Stop→Play transition), but it
+  silently wipes any request set *before* a `max_iterations`-bounded call
+  starts, which is exactly the pattern both this file's own multi-call
+  repro and `test_mefron_assembly_headless.py`'s 3-phase structure use.
+  Confirmed live: `test_mefron_assembly_headless.py`'s own phase 1/3 never
+  asserts on `phase1_delta`/`phase3_delta` (only prints them), so this
+  gap wouldn't fail that test even when the request never actually fires.
+  See CLAUDE.md's "Currently open issues".
 - **Full integration, real scene, real cuRobo planning**: a standalone
   repro script built the exact `mefron.py`/`test_mefron_assembly_headless.py`
   arm dict (real `setup_motion_gen()`, real `build_teleop_target()`, a real
@@ -188,8 +245,17 @@ extract-instead-of-run approach work in practice, not just in theory.
   200-iteration repro above (with real planning) all completed quickly and
   correctly every time they were tried in isolation — only the full
   900-iteration × 3-phase run reproduced the stall, 3/3 attempts, including
-  one with nothing else running concurrently in the sandbox. Given every
-  narrower slice of the exact same code succeeded, this looks like a
+  one with nothing else running concurrently in the sandbox. **Recurred
+  during phase 2's own verification**: a 640-iteration single-arm J-only
+  repro run under the full Kit experience (needed for `grasp_editor`, see
+  above) stalled the same way — past `cuRobo`'s warmup logging, actively
+  using CPU/GPU (confirmed via `top`/`nvidia-smi`, not deadlocked), zero
+  new output for 15+ minutes. The same repro's *first* attempt (base
+  experience, no `grasp_editor`, so it never actually reached real planning)
+  completed all 400 iterations quickly — consistent with the full
+  experience's much larger extension set (~150 vs. the base set) being the
+  actual slow part, not this migration's own code. Given every narrower
+  slice of the exact same code succeeded, this looks like a
   pre-existing performance characteristic of this particular sandbox's
   GPU/PhysX under sustained iteration counts (CPU was actively busy, not
   blocked, when checked mid-stall) rather than a bug in this migration --

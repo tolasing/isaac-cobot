@@ -19,11 +19,6 @@ from pxr import Sdf, UsdPhysics
 
 from . import config
 from .behavior_tree import resolve_relationship_name_for_grasped_object
-from .grasp import (
-    compute_grasp_approach_pose_from_file,
-    compute_grasp_finger_widths_from_file,
-    compute_part_target_pose,
-)
 
 
 class GripperKeyboardControl:
@@ -482,78 +477,61 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     if state["past_orientation"] is None:
         state["past_orientation"] = cube_orientation
 
-    # One-shot P/J snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not before --
-    # otherwise cube_position would already reflect the post-snap pose when target_pose is seeded, making the debounce distance 0 forever.
+    # One-shot P/J/B/K/N snap requests. Must run AFTER the past_pose/target_pose bootstrap above,
+    # not before -- otherwise cube_position would already reflect the post-snap pose when
+    # target_pose is seeded, making the debounce distance 0 forever. The actual pose-compute/snap
+    # work for both grasp/approach (J/B/K/N) and placement (P) now lives inside the generated BT
+    # (grasp_bt/place_bt, see behavior_tree.py) -- this block only decides *whether* and *with
+    # what request* to arm those trees, same division of responsibility as before this migration.
     if gripper_control is not None:
         if gripper_control.has_pending_assembly_target_request():
             # Only actually kick off the align/drop sequence once the robot is idle. Consuming
-            # the request and snapping `target` while cmd_plan is still in flight (e.g. P
-            # pressed a beat before the previous drag/grasp motion finished settling) would be
-            # silently discarded -- the trigger-if below requires cmd_plan is None to plan
-            # anything -- and the CURRENT in-flight plan's completion would then wrongly consume
+            # the request and arming place_bt while cmd_plan is still in flight (e.g. P pressed a
+            # beat before the previous drag/grasp motion finished settling) would be silently
+            # discarded -- the trigger-if below requires cmd_plan is None to plan anything -- and
+            # the CURRENT in-flight plan's completion would then wrongly consume
             # pending_final_pose, sending the robot straight from wherever it was to the final
             # assembly pose with no hover stop at all.
             if gripper_control.last_grasped_object is None:
                 # Nothing grasped yet this session -- discard the stale request instead of
-                # defaulting to finger_print_scanner sight-unseen. Arm 1 sharing the P key with arm
-                # 2 (see AssemblyPlacementControl) means every P press reaches here even when the
-                # user only meant to place arm 2's screen; without this guard arm 1 would swing
-                # toward finger_print_scanner's mount pose on every such press, both moving an arm
-                # the user didn't intend to move and cluttering arm 2's obstacle-avoided workspace
-                # right as it plans its own placement.
+                # resolve_relationship_name_for_grasped_object(None) KeyError-ing. Arm 1 sharing
+                # the P key with arm 2 (see AssemblyPlacementControl) means every P press reaches
+                # here even when the user only meant to place arm 2's screen; without this guard
+                # arm 1 would swing toward finger_print_scanner's mount pose on every such press.
                 gripper_control.consume_assembly_target_request()
             elif state["cmd_plan"] is None:
                 gripper_control.consume_assembly_target_request()
-                # Same "actually holding it right now" gate as arm 2's surface_gripper_control.is_closed()
-                # check below (see a19b672) -- last_grasped_object is sticky (set once by J/B/K, never
-                # cleared by O), so without this a press of O then P still fires the placement snap for
-                # whatever was last grasped, and a stale last_grasped_object surviving a Stop/Play cycle
-                # (this control object isn't rebuilt by _fresh_arm_state(), see reset()) does the same on
-                # a fresh Play with nothing actually held.
-                if gripper_control.closed:
-                    object_name = gripper_control.last_grasped_object
-                    relationship_name = resolve_relationship_name_for_grasped_object(object_name)
-                    # Arms (not immediately ticks) the assembly-placement behavior tree -- see
-                    # docs/behavior-tree-migration.md. Actually ticking happens once, unconditionally,
-                    # per frame below (after this whole gripper_control block), same as every other
-                    # arm's assembly_bt.
-                    arm["assembly_bt"].start(
-                        state=state,
-                        target=target,
-                        ee_link_prim_path=ee_link_prim_path,
-                        relationship_name=relationship_name,
-                        is_holding=lambda gc=gripper_control: gc.closed and gc.last_grasped_object is not None,
-                    )
+                object_name = gripper_control.last_grasped_object
+                relationship_name = resolve_relationship_name_for_grasped_object(object_name)
+                # place_bt's own IsHoldingSomething node re-checks this live and fails the whole
+                # sequence if nothing's actually held (e.g. O then P, or a stale last_grasped_object
+                # surviving a Stop/Play -- this control object isn't rebuilt by _fresh_arm_state(),
+                # see reset()) -- so there's no need to pre-check gripper_control.closed here too.
+                arm["place_bt"].start(
+                    state=state,
+                    target=target,
+                    ee_link_prim_path=ee_link_prim_path,
+                    relationship_name=relationship_name,
+                    is_holding=lambda gc=gripper_control: gc.closed and gc.last_grasped_object is not None,
+                )
         else:
             requested_object = gripper_control.consume_grasp_approach_from_file_request()
             if requested_object is not None:
-                grasp_target = config.GRASP_TARGETS[requested_object]
-                cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
-                    grasp_target["yaml_path"],
-                    grasp_target["grasp_name"],
-                    part_prim_path=grasp_target["part_prim_path"],
-                )
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
-                open_position, closed_position = compute_grasp_finger_widths_from_file(
-                    grasp_target["yaml_path"], grasp_target["grasp_name"]
-                )
-                gripper_control.set_grasp_widths(open_position, closed_position)
-                gripper_control.set_closed(False)
+                # last_grasped_object is already set by request_grasp_approach_from_file() at
+                # keypress time (see GripperKeyboardControl), used later by P's reverse lookup.
+                arm["grasp_bt"].start(object_name=requested_object, target=target, ee_link_prim_path=ee_link_prim_path)
 
-    # One-shot suction-approach snap (arm 2 only). Same "must run after the past_pose/target_pose
-    # bootstrap" ordering rule as the gripper_control block above. Ungated (no cmd_plan is None
-    # check, unlike P) -- matches J/B/K's shape instead: arm 2 has no carried-object two-stage-lift
-    # concern, and the debounce/plan-trigger logic below re-checks state["past_pose"] against the
-    # fresh cube_position on the next frame regardless of which branch wrote it, so an immediate
-    # consume here is safe.
+    # One-shot suction-approach request (arm 2 only) -- same grasp_bt as J/B/K above, just a fixed
+    # object_name ("screen") instead of one read from a keypress-to-object dict, since arm 2 has
+    # only ever had the one suction target. Ungated (no cmd_plan is None check, unlike P) -- arm 2
+    # has no carried-object two-stage-lift concern.
     suction_control = arm.get("suction_control")
     if suction_control is not None and suction_control.consume_approach_request():
-        cube_position, cube_orientation = compute_part_target_pose(arm["suction_approach_relationship"])
-        target.set_world_pose(position=cube_position, orientation=cube_orientation)
+        arm["grasp_bt"].start(object_name="screen", target=target, ee_link_prim_path=ee_link_prim_path)
 
-    # One-shot assembly-placement snap for arms with no GripperKeyboardControl of their own (arm 2's
-    # AssemblyPlacementControl -- bound to the same P key as arm 1's gripper_control above via a
-    # second, independent keyboard subscription, so one P press can drive both arms). Same
+    # One-shot assembly-placement request for arms with no GripperKeyboardControl of their own
+    # (arm 2's AssemblyPlacementControl -- bound to the same P key as arm 1's gripper_control above
+    # via a second, independent keyboard subscription, so one P press can drive both arms). Same
     # idle-gating as arm 1's P and the same reason: peek, don't consume, until state["cmd_plan"] is
     # None, or an in-flight plan's completion would wrongly consume pending_final_pose.
     assembly_control = arm.get("assembly_control")
@@ -564,29 +542,30 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     ):
         assembly_control.consume_placement_request()
         surface_gripper_control = arm.get("surface_gripper_control")
-        # Same "discard the stale request" shape as arm 1's last_grasped_object is None branch
-        # above: without this, arm 2 swings toward the screen's mount pose on every P press even
-        # when it never actually attached to the screen (N/V), since this snap was previously
-        # unconditional.
-        if surface_gripper_control is None or surface_gripper_control.is_closed():
-            arm["assembly_bt"].start(
-                state=state,
-                target=target,
-                ee_link_prim_path=ee_link_prim_path,
-                relationship_name=arm["assembly_relationship"],
-                is_holding=lambda sgc=surface_gripper_control: sgc is None or sgc.is_closed(),
-            )
+        # Same "place_bt's own IsHoldingSomething re-checks this live" reasoning as arm 1 above --
+        # sgc is None means this arm has no surface gripper at all (trivially "holding").
+        arm["place_bt"].start(
+            state=state,
+            target=target,
+            ee_link_prim_path=ee_link_prim_path,
+            relationship_name=arm["assembly_relationship"],
+            is_holding=lambda sgc=surface_gripper_control: sgc is None or sgc.is_closed(),
+        )
 
-    # Ticks whichever arm's assembly-placement behavior tree is currently armed, every frame
-    # (tick() itself no-ops until start() has been called -- see behavior_tree.py) -- both arm 1's
-    # gripper_control branch and arm 2's assembly_control branch above route through this one call.
-    assembly_bt = arm.get("assembly_bt")
-    if assembly_bt is not None:
-        bt_status = assembly_bt.tick()
+    # Ticks whichever arm's placement/grasp behavior trees are currently armed, every frame (tick()
+    # itself no-ops until start() has been called -- see behavior_tree.py). Both may move `target`
+    # (place_bt's SnapToLiftWaypoint, grasp_bt's SnapToObjectPose), so both refresh the locals the
+    # debounce/plan-trigger block below reads.
+    place_bt = arm.get("place_bt")
+    if place_bt is not None:
+        bt_status = place_bt.tick()
         if bt_status is not None:
-            # Refresh the locals the debounce/plan-trigger block below reads -- the tree may have
-            # just moved `target` (SnapToLiftWaypoint), same as the original inline snap reassigning
-            # cube_position/cube_orientation directly.
+            cube_position, cube_orientation = target.get_world_pose()
+
+    grasp_bt = arm.get("grasp_bt")
+    if grasp_bt is not None:
+        bt_status = grasp_bt.tick()
+        if bt_status is not None:
             cube_position, cube_orientation = target.get_world_pose()
 
     sim_js = state["robot"].get_joints_state()
@@ -738,9 +717,12 @@ def run_teleop_loop(
                 gripper_control = arm.get("gripper_control")
                 if gripper_control is not None:
                     gripper_control.reset()
-                assembly_bt = arm.get("assembly_bt")
-                if assembly_bt is not None:
-                    assembly_bt.reset()
+                place_bt = arm.get("place_bt")
+                if place_bt is not None:
+                    place_bt.reset()
+                grasp_bt = arm.get("grasp_bt")
+                if grasp_bt is not None:
+                    grasp_bt.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
             step_index = 0

@@ -36,10 +36,12 @@ on real hardware.
 - `docs/omnigraph-migration-plan.md` — the OmniGraph adoption investigation
   (GUI-editable tunables, native-node keyboard dispatch); separately
   evaluated and declined NVIDIA Cortex as a behavior-tree-style engine.
-- `docs/behavior-tree-migration.md` — migrating the grasp/place placement
-  sequence to a real BehaviorTree.CPP tree + Groot2 (`bt_bridge/`,
+- `docs/behavior-tree-migration.md` — migrating grasp/approach (J/B/K/N)
+  and placement (P) into a real BehaviorTree.CPP tree + Groot2 (`bt_bridge/`,
   `scripts/mefron_lib/behavior_tree.py`), including why BT.CPP needed a
-  custom pybind11 bridge and the Docker/build-time-vs-per-container split.
+  custom pybind11 bridge, the Docker/build-time-vs-per-container split, and
+  (phase 2) real ports/blackboard + config-generated per-object `<SubTree>`
+  dispatch so per-object data is tree/blackboard data, not a Python closure.
 - `examples/curobo_reference/` — pristine, unmodified copy of cuRobo's own
   interactive teleop demo. **Do not modify these two files**; write a
   separate script instead (`scripts/mefron.py` is exactly that). See
@@ -72,27 +74,45 @@ on real hardware.
 mount plate once the packing table was swapped for a conveyor line; arm 2 mounts on the
 paired `ur10_mount_01` pedestal the same way), runs a drag-follow teleop loop, and provides
 one grasp key per `config.GRASP_TARGETS` entry (J: `finger_print_scanner`,
-B: `backpanel_support`, via NVIDIA Grasp Editor-exported poses) plus P(lace),
-all snapping the teleop target to a live-computed pose, plus C/O keys for
-the gripper. Pressing a grasp key also stages that object's own yaml-specified
-finger widths (`cspace_position`/`pregrasp_cspace_position`) onto the
-`GripperKeyboardControl` instance and immediately opens the gripper to its
-pregrasp width — so C/O ramp toward whichever object was grasped last, not
-one fixed global width. P's placement pose is computed by measuring the
-CURRENT live gripper-to-part offset (not a fixed constant) and applying it
-to whichever object was last grasped's live-computed target pose on
-`main_holder` — reverse-looked-up from `last_grasped_object` against
-`config.ASSEMBLY_RELATIONSHIPS` (already generalized across every
-`GRASP_TARGETS` entry, not just `finger_print_scanner` — see
-`docs/behavior-tree-migration.md`). There is no G key: an earlier
-hand-derived-constant grasp-approach pose has been removed in favor of
-J/B. Opens `mefron.usd` directly via `open_stage()`.
+B: `backpanel_support`, K: `pcb_assembly`, via NVIDIA Grasp Editor-exported
+poses) plus arm 2's N (suction approach, via `config.APPROACH_TARGETS`'
+`"screen"` entry) and P(lace), plus C/O keys for the gripper and V/L for arm
+2's suction attach/detach. There is no G key: an earlier hand-derived-constant
+grasp-approach pose has been removed in favor of J/B/K. Opens `mefron.usd`
+directly via `open_stage()`.
 
-The lift→wait→(auto-)descend sequencing that P/`assembly_control` kick off
-is now a real **BehaviorTree.CPP** tree (`bt_bridge/trees/assembly_placement.xml`),
-ticked once per frame per arm via `scripts/mefron_lib/behavior_tree.py`'s
-`AssemblyPlacementBehaviorTree` (one instance each, `arm["assembly_bt"]`) —
-visualizable/editable live in Groot2 (`localhost:1667`/`1669`, see
+**Both the grasp/approach (J/B/K/N) and placement (P) sequences are now real
+BehaviorTree.CPP trees**, generated from `config.py` and ticked once per
+frame per arm via `scripts/mefron_lib/behavior_tree.py`'s
+`GraspObjectBehaviorTree`/`PlaceObjectBehaviorTree` (one instance of each per
+arm — arm 1 and arm 2 both get a `grasp_bt` now, not just arm 1 — stored as
+`arm["grasp_bt"]`/`arm["place_bt"]`). Per-object data (which yaml file, which
+grasp name, per-object arrival tolerances, the post-arrival dwell, which end
+effector to engage) flows in as **real BT.CPP ports + blackboard values**,
+not Python closures: `behavior_tree.generate_grasp_tree_xml()`/
+`generate_placement_tree_xml()` regenerate `bt_bridge/trees/generated/
+grasp_main.xml`/`placement_main.xml` from `config.GRASP_TARGETS`/
+`APPROACH_TARGETS`/`ASSEMBLY_RELATIONSHIPS` on every construction — one
+`Fallback` branch per config entry, each a `PyCondition` gate (comparing its
+own literal `object_name`/`relationship_name` against a
+`requested_object`/`requested_relationship` blackboard value the Python side
+writes via `start()`) guarding a `<SubTree>` instantiation of one shared,
+hand-written-once implementation tree (`GraspObjectImpl`/`PlaceObjectImpl`).
+**Adding an object needs zero XML/C++/Python control-flow changes** — just a
+new `config.GRASP_TARGETS`/`ASSEMBLY_RELATIONSHIPS` entry; the generator
+turns it into tree structure automatically. J/B/K/N's grasp/approach flow now
+also **auto-engages the end effector**: once armed, the tree snaps to the
+grasp/approach pose (reading the object's own yaml-specified finger widths
+onto `GripperKeyboardControl` and opening it, for `parallel_gripper` objects),
+waits for the hand to actually arrive within tolerance, holds a dwell
+(`config.GRASP_APPROACH_CLOSE_DELAY_SECONDS`, 2s default), then auto-closes
+the parallel gripper or auto-attaches the suction gripper — C/V are no longer
+required for a normal grasp, only to override/release early. P's placement
+pose is still computed by measuring the CURRENT live gripper-to-part offset
+(not a fixed constant); `resolve_relationship_name_for_grasped_object()`
+still does arm 1's reverse lookup from `last_grasped_object` against
+`config.ASSEMBLY_RELATIONSHIPS`. Visualizable/editable live in Groot2
+(placement: `localhost:1667`/`1669`; grasp: `1671`/`1673` — see
 `docs/behavior-tree-migration.md`). Requires `scripts/build_bt_bridge.sh` to
 have been run once per container (builds `bt_bridge/`'s pybind11 extension
 against Isaac Sim's own bundled Python) before `mefron.py` will run —
@@ -122,18 +142,34 @@ only works when `mefron.usd` is opened directly, so active work happens in
 
 Current constants (`scripts/mefron_lib/config.py`):
 - `GRASP_TARGETS`: dict keyed by object name (`finger_print_scanner`,
-  `backpanel_support`), each entry holding the keyboard `key` (a
-  `carb.input.KeyboardInput` attribute name, resolved via `getattr` in
-  `teleop.py` since `config.py` stays omni/curobo-import-free), `yaml_path`,
-  `grasp_name`, and `part_prim_path`. Replaces the old singular
-  `GRASP_EDITOR_YAML_PATH`/`GRASP_EDITOR_GRASP_NAME` constants. Finger
-  widths themselves aren't stored here — `grasp.compute_grasp_finger_widths_from_file()`
-  reads `cspace_position`/`pregrasp_cspace_position` from the yaml live.
+  `backpanel_support`, `pcb_assembly`), each entry holding the keyboard `key`
+  (a `carb.input.KeyboardInput` attribute name, resolved via `getattr` in
+  `teleop.py` since `config.py` stays omni/curobo-import-free), `pose_source`
+  (`"grasp_yaml"`), `yaml_path`, `grasp_name`, `part_prim_path`,
+  `end_effector_kind` (`"parallel_gripper"`), and per-object
+  `position_tolerance`/`orientation_tolerance`/`delay_seconds` (defaulted
+  from `GRASP_ARRIVAL_POSITION_TOLERANCE`/`ORIENTATION_TOLERANCE`/
+  `GRASP_APPROACH_CLOSE_DELAY_SECONDS`, overridable per object). Replaces the
+  old singular `GRASP_EDITOR_YAML_PATH`/`GRASP_EDITOR_GRASP_NAME` constants.
+  Finger widths themselves aren't stored here —
+  `grasp.compute_grasp_finger_widths_from_file()` reads
+  `cspace_position`/`pregrasp_cspace_position` from the yaml live. Every
+  field here becomes a real BT.CPP port value on the generated grasp tree
+  (see "Active script + current state" above), not just a Python lookup.
+- `APPROACH_TARGETS["screen"]`: arm 2's N-key suction-approach equivalent of
+  `GRASP_TARGETS` — `pose_source="relationship"`, `relationship_name=
+  "suction_gripper_approach_on_screen"`, `end_effector_kind="suction"`, same
+  tolerance/delay fields. Merged with `GRASP_TARGETS` by
+  `behavior_tree.generate_grasp_tree_xml()` into one shared generated tree.
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`:
   `local_position=[-0.05765, 0.02069, 0.01565]`,
-  `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`. (There is no
-  `GRASP_OFFSET_POSITION`/`ORIENTATION_WXYZ` anymore — P measures the
-  live grasp offset instead of using a fixed constant; see above.)
+  `local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0]`, `kind="placement"`. (There
+  is no `GRASP_OFFSET_POSITION`/`ORIENTATION_WXYZ` anymore — P measures the
+  live grasp offset instead of using a fixed constant; see above.) Every
+  entry now carries a `"kind"` tag (`"placement"` or `"approach"`, the
+  latter only `suction_gripper_approach_on_screen`) so
+  `generate_placement_tree_xml()` knows which entries belong on the
+  placement tree vs. the grasp tree's `APPROACH_TARGETS`-driven branch.
 - `_TELEOP_VELOCITY_SCALE = _TELEOP_ACCELERATION_SCALE = 0.5`,
   `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
   `GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` are now only the
@@ -153,6 +189,26 @@ Current constants (`scripts/mefron_lib/config.py`):
   issues" below.
 
 Currently open issues (see the linked docs for full diagnosis):
+- **`run_teleop_loop()` silently drops a request set before a bounded call.**
+  Found 2026-07-23 verifying the behavior-tree grasp/place port:
+  `was_playing` is a fresh local variable each call, so *every* call
+  (not just the session's real first Play) re-triggers the "fresh Play"
+  reset block — including `gripper_control.reset()` — on its own first
+  "playing" iteration, before `_step_arm()` ever gets a chance to consume
+  a request set just before that call. Harmless for `mefron.py` (one
+  continuous call per session, so the reset only ever coincides with a
+  real Stop→Play transition) but means the common test-script pattern
+  `gripper_control.request_grasp_approach_from_file(...)` immediately
+  followed by `run_teleop_loop(..., max_iterations=N)` silently does
+  nothing — confirmed live (the request read back as `None` on every
+  subsequent frame). `test_mefron_assembly_headless.py`'s own 3-phase
+  structure uses exactly this pattern, and never asserts on
+  `phase1_delta`/`phase3_delta` (only prints them), so this has likely
+  been silently masking those two phases doing nothing for a while. Not
+  fixed here (out of scope for the BT port) — work around it by driving
+  `teleop._step_arm()` directly in a manual loop instead of multiple
+  `run_teleop_loop()` calls, or by setting the request only after an
+  initial warm-up call has already passed its own reset.
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
   fingertips at grasp time, so one finger contacts first and shifts the
   part sideways. Not a joint/drive asymmetry (explicitly ruled out) — see

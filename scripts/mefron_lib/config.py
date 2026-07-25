@@ -61,6 +61,19 @@ _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
 _POSE_DELTA_THRESHOLD = 1.0e-3
 _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
 
+# Default "has the hand actually arrived at the grasp target" tolerances and post-arrival dwell,
+# referenced from every GRASP_TARGETS/APPROACH_TARGETS entry below (each entry can override its own
+# copy independently -- these are just the shared starting point) -- looser than _POSE_DELTA_THRESHOLD
+# above (that one only detects "target moved at all", not "arrived within cuRobo's real tracking
+# tolerance"), so this wouldn't hang RUNNING forever on residual controller error. Consumed by the
+# generated grasp tree's WaitForHandAtTarget/WaitBeforeEngaging nodes -- see
+# behavior_tree.generate_grasp_tree_xml().
+GRASP_ARRIVAL_POSITION_TOLERANCE = 0.005
+GRASP_ARRIVAL_ORIENTATION_TOLERANCE = 0.01
+# Default dwell time the generated grasp tree holds once the hand has arrived, before
+# auto-engaging the end effector (closing the parallel gripper / attaching suction).
+GRASP_APPROACH_CLOSE_DELAY_SECONDS = 2.0
+
 # World-frame Z height P holds while it aligns X/Y/orientation to the assembly-placement pose, before
 # dropping straight down in Z to the actual placement pose -- a direct point-to-point plan_single to
 # the final pose was clipping/dragging the carried object through the table and nearby props.
@@ -102,38 +115,67 @@ HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 # wired to a keyboard key in teleop.build_gripper_keyboard_control(). "key" is a carb.input.KeyboardInput
 # attribute name (resolved via getattr in teleop.py, since this module stays free of omni/curobo imports).
 # See grasp.compute_grasp_approach_pose_from_file()/compute_grasp_finger_widths_from_file().
+#
+# pose_source/end_effector_kind/*_tolerance/delay_seconds feed behavior_tree.generate_grasp_tree_xml(),
+# which turns every entry here (plus APPROACH_TARGETS below) into one Fallback branch of the
+# generated grasp tree (bt_bridge/trees/generated/grasp_main.xml) -- see docs/behavior-tree-migration.md.
+# Adding an object is purely a new entry here; no XML/C++/Python control-flow changes needed.
 GRASP_TARGETS = {
     "finger_print_scanner": {
         "key": "J",
+        "pose_source": "grasp_yaml",
         "yaml_path": REPO_ROOT / "assets" / "finger_print_scanner.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/finger_print_scanner",
+        "end_effector_kind": "parallel_gripper",
+        "position_tolerance": GRASP_ARRIVAL_POSITION_TOLERANCE,
+        "orientation_tolerance": GRASP_ARRIVAL_ORIENTATION_TOLERANCE,
+        "delay_seconds": GRASP_APPROACH_CLOSE_DELAY_SECONDS,
     },
     "backpanel_support": {
         "key": "B",
+        "pose_source": "grasp_yaml",
         "yaml_path": REPO_ROOT / "assets" / "backpanel_support2.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
+        "end_effector_kind": "parallel_gripper",
+        "position_tolerance": GRASP_ARRIVAL_POSITION_TOLERANCE,
+        "orientation_tolerance": GRASP_ARRIVAL_ORIENTATION_TOLERANCE,
+        "delay_seconds": GRASP_APPROACH_CLOSE_DELAY_SECONDS,
     },
     "pcb_assembly": {
         "key": "K",
+        "pose_source": "grasp_yaml",
         "yaml_path": REPO_ROOT / "assets" / "PCB_assembly.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
+        "end_effector_kind": "parallel_gripper",
+        "position_tolerance": GRASP_ARRIVAL_POSITION_TOLERANCE,
+        "orientation_tolerance": GRASP_ARRIVAL_ORIENTATION_TOLERANCE,
+        "delay_seconds": GRASP_APPROACH_CLOSE_DELAY_SECONDS,
     },
 }
 
 # T_H_S: finger_print_scanner's / backpanel_support's pose expressed in main_holder's own local frame
 # at the correctly assembled position, derived via grasp.compute_relative_pose() from each part's live
 # world pose (no reparenting needed -- see docs/grasp-and-assembly-offsets.md).
+#
+# "kind" feeds behavior_tree.generate_placement_tree_xml()/generate_grasp_tree_xml(): "placement"
+# entries become a Fallback branch of the generated placement tree (P, reached via
+# resolve_relationship_name_for_grasped_object()'s reverse lookup or a static assembly_relationship);
+# "approach" entries (just suction_gripper_approach_on_screen below) are referenced from
+# APPROACH_TARGETS instead and become grasp-tree branches, since they're arm 2's N-key "grasp"
+# equivalent, not a placement.
 ASSEMBLY_RELATIONSHIPS = {
     "finger_print_scanner_on_main_holder": {
+        "kind": "placement",
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",
         "local_position": [-0.05765, 0.02069, 0.01565],
         "local_orientation_wxyz": [0.0, 0.0, 0.0, 1.0],
     },
     "backpanel_support_on_main_holder": {
+        "kind": "placement",
         "part_prim_path": "/World/backpanel_support",
         "mount_prim_path": "/World/main_holder",
         "local_position": [0.023463946069672652, -0.013916167562435, 0.001499950486007643],
@@ -145,12 +187,14 @@ ASSEMBLY_RELATIONSHIPS = {
         ],
     },
     "screen_on_main_holder": {
+        "kind": "placement",
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/main_holder",
         "local_position": [0.02688002586364746, -0.012380123138427736, 0.01234102249145508],
         "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },
     "pcb_assembly_on_backpanel_support": {
+        "kind": "placement",
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
         "mount_prim_path": "/World/backpanel_support",
         "local_position": [-0.0015799999237060547, -0.02138996124267578, 0.008999995231628418],
@@ -172,10 +216,27 @@ ASSEMBLY_RELATIONSHIPS = {
     # hover baked in (more negative = higher in world), so S snaps to a 10mm hover from which V's
     # SurfaceGripper (maxGripDistance 0.03) can still reach and attach.
     "suction_gripper_approach_on_screen": {
+        "kind": "approach",
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
         "local_position": [0.00028, -0.00024, -0.11558],
         "local_orientation_wxyz": [0.382330, -0.000471, -0.000099, 0.924026],
+    },
+}
+
+# Arm 2's suction "grasp" equivalent -- N snaps to an ASSEMBLY_RELATIONSHIPS-derived approach pose
+# (not a Grasp-Editor-yaml pose, arm 2 has none) and, once the tree is armed, auto-engages the
+# suction gripper the same way a parallel-jaw GRASP_TARGETS entry auto-closes. Same generated-tree
+# shape as GRASP_TARGETS -- see behavior_tree.generate_grasp_tree_xml(), which reads both dicts into
+# one Fallback.
+APPROACH_TARGETS = {
+    "screen": {
+        "pose_source": "relationship",
+        "relationship_name": "suction_gripper_approach_on_screen",
+        "end_effector_kind": "suction",
+        "position_tolerance": GRASP_ARRIVAL_POSITION_TOLERANCE,
+        "orientation_tolerance": GRASP_ARRIVAL_ORIENTATION_TOLERANCE,
+        "delay_seconds": GRASP_APPROACH_CLOSE_DELAY_SECONDS,
     },
 }
 

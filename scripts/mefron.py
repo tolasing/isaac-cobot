@@ -174,8 +174,11 @@ def main() -> None:
                 "mount_position": config.MOUNT_POSITION,
                 "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
                 "name": "arm1",
-                "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
-                    name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1
+                "place_bt": behavior_tree.PlaceObjectBehaviorTree(
+                    name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1_PLACE
+                ),
+                "grasp_bt": behavior_tree.GraspObjectBehaviorTree(
+                    name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1_GRASP, gripper_control=gripper_control
                 ),
             },
         {
@@ -189,12 +192,16 @@ def main() -> None:
             "mount_orientation_wxyz": config.MOUNT_2_ORIENTATION_WXYZ,
             "name": "arm2",
             "suction_control": suction_approach_control,
-            "suction_approach_relationship": "suction_gripper_approach_on_screen",
             "assembly_control": assembly_placement_control,
             "assembly_relationship": "screen_on_main_holder",
             "surface_gripper_control": surface_gripper_control,
-            "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
-                name="arm2", groot2_port=behavior_tree.GROOT2_PORT_ARM2
+            "place_bt": behavior_tree.PlaceObjectBehaviorTree(
+                name="arm2", groot2_port=behavior_tree.GROOT2_PORT_ARM2_PLACE
+            ),
+            "grasp_bt": behavior_tree.GraspObjectBehaviorTree(
+                name="arm2",
+                groot2_port=behavior_tree.GROOT2_PORT_ARM2_GRASP,
+                surface_gripper_control=surface_gripper_control,
             ),
         },
         {

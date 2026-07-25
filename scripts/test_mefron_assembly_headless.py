@@ -77,8 +77,11 @@ def main() -> None:
             "mount_position": config.MOUNT_POSITION,
             "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
             "name": "arm1",
-            "assembly_bt": behavior_tree.AssemblyPlacementBehaviorTree(
-                name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1
+            "place_bt": behavior_tree.PlaceObjectBehaviorTree(
+                name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1_PLACE
+            ),
+            "grasp_bt": behavior_tree.GraspObjectBehaviorTree(
+                name="arm1", groot2_port=behavior_tree.GROOT2_PORT_ARM1_GRASP, gripper_control=gripper_control
             ),
         }
     ]
