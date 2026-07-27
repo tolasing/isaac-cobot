@@ -71,6 +71,27 @@ generalized to `backpanel_support`). There is no G key: an earlier
 hand-derived-constant grasp-approach pose has been removed in favor of
 J/B. Opens `mefron.usd` directly via `open_stage()`.
 
+Arm 3 (the electric-screwdriver arm, no parallel-jaw fingers) now has a
+screw-spawning/placement key: pressing **KEY_5** (number row) spawns a
+placeholder screw at the screwdriver bit's tip, drives arm 3 there to the
+next `config.SCREW_HOLES` entry (a live pose on `main_holder`, same
+`local_position`/`local_orientation_wxyz`-relative-to-mount shape as
+`ASSEMBLY_RELATIONSHIPS`), and once idle leaves the screw behind under
+`/World/main_holder` and advances to the next hole -- repeat presses work
+through the list in order, direct single-stage snap (no lift/descend
+staging, unlike P). Implemented via `teleop.ScrewKeyboardControl`
+(`hole_index`/`_in_flight_index`, same has_pending/consume peek shape as
+`AssemblyPlacementControl`) and a new `_step_arm()` block gated on an
+optional `arm["screw_control"]`. Two things in this feature are first-pass
+and NOT yet confirmed live (both called out at their point of definition in
+`config.py`): `SCREWDRIVER_TIP_LOCAL_POSITION`/`ORIENTATION_WXYZ` assumes the
+user-given 265mm tip offset runs along the tool's own local +Z (same "+Z
+runs base->tip" convention as `SUCTION_GRIPPER_LOCAL_POSITION`, but never
+independently verified for this tool), and `config.SCREW_HOLES` holds only
+one placeholder (identity-pose) entry pending the real hole poses. There is
+also no real screw asset yet -- `assets/mefron/screw_m3.usd` is a
+hand-authored placeholder (two plain `Cylinder` prims, no physics APIs).
+
 `scripts/mefron_gripper_probe.py` imports just the Franka hand +
 `panda_leftfinger`/`panda_rightfinger` + `ee_link` (no arm, no motion_gen)
 onto its own free-floating `base_link`, for dragging into place against a
@@ -116,6 +137,16 @@ Current constants (`scripts/mefron_lib/config.py`):
   child meshes; real conveyor-line CAD assemblies are far more complex than
   the single `packing_table` prop they replaced). See "Currently open
   issues" below.
+- `SCREW_HOLES`: an ordered list (not a name-keyed dict like
+  `ASSEMBLY_RELATIONSHIPS` -- order is the placement sequence KEY_5 works
+  through), each entry `local_position`/`local_orientation_wxyz` relative to
+  `main_holder`. Currently just one placeholder (identity) entry --
+  scaffold only, real hole poses not yet filled in.
+  `SCREWDRIVER_TIP_LOCAL_POSITION`/`ORIENTATION_WXYZ` (the bit tip's offset
+  from `panda_hand`, distinct from `SCREWDRIVER_LOCAL_POSITION`/
+  `ORIENTATION_WXYZ`, which is the tool mesh's own mount offset) is derived
+  from a user-given 265mm distance assumed to run along the tool's own
+  local +Z -- unconfirmed, see "Currently open issues" below.
 
 Currently open issues (see the linked docs for full diagnosis):
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
@@ -210,6 +241,15 @@ Currently open issues (see the linked docs for full diagnosis):
   itself) before trying to automate it again, or look for a genuine
   reset/detach entry point in `isaacsim.robot.surface_gripper._surface_gripper`'s
   interface beyond `open_gripper()`/`close_gripper()`.
+- **Arm 3's screw feature (KEY_5) is scaffolded, not tuned.** `config.SCREW_HOLES`
+  has only one placeholder (identity-pose) entry -- real hole poses relative
+  to `main_holder` still need filling in. `SCREWDRIVER_TIP_LOCAL_POSITION`/
+  `ORIENTATION_WXYZ` assumes the user-given 265mm tip offset runs along the
+  screwdriver's own local +Z (same convention as the suction cup's tip
+  offset) -- never independently confirmed for this tool, so the arm may
+  well overshoot/undershoot the real tip position until checked live. Also
+  no real screw asset yet -- `assets/mefron/screw_m3.usd` is a hand-authored
+  placeholder cylinder (M3 shank + head, no physics), not a CAD part.
 
 ## Must-know gotchas
 

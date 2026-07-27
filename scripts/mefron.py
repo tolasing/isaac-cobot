@@ -87,6 +87,7 @@ def main() -> None:
     robot.remove_parallel_jaw_gripper(config.ROBOT_3_PRIM_PATH)
     robot.hide_hand_housing(config.ROBOT_3_PRIM_PATH)
     robot.attach_screwdriver_gripper(config.ROBOT_3_PRIM_PATH)
+    robot.attach_screwdriver_tip_anchor(config.ROBOT_3_PRIM_PATH)
 
 
     if not _headless:
@@ -127,7 +128,8 @@ def main() -> None:
     print(f"[mefron] {config.TARGET_2_PRIM_PATH}: {'OK' if target_2_prim.IsValid() else 'MISSING'}", flush=True)
 
     target_3 = teleop.build_teleop_target(
-        robot_cfg_3, config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH, config.MOUNT_3_POSITION, config.MOUNT_3_ORIENTATION_WXYZ
+        robot_cfg_3, config.ROBOT_3_PRIM_PATH, config.TARGET_3_PRIM_PATH, config.MOUNT_3_POSITION, config.MOUNT_3_ORIENTATION_WXYZ,
+        source_relative_path=f"panda_hand/{config.SCREWDRIVER_PRIM_NAME}",
     )
     target_3_prim = stage.GetPrimAtPath(config.TARGET_3_PRIM_PATH)
     print(f"[mefron] {config.TARGET_3_PRIM_PATH}: {'OK' if target_3_prim.IsValid() else 'MISSING'}", flush=True)
@@ -161,6 +163,12 @@ def main() -> None:
     print(
         f"[mefron] Conveyor: press {config.CONVEYOR_TOGGLE_KEY} to send main_holder_jig forward "
         f"{config.CONVEYOR_TRAVEL_DISTANCE}m, press again to send it back the same distance.",
+        flush=True,
+    )
+    screw_control = teleop.build_screw_keyboard_control()
+    print(
+        f"[mefron] Arm 3 screwdriver: press {config.SCREW_NEXT_KEY} to spawn+place the next screw "
+        f"({len(config.SCREW_HOLES)} hole(s) configured).",
         flush=True,
     )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
@@ -200,6 +208,7 @@ def main() -> None:
             "mount_position": config.MOUNT_3_POSITION,
             "mount_orientation_wxyz": config.MOUNT_3_ORIENTATION_WXYZ,
             "name": "arm3",
+            "screw_control": screw_control,
         }
     ]
     teleop.run_teleop_loop(simulation_app, arms, conveyor_control=conveyor_control)

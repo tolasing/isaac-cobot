@@ -301,6 +301,46 @@ SCREWDRIVER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 # convention: composed as Rx * Ry * Rz, i.e. Z applied first, then Y, then X), converted to wxyz.
 SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501, 0.6532814824]
 
+# Screw-spawning/placement feature (arm 3 only) -- see docs/mefron-history.md and CLAUDE.md for
+# status. No screw CAD asset exists yet -- screw_m3.usd is a hand-authored placeholder (two plain
+# Cylinder prims, M3 nominal shank diameter, no physics APIs -- pure visual stand-in), not derived
+# from any real fastener drawing. Its own local origin is the screw's TIP (see that file's own
+# comment), so referencing it at SCREW_SPAWN_ANCHOR_PRIM_NAME below with an identity local pose
+# puts the tip exactly at the anchor.
+SCREW_USD = REPO_ROOT / "assets" / "mefron" / "screw_m3.usd"
+SCREW_PRIM_NAME = "screw"
+# Persistent child Xform of panda_hand (created once by robot.attach_screwdriver_tip_anchor()),
+# positioned at SCREWDRIVER_TIP_LOCAL_POSITION/ORIENTATION_WXYZ below -- anything referenced under
+# it tracks the arm's live pose automatically via the USD hierarchy, same trick
+# teleop.build_teleop_target() already uses for the visible ee_link-visuals reference.
+SCREW_SPAWN_ANCHOR_PRIM_NAME = "screw_spawn_point"
+# The screwdriver bit's actual tip, given by the user as 265mm out from panda_hand -- no axis was
+# specified explicitly, so this is a first-pass assumption (same spirit as MOUNT_POSITION's own
+# "pending the user's own GUI check" caveat) that it's along the tool's own local +Z, matching the
+# "+Z runs base->tip" convention already used for SUCTION_GRIPPER_LOCAL_POSITION/
+# SURFACE_GRIPPER_LOCAL_POSITION. Computed as SCREWDRIVER_LOCAL_POSITION + rotate(
+# SCREWDRIVER_LOCAL_ORIENTATION_WXYZ, [0, 0, 0.265]) -- i.e. the existing tool-mount offset, pushed
+# 265mm further out along that same rotated axis. Orientation is unchanged from the tool mount's own
+# (just translated further out, not re-rotated). Expect to correct this live once tested.
+SCREWDRIVER_TIP_LOCAL_POSITION = [0.1873832970, -0.1873832970, 0.0]
+SCREWDRIVER_TIP_LOCAL_ORIENTATION_WXYZ = SCREWDRIVER_LOCAL_ORIENTATION_WXYZ
+
+SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder"
+# Placement sequence for the KEY_5 key -- a list (not a name-keyed dict like ASSEMBLY_RELATIONSHIPS)
+# since order IS the next-hole-to-fill sequence. Each entry is main_holder's own local_position/
+# local_orientation_wxyz for that hole, same shape/derivation methodology as ASSEMBLY_RELATIONSHIPS
+# entries (docs/grasp-and-assembly-offsets.md). PLACEHOLDER -- only a scaffold entry exists so far;
+# replace with the real hole poses relative to main_holder's origin.
+SCREW_HOLES = [
+    {
+        "local_position": [0.0, 0.0, 0.0],
+        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+]
+# Number-row "5", not numpad -- carb.input.KeyboardInput.KEY_5. Same convention as
+# CONVEYOR_TOGGLE_KEY.
+SCREW_NEXT_KEY = "KEY_5"
+
 # Real isaacsim.robot.schema/isaacsim.robot.surface_gripper physics, distinct from the SUCTION_GRIPPER_*
 # constants above (which are pure visual geometry with zero physics of its own). Kept deliberately
 # minimal -- no hand-authored PhysicsLimitAPI/PhysicsDriveAPI compliance tuning, no touching any other

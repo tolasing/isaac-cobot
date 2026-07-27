@@ -33,6 +33,21 @@ def compute_dependent_world_pose(reference_trans, reference_quat, relative_trans
     return trans, rot_matrices_to_quats(np.array([rot]))[0]
 
 
+def compute_reference_world_pose(dependent_trans, dependent_quat, relative_trans, relative_quat_wxyz):
+    """True inverse of compute_dependent_world_pose(): every other helper in this file goes
+    reference-pose -> dependent-pose, but driving a robot target to put a rigidly-offset child frame
+    (e.g. the screwdriver tip, offset from panda_hand by config.SCREWDRIVER_TIP_LOCAL_POSITION/
+    ORIENTATION_WXYZ) at a desired WORLD pose needs the opposite direction: given that desired
+    dependent world pose and the fixed relative offset, returns the pose the reference (panda_hand)
+    frame itself must be driven to."""
+    from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
+
+    dep_rot, rel_rot = quats_to_rot_matrices(np.array([dependent_quat, relative_quat_wxyz]))
+    ref_rot = dep_rot @ rel_rot.T
+    ref_trans = np.array(dependent_trans) - ref_rot @ np.array(relative_trans)
+    return ref_trans, rot_matrices_to_quats(np.array([ref_rot]))[0]
+
+
 def compute_grasp_approach_pose_from_file(
     yaml_path: str,
     grasp_name: str,
@@ -92,6 +107,22 @@ def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_m
     ).get_world_pose()
     return compute_dependent_world_pose(
         mount_trans, mount_quat, relationship["local_position"], relationship["local_orientation_wxyz"]
+    )
+
+
+def compute_screw_hole_target_pose(hole_index: int):
+    """The world pose of config.SCREW_HOLES[hole_index], composed with
+    config.SCREW_HOLE_MOUNT_PRIM_PATH's LIVE world pose -- same "live-relative, not fixed-constant"
+    principle as compute_part_target_pose() above, kept as its own small function rather than a
+    shared refactor since the two read from different config structures (a name-keyed dict of
+    part-on-mount relationships vs. an ordered list of hole poses) for only a few lines of overlap."""
+    hole = config.SCREW_HOLES[hole_index]
+    # reset_xform_properties=False -- see compute_grasp_approach_pose_from_file()'s comment above.
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
+    ).get_world_pose()
+    return compute_dependent_world_pose(
+        mount_trans, mount_quat, hole["local_position"], hole["local_orientation_wxyz"]
     )
 
 

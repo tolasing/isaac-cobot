@@ -362,6 +362,28 @@ def attach_screwdriver_gripper(prim_path: str = config.ROBOT_3_PRIM_PATH) -> Non
             UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
 
 
+def attach_screwdriver_tip_anchor(prim_path: str = config.ROBOT_3_PRIM_PATH) -> None:
+    """Creates a plain, mesh-free Xform child of prim_path's panda_hand at
+    config.SCREWDRIVER_TIP_LOCAL_POSITION/ORIENTATION_WXYZ -- the screwdriver bit's actual tip, not
+    the tool-mount origin attach_screwdriver_gripper() positions the visual asset at. Everything
+    teleop.py's screw-spawn logic references under this anchor tracks the arm's live pose
+    automatically via the USD hierarchy (no per-frame Python needed), same trick
+    teleop.build_teleop_target() already uses for the visible ee_link-visuals reference."""
+    stage = omni.usd.get_context().get_stage()
+    anchor_prim_path = f"{prim_path}/panda_hand/{config.SCREW_SPAWN_ANCHOR_PRIM_NAME}"
+    if stage.GetPrimAtPath(anchor_prim_path).IsValid():
+        # Same re-run safety as attach_screwdriver_gripper() above.
+        omni.kit.commands.execute("DeletePrims", paths=[anchor_prim_path])
+        omni.kit.app.get_app().update()
+
+    stage.DefinePrim(anchor_prim_path, "Xform")
+    xform = SingleXFormPrim(prim_path=anchor_prim_path)
+    xform.set_local_pose(
+        translation=np.array(config.SCREWDRIVER_TIP_LOCAL_POSITION),
+        orientation=np.array(config.SCREWDRIVER_TIP_LOCAL_ORIENTATION_WXYZ),
+    )
+
+
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/isaacsim.robot.surface_gripper attach mechanism on
     prim_path's panda_hand -- the actual rigid body (the visual suction_gripper child referenced by

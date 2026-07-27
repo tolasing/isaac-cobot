@@ -15,7 +15,7 @@ import omni.timeline
 import omni.usd
 from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
 from isaacsim.core.utils.types import ArticulationAction
-from pxr import Sdf, UsdPhysics
+from pxr import Sdf, Usd, UsdPhysics
 
 from . import config
 from .grasp import (
@@ -23,6 +23,8 @@ from .grasp import (
     compute_grasp_approach_pose_from_file,
     compute_grasp_finger_widths_from_file,
     compute_part_target_pose,
+    compute_reference_world_pose,
+    compute_screw_hole_target_pose,
 )
 
 
@@ -251,6 +253,66 @@ def build_assembly_placement_keyboard_control(key: str = "P") -> AssemblyPlaceme
     return control
 
 
+class ScrewKeyboardControl:
+    """One-shot 'spawn + place the next screw' request for arm 3 (config.SCREW_HOLES). Same
+    has_pending/consume peek pair as AssemblyPlacementControl -- a request must survive across frames
+    until arm 3 goes idle, not be consumed while a plan is still in flight. Also tracks hole_index
+    (which config.SCREW_HOLES entry is next) and _in_flight_index (which hole's screw is CURRENTLY
+    being carried at the tip, None when nothing is in flight) -- _step_arm() advances the former and
+    clears the latter once that screw is placed."""
+
+    def __init__(self) -> None:
+        self._requested = False
+        self.hole_index = 0
+        self._in_flight_index: int | None = None
+
+    def request_next_screw(self) -> None:
+        self._requested = True
+
+    def has_pending_request(self) -> bool:
+        return self._requested
+
+    def consume_request(self) -> bool:
+        requested = self._requested
+        self._requested = False
+        return requested
+
+    def reset(self) -> None:
+        """Called on every fresh Play (see run_teleop_loop()), same reasoning as
+        GripperKeyboardControl.reset(): hole_index/_in_flight_index are built once outside the
+        per-Play arm["_state"] rebuild, so they'd otherwise silently survive a Stop. Does NOT remove
+        any screw prims already placed under config.SCREW_HOLE_MOUNT_PRIM_PATH from a prior Play --
+        those are plain USD edits, not simulation state, so (like a stray robot prim per CLAUDE.md)
+        they survive a Stop the same way; a fresh Play's first press re-places hole 0 at the same
+        deterministic child path rather than piling up a duplicate."""
+        self._requested = False
+        self.hole_index = 0
+        self._in_flight_index = None
+
+
+def build_screw_keyboard_control(key: str = config.SCREW_NEXT_KEY) -> ScrewKeyboardControl:
+    """A third, independent keyboard subscription (same pattern as
+    build_assembly_placement_keyboard_control()) -- arm 3 has no GripperKeyboardControl/
+    SuctionApproachControl of its own to piggyback a key onto."""
+    import carb.input
+    import omni.appwindow
+
+    control = ScrewKeyboardControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    request_input = getattr(carb.input.KeyboardInput, key)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == request_input:
+            control.request_next_screw()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
 class SurfaceGripperKeyboardControl:
     """Fires close_gripper()/open_gripper() once per keypress via the real Surface Gripper runtime
     interface (isaacsim.robot.surface_gripper). No per-frame state machine needed here -- unlike
@@ -381,18 +443,35 @@ def build_teleop_target(
     target_prim_path: str = config.TARGET_PRIM_PATH,
     mount_position=config.MOUNT_POSITION,
     mount_orientation_wxyz=config.MOUNT_ORIENTATION_WXYZ,
+    source_relative_path: str | None = None,
 ) -> SingleXFormPrim:
     """Creates a draggable target at the robot's retract_config end-effector pose (guaranteed reachable),
-    displaying an internally-referenced (not CopyPrim'd) live view of the real end-effector mesh."""
+    displaying an internally-referenced (not CopyPrim'd) live view of the real end-effector mesh.
+    source_relative_path overrides the default "{ee_link}/visuals" (arm 1/2's bare parallel-jaw hand
+    mesh, which URDF-import convention keeps as a pure collision-free visual subtree) with a
+    different child path under robot_prim_path -- e.g. arm 3 passes
+    "panda_hand/{config.SCREWDRIVER_PRIM_NAME}" so its drag target displays the mounted screwdriver
+    tool instead of the bare hand. Unlike "{ee_link}/visuals", that source is NOT a collision-free
+    subtree (robot.attach_screwdriver_gripper() disables its baked-in CollisionAPI/RigidBodyAPI on
+    the real mounted tool, but this is a separate reference into a purely kinematic drag handle that
+    should never carry physics collision of its own regardless) -- so any CollisionAPI/RigidBodyAPI
+    found under the referenced subtree is explicitly disabled again here, on target_prim_path's own
+    copy, rather than relying on it being inherited correctly through the reference."""
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose as CuroboPose
 
     ee_link = robot_cfg["kinematics"]["ee_link"]
-    source_path = f"{robot_prim_path}/{ee_link}/visuals"
+    source_path = f"{robot_prim_path}/{source_relative_path or f'{ee_link}/visuals'}"
 
     stage = omni.usd.get_context().get_stage()
     target_prim = stage.DefinePrim(target_prim_path, "Xform")
     target_prim.GetReferences().AddInternalReference(Sdf.Path(source_path))
+
+    for prim in Usd.PrimRange(target_prim):
+        if prim.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
 
     tensor_args = TensorDeviceType()
     retract_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])
@@ -463,8 +542,11 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     copy of this per tick, off the one shared timeline/simulation_app.update() loop."""
     import time
 
+    import omni.kit.app
+    import omni.kit.commands
     from curobo.types.math import Pose
     from curobo.types.state import JointState
+    from isaacsim.core.utils.stage import add_reference_to_stage
 
     state = arm["_state"]
     motion_gen = arm["motion_gen"]
@@ -619,6 +701,39 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 state, target, ee_link_prim_path, relationship_name
             )
 
+    # One-shot "next screw" request for arm 3 (KEY_5, see config.SCREW_HOLES). Same idle-gating as P/
+    # the assembly_control block above: peek, don't consume, until state["cmd_plan"] is None, since
+    # spawning+snapping while a plan is still in flight would be silently discarded.
+    screw_control = arm.get("screw_control")
+    if (
+        screw_control is not None
+        and screw_control.has_pending_request()
+        and state["cmd_plan"] is None
+    ):
+        screw_control.consume_request()
+        if screw_control.hole_index >= len(config.SCREW_HOLES):
+            print("[mefron] No more screw holes to fill.", flush=True)
+        else:
+            stage = omni.usd.get_context().get_stage()
+            anchor_path = f"{ee_link_prim_path}/{config.SCREW_SPAWN_ANCHOR_PRIM_NAME}"
+            in_flight_path = f"{anchor_path}/{config.SCREW_PRIM_NAME}_in_flight"
+            if stage.GetPrimAtPath(in_flight_path).IsValid():
+                # Re-run safety, same pattern as every other repeat-safe spawn in robot.py -- avoids
+                # a uniquified duplicate if a prior in-flight screw was never cleanly finalized.
+                omni.kit.commands.execute("DeletePrims", paths=[in_flight_path])
+                omni.kit.app.get_app().update()
+            add_reference_to_stage(usd_path=str(config.SCREW_USD), prim_path=in_flight_path)
+            screw_control._in_flight_index = screw_control.hole_index
+
+            hole_tip_trans, hole_tip_quat = compute_screw_hole_target_pose(screw_control.hole_index)
+            cube_position, cube_orientation = compute_reference_world_pose(
+                hole_tip_trans,
+                hole_tip_quat,
+                config.SCREWDRIVER_TIP_LOCAL_POSITION,
+                config.SCREWDRIVER_TIP_LOCAL_ORIENTATION_WXYZ,
+            )
+            target.set_world_pose(position=cube_position, orientation=cube_orientation)
+
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
         return
@@ -684,6 +799,32 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     final_position, final_orientation = state["pending_final_pose"]
                     state["pending_final_pose"] = None
                     target.set_world_pose(position=final_position, orientation=final_orientation)
+                if screw_control is not None and screw_control._in_flight_index is not None:
+                    # Arm 3 has just arrived at the hole -- leave the screw behind at its permanent
+                    # resting pose (main_holder's own local_position/local_orientation_wxyz, same
+                    # shape as ASSEMBLY_RELATIONSHIPS entries) instead of riding along the tip any
+                    # longer, and free the tip for the next press.
+                    placed_hole_index = screw_control._in_flight_index
+                    hole = config.SCREW_HOLES[placed_hole_index]
+                    stage = omni.usd.get_context().get_stage()
+                    anchor_path = f"{ee_link_prim_path}/{config.SCREW_SPAWN_ANCHOR_PRIM_NAME}"
+                    in_flight_path = f"{anchor_path}/{config.SCREW_PRIM_NAME}_in_flight"
+                    if stage.GetPrimAtPath(in_flight_path).IsValid():
+                        omni.kit.commands.execute("DeletePrims", paths=[in_flight_path])
+                        omni.kit.app.get_app().update()
+                    placed_path = (
+                        f"{config.SCREW_HOLE_MOUNT_PRIM_PATH}/{config.SCREW_PRIM_NAME}_hole_{placed_hole_index}"
+                    )
+                    if stage.GetPrimAtPath(placed_path).IsValid():
+                        omni.kit.commands.execute("DeletePrims", paths=[placed_path])
+                        omni.kit.app.get_app().update()
+                    add_reference_to_stage(usd_path=str(config.SCREW_USD), prim_path=placed_path)
+                    SingleXFormPrim(prim_path=placed_path).set_local_pose(
+                        translation=np.array(hole["local_position"]),
+                        orientation=np.array(hole["local_orientation_wxyz"]),
+                    )
+                    screw_control._in_flight_index = None
+                    screw_control.hole_index += 1
 
     # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
     # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.
@@ -713,6 +854,10 @@ def run_teleop_loop(
     # Duck-typed (not conveyor.ConveyorControl) -- this loop only ever calls .reset()/.step() on
     # whatever's passed in, deliberately staying decoupled from conveyor.py.
     conveyor_control: object | None = None,
+    # Same duck-typed .reset()/.step() shape as conveyor_control, generalized to a list -- for
+    # one-off diagnostic hooks (e.g. mefron_screw_probe.py's pose-capture keybind) that need a
+    # per-frame callback but don't belong in this shared loop's own arm/conveyor-specific logic.
+    extra_step_controls: list[object] | None = None,
 ) -> None:
     """Drag each arm's own `target` in the GUI viewport; each robot follows via its own cuRobo
     MotionGen plan/apply loop, rebuilding every arm's articulation on every fresh Play and supporting
@@ -771,8 +916,15 @@ def run_teleop_loop(
                 suction_control = arm.get("suction_control")
                 if suction_control is not None:
                     suction_control.reset()
+                screw_control = arm.get("screw_control")
+                if screw_control is not None:
+                    screw_control.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
+            for control in extra_step_controls or ():
+                reset = getattr(control, "reset", None)
+                if reset is not None:
+                    reset()
             step_index = 0
             was_playing = True
 
@@ -785,3 +937,5 @@ def run_teleop_loop(
 
         if conveyor_control is not None:
             conveyor_control.step()
+        for control in extra_step_controls or ():
+            control.step()
