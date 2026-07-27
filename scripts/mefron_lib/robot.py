@@ -18,23 +18,33 @@ from import_cr5 import import_cr5
 from . import config
 
 # Pre-MovePrim intermediate path every mount_franka() import lands at -- if a stray Save catches a
-# session mid-import, /panda gets baked into mefron.usd as an orphaned leftover.
+# session mid-import, a top-level prim named after the URDF's own <robot name="..."> gets baked
+# into mefron.usd as an orphaned leftover. Also guards "/panda_gripper_only" -- an early ATC
+# prototype briefly live-imported the gripper tool this same way (since replaced by
+# scripts/vendor_gripper_tool.py's pre-baked asset, see docs/tool-changer.md's gotcha 6), and a
+# stray Save from that prototype baked this path into mefron.usd; kept here for old checkouts.
 _STRAY_HISTORICAL_PANDA_PATH = "/panda"
+_STRAY_HISTORICAL_GRIPPER_TOOL_PATH = "/panda_gripper_only"
+# Literal (not config.*) -- these arms were retired when the ATC branch moved to a single Franka,
+# but mefron.usd is a shared asset file: a pre-ATC checkout's stray Save can still have baked
+# /World/Franka2, /World/Franka3 into it, same failure mode _STRAY_HISTORICAL_PANDA_PATH guards.
+_STRAY_HISTORICAL_ARM_PATHS = ["/World/Franka2", "/World/Franka3"]
 
 
 def clear_stray_robot_prims() -> None:
-    """Deletes any pre-existing robot prims (config.ROBOT_*_PRIM_PATH, plus the historical stray
-    /panda path) sitting in the stage the moment open_stage() returns -- leftovers baked into
-    mefron.usd by a past session's stray Save. Must run right after open_stage(), before the
-    settle pump -- see docs/mefron-history.md for why mount_franka()'s own cleanup is too late."""
+    """Deletes any pre-existing robot prims (config.ROBOT_PRIM_PATH, the historical stray /panda
+    and /panda_gripper_only paths, plus pre-ATC arm2/arm3 leftovers) sitting in the stage the
+    moment open_stage() returns -- leftovers baked into mefron.usd by a past session's stray Save.
+    Must run right after open_stage(), before the settle pump -- see docs/mefron-history.md for why
+    mount_franka()'s own cleanup is too late."""
     stage = omni.usd.get_context().get_stage()
     stray_paths = [
         path
         for path in (
             config.ROBOT_PRIM_PATH,
-            config.ROBOT_2_PRIM_PATH,
-            config.ROBOT_3_PRIM_PATH,
             _STRAY_HISTORICAL_PANDA_PATH,
+            _STRAY_HISTORICAL_GRIPPER_TOOL_PATH,
+            *_STRAY_HISTORICAL_ARM_PATHS,
         )
         if stage.GetPrimAtPath(path).IsValid()
     ]
@@ -54,9 +64,10 @@ def mount_franka(
     mount_orientation_wxyz=config.MOUNT_ORIENTATION_WXYZ,
 ) -> None:
     """Mounts cuRobo's bundled Franka Panda at prim_path/mount_position (arm 1's constants by
-    default; arms 2/3 pass their own ROBOT_N_PRIM_PATH/MOUNT_N_POSITION/ORIENTATION). Mounting a
-    second/third Franka crashes Kit's URDF importer if the full-experience extensions are already
-    loaded -- enable those only after all arms are mounted. See docs/mefron-history.md."""
+    default -- the ATC's single arm). Historically also mounted a second/third Franka before the
+    ATC branch retired them (see docs/mefron-history.md); the URDF importer crashing if the
+    full-experience extensions are already loaded is why mount_franka() must still run before
+    kit_experience.enable_full_experience_extensions()."""
     from curobo.util_file import get_assets_path, join_path
 
     stage = omni.usd.get_context().get_stage()
@@ -157,7 +168,13 @@ def mount_franka_hand_only(prim_path: str) -> str:
     """Imports just panda_hand/panda_leftfinger/panda_rightfinger/ee_link (no arm) from the same
     cuRobo mesh files mount_franka() uses, rooted at a free-floating base_link. Does not touch stage
     selection or delete a stale prim at prim_path first -- callers needing that (e.g. re-running into an
-    already-open session) should do it themselves, same as mefron_gripper_probe.py's spawn_gripper_probe()."""
+    already-open session) should do it themselves, same as mefron_gripper_probe.py's spawn_gripper_probe().
+    NOT used by spawn_dockable_tool() -- the URDF importer's disk-persisted "Robot Description" cache
+    keys visuals by bare link name, and this template's base_link/ee_link collide with the main
+    arm's own identically-named links if both are imported into the same session (confirmed live,
+    broke the main arm's rendering) -- see docs/tool-changer.md's gotcha 6. The ATC gripper tool is
+    a pre-vendored standalone asset instead (scripts/vendor_gripper_tool.py), referenced the same
+    way as the suction/screwdriver tools, never live-imported into mefron.usd's own stage."""
     urdf_path = write_hand_only_urdf()
     return import_cr5(
         urdf_path=urdf_path,
@@ -167,7 +184,7 @@ def mount_franka_hand_only(prim_path: str) -> str:
     )
 
 
-def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
+def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """Deactivates (not deletes) the Franka's parallel-jaw finger links + drive joints on
     prim_path, for an arm converted to a suction end-effector (see attach_suction_gripper()).
     DeletePrims silently no-ops for these specific prims instead -- see docs/mefron-history.md."""
@@ -183,7 +200,7 @@ def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> No
         prim.SetActive(False)
 
 
-def hide_hand_housing(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
+def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """Makes prim_path's panda_hand/visuals invisible for an arm converted to suction-only.
     Visibility only -- panda_hand and its collisions stay active (cuRobo's ee_link; dropping
     collision geometry would change planning, not just looks). See docs/mefron-history.md for why
@@ -209,68 +226,294 @@ def hide_hand_housing(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
     UsdGeom.Imageable(prim).MakeInvisible()
 
 
-def attach_suction_gripper(prim_path: str = config.ROBOT_2_PRIM_PATH) -> None:
+def _reference_tool_asset(
+    usd_path,
+    prim_path: str,
+    local_position,
+    local_orientation_wxyz,
+    local_scale=None,
+    disable_physics: bool = True,
+) -> None:
+    """Shared by attach_suction_gripper()/attach_screwdriver_gripper() (permanently riding on
+    panda_hand -- baked-in physics disabled since they move purely kinematically) and
+    spawn_dockable_tool() (parked in an ATC rack as a real independent rigid body -- baked-in
+    physics left enabled so PhysX/a FixedJoint can treat it as one). See docs/mefron-history.md for
+    why the baked-in collider/RigidBodyAPI gets disabled in the permanent-mount case."""
+    from isaacsim.core.utils.stage import add_reference_to_stage
+
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(prim_path).IsValid():
+        # Same re-run safety as mount_franka() above -- avoid a uniquified duplicate on a second run
+        # in the same session.
+        omni.kit.commands.execute("DeletePrims", paths=[prim_path])
+        omni.kit.app.get_app().update()
+
+    add_reference_to_stage(usd_path=str(usd_path), prim_path=prim_path)
+    xform = SingleXFormPrim(prim_path=prim_path)
+    if local_scale is not None:
+        xform.set_local_scale(np.array(local_scale))
+    xform.set_local_pose(
+        translation=np.array(local_position),
+        orientation=np.array(local_orientation_wxyz),
+    )
+
+    if disable_physics:
+        prim = stage.GetPrimAtPath(prim_path)
+        for p in Usd.PrimRange(prim):
+            if p.HasAPI(UsdPhysics.CollisionAPI):
+                UsdPhysics.CollisionAPI(p).GetCollisionEnabledAttr().Set(False)
+            if p.HasAPI(UsdPhysics.RigidBodyAPI):
+                UsdPhysics.RigidBodyAPI(p).GetRigidBodyEnabledAttr().Set(False)
+
+
+def attach_suction_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """References config.SUCTION_GRIPPER_USD as a child of panda_hand (cuRobo's ee_link) so it
     rides along rigidly. Does not remove/hide the Franka's hand -- call
-    remove_parallel_jaw_gripper()/hide_hand_housing() first. Disables the asset's own baked-in
-    collider/RigidBodyAPI below -- see docs/mefron-history.md for why."""
-    from isaacsim.core.utils.stage import add_reference_to_stage
-
+    remove_parallel_jaw_gripper()/hide_hand_housing() first."""
     gripper_prim_path = f"{prim_path}/panda_hand/{config.SUCTION_GRIPPER_PRIM_NAME}"
-    stage = omni.usd.get_context().get_stage()
-    if stage.GetPrimAtPath(gripper_prim_path).IsValid():
-        # Same re-run safety as mount_franka() above -- avoid a uniquified duplicate on a second run
-        # in the same session.
-        omni.kit.commands.execute("DeletePrims", paths=[gripper_prim_path])
-        omni.kit.app.get_app().update()
-
-    add_reference_to_stage(usd_path=str(config.SUCTION_GRIPPER_USD), prim_path=gripper_prim_path)
-    xform = SingleXFormPrim(prim_path=gripper_prim_path)
-    xform.set_local_pose(
-        translation=np.array(config.SUCTION_GRIPPER_LOCAL_POSITION),
-        orientation=np.array(config.SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ),
+    _reference_tool_asset(
+        config.SUCTION_GRIPPER_USD,
+        gripper_prim_path,
+        config.SUCTION_GRIPPER_LOCAL_POSITION,
+        config.SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ,
     )
 
-    gripper_prim = stage.GetPrimAtPath(gripper_prim_path)
-    for prim in Usd.PrimRange(gripper_prim):
-        if prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
 
-
-def attach_screwdriver_gripper(prim_path: str = config.ROBOT_3_PRIM_PATH) -> None:
+def attach_screwdriver_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """References config.SCREWDRIVER_USD as a child of panda_hand (cuRobo's ee_link), scaled to
     config.SCREWDRIVER_LOCAL_SCALE. Mounts the tool visually/for collision only -- no
-    screw-driving control wired up yet. Disables baked-in CollisionAPI/RigidBodyAPI the same
-    defensive way attach_suction_gripper() does (not separately confirmed needed here)."""
-    from isaacsim.core.utils.stage import add_reference_to_stage
-
+    screw-driving control wired up yet."""
     tool_prim_path = f"{prim_path}/panda_hand/{config.SCREWDRIVER_PRIM_NAME}"
-    stage = omni.usd.get_context().get_stage()
-    if stage.GetPrimAtPath(tool_prim_path).IsValid():
-        # Same re-run safety as mount_franka() above -- avoid a uniquified duplicate on a second run
-        # in the same session.
-        omni.kit.commands.execute("DeletePrims", paths=[tool_prim_path])
-        omni.kit.app.get_app().update()
-
-    add_reference_to_stage(usd_path=str(config.SCREWDRIVER_USD), prim_path=tool_prim_path)
-    xform = SingleXFormPrim(prim_path=tool_prim_path)
-    xform.set_local_scale(np.array(config.SCREWDRIVER_LOCAL_SCALE))
-    xform.set_local_pose(
-        translation=np.array(config.SCREWDRIVER_LOCAL_POSITION),
-        orientation=np.array(config.SCREWDRIVER_LOCAL_ORIENTATION_WXYZ),
+    _reference_tool_asset(
+        config.SCREWDRIVER_USD,
+        tool_prim_path,
+        config.SCREWDRIVER_LOCAL_POSITION,
+        config.SCREWDRIVER_LOCAL_ORIENTATION_WXYZ,
+        local_scale=config.SCREWDRIVER_LOCAL_SCALE,
     )
 
-    tool_prim = stage.GetPrimAtPath(tool_prim_path)
+
+def attach_tool_changer_male_coupler(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
+    """Authors the ATC's permanent male half: a plain UsdGeom.Cylinder (no CAD asset needed, unlike
+    the other tools) as a child of panda_hand, sized to config.TOOL_CHANGER_CYLINDER_RADIUS/HEIGHT.
+    Rides kinematically like the tools above -- it's welded on by construction and never detaches
+    itself, only the tools docked to it do (see dock_tool_to_wrist()/undock_tool_to_rack())."""
+    stage = omni.usd.get_context().get_stage()
+    coupler_prim_path = f"{prim_path}/panda_hand/{config.TOOL_CHANGER_MALE_PRIM_NAME}"
+    if stage.GetPrimAtPath(coupler_prim_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[coupler_prim_path])
+        omni.kit.app.get_app().update()
+
+    cylinder = UsdGeom.Cylinder.Define(stage, coupler_prim_path)
+    cylinder.CreateRadiusAttr().Set(config.TOOL_CHANGER_CYLINDER_RADIUS)
+    cylinder.CreateHeightAttr().Set(config.TOOL_CHANGER_CYLINDER_HEIGHT)
+    cylinder.CreateAxisAttr().Set("Z")
+
+    xform = SingleXFormPrim(prim_path=coupler_prim_path)
+    xform.set_local_pose(
+        translation=np.array(config.TOOL_CHANGER_MALE_LOCAL_POSITION),
+        orientation=np.array(config.TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ),
+    )
+    return coupler_prim_path
+
+
+def _tool_prim_path(tool_name: str) -> str:
+    return f"{config.TOOL_CHANGE_TARGETS[tool_name]['rack_prim_path']}/tool"
+
+
+def _female_coupler_parent_prim_path(tool_name: str) -> str:
+    """The prim female_coupler should be a child of -- must resolve to a real PhysX rigid body, or
+    a FixedJoint targeting it can't find one to attach to. For a flat, single-prim asset
+    (suction/screwdriver) that's tool_prim_path itself (see spawn_dockable_tool()'s explicit
+    RigidBodyAPI.Apply() there). For the gripper's own multi-link mini-articulation, tool_prim_path
+    is just an organizing Xform -- the real rigid bodies are its links (base_link/panda_hand/...),
+    confirmed live via direct inspection -- so config.TOOL_CHANGE_TARGETS marks which link
+    female_coupler must live under instead ("female_coupler_parent_link_name")."""
+    parent_link_name = config.TOOL_CHANGE_TARGETS[tool_name].get("female_coupler_parent_link_name")
+    if parent_link_name:
+        return f"{_tool_prim_path(tool_name)}/{parent_link_name}"
+    return _tool_prim_path(tool_name)
+
+
+def _female_coupler_prim_path(tool_name: str) -> str:
+    return f"{_female_coupler_parent_prim_path(tool_name)}/female_coupler"
+
+
+def _male_coupler_prim_path(robot_prim_path: str = config.ROBOT_PRIM_PATH) -> str:
+    return f"{robot_prim_path}/panda_hand/{config.TOOL_CHANGER_MALE_PRIM_NAME}"
+
+
+def spawn_dockable_tool(tool_name: str) -> str:
+    """Places one of config.TOOL_CHANGE_TARGETS's tools at its rack position, as a real
+    independent rigid body (physics left enabled -- the opposite of attach_suction_gripper()'s/
+    attach_screwdriver_gripper()'s permanently-kinematic use of the same assets above) so it can
+    sit jointed to the rack until docked. All 3 tools are referenced USD assets -- the gripper
+    tool is scripts/vendor_gripper_tool.py's pre-baked export of
+    mount_franka_hand_only()'s hand-only URDF, NOT a live import: confirmed live that live-
+    importing a second robot into mefron.usd's own stage lets the URDF importer's shared
+    "Robot Description" cache silently corrupt the main arm's own link structure, even at a fully
+    distinct prim path -- see docs/tool-changer.md's gotcha 6. Returns the tool's own prim path."""
+    target = config.TOOL_CHANGE_TARGETS[tool_name]
+    rack_prim_path = target["rack_prim_path"]
+    tool_prim_path = _tool_prim_path(tool_name)
+
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(rack_prim_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[rack_prim_path])
+        omni.kit.app.get_app().update()
+    stage.DefinePrim(rack_prim_path, "Xform")
+    rack_xform = SingleXFormPrim(prim_path=rack_prim_path)
+    rack_xform.set_world_pose(
+        position=np.array(target["dock_position"]),
+        orientation=np.array(target["dock_orientation_wxyz"]),
+    )
+
+    _reference_tool_asset(
+        target["asset"],
+        tool_prim_path,
+        local_position=[0.0, 0.0, 0.0],
+        local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
+        disable_physics=False,
+    )
+    if target.get("female_coupler_parent_link_name"):
+        # Multi-link articulation (currently just the gripper tool) -- confirmed live the URDF
+        # importer synthesizes a "root_joint" PhysicsFixedJoint welding its free-floating base_link
+        # to the world, which must be removed for the rack/wrist FixedJoint to be the only thing
+        # constraining it. DeletePrims silently no-ops on it (same gotcha as
+        # remove_parallel_jaw_gripper()'s finger joints, see docs/mefron-history.md);
+        # SetActive(False) is what actually removes the constraint.
+        root_joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/root_joint")
+        if root_joint_prim.IsValid():
+            root_joint_prim.SetActive(False)
+    else:
+        # A flat, single-prim asset (suction/screwdriver) -- confirmed electric_screwdriver.usd
+        # carries no baked-in RigidBodyAPI at all (unlike the suction gripper asset), so a
+        # FixedJoint targeting a child of tool_prim_path can't resolve any rigid body to pull;
+        # apply explicitly rather than trusting the source asset.
+        UsdPhysics.RigidBodyAPI.Apply(stage.GetPrimAtPath(tool_prim_path))
+    # Local identity either way -- tool_prim_path's world pose is rack_prim_path's (the dock pose).
+    tool_xform = SingleXFormPrim(prim_path=tool_prim_path)
+    tool_xform.set_local_pose(
+        translation=np.array([0.0, 0.0, 0.0]),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+
+    female_coupler_path = _female_coupler_prim_path(tool_name)
+    stage.DefinePrim(female_coupler_path, "Xform")
+    female_xform = SingleXFormPrim(prim_path=female_coupler_path)
+    female_xform.set_local_pose(
+        translation=np.array(target["female_coupler_local_position"]),
+        orientation=np.array(target["female_coupler_local_orientation_wxyz"]),
+    )
+    return tool_prim_path
+
+
+def _create_tool_fixed_joint(
+    joint_path: str,
+    body0_path: str,
+    body1_path: str,
+    body1_local_position=(0.0, 0.0, 0.0),
+    body1_local_orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
+) -> None:
+    """Plain rigid UsdPhysics.FixedJoint between two prims -- no DriveAPI/LimitAPI compliance,
+    unlike attach_surface_gripper_physics()'s intentionally-soft D6 (a tool-changer coupling should
+    be rigid). body1's local frame defaults to identity (rack parking: body0/body1 origins already
+    coincide) but dock_tool_to_wrist() passes the mate offset (body1 = female coupler expressed in
+    body0/male-coupler-i.e.-ee_link's frame is what PhysX pulls into alignment). Both bodies get
+    excludeFromArticulation since panda_hand is a real articulation link."""
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(joint_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[joint_path])
+        omni.kit.app.get_app().update()
+
+    joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(*body1_local_position))
+    joint.CreateLocalRot1Attr().Set(Gf.Quatf(*body1_local_orientation_wxyz))
+    joint.CreateExcludeFromArticulationAttr().Set(True)
+
+
+def _rack_joint_path(tool_name: str) -> str:
+    return f"{config.TOOL_CHANGE_TARGETS[tool_name]['rack_prim_path']}/rack_joint"
+
+
+def _wrist_joint_path(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> str:
+    # Per-tool, not one shared "wrist_joint" name -- confirmed live that redefining a Joint prim at
+    # the same path with a different body1 target leaves PhysX solving against the stale target
+    # (the previous tool's female_coupler), even though body0/localPos/localRot look correct from
+    # the USD side. A fresh path per tool sidesteps that redefinition entirely.
+    return f"{_male_coupler_prim_path(robot_prim_path)}/wrist_joint_{tool_name}"
+
+
+def park_tool_at_rack(tool_name: str) -> None:
+    """Creates the initial FixedJoint anchoring a freshly-spawned tool to its own rack, so it
+    doesn't drift/fall under gravity before ever being docked -- a parked tool is always
+    joint-fixed to something (rack or wrist), never free-falling."""
+    _create_tool_fixed_joint(
+        _rack_joint_path(tool_name),
+        config.TOOL_CHANGE_TARGETS[tool_name]["rack_prim_path"],
+        _female_coupler_prim_path(tool_name),
+    )
+
+
+def _set_tool_collision_enabled(tool_name: str, enabled: bool) -> None:
+    """Toggles CollisionEnabledAttr (not RigidBodyAPI -- the body must stay dynamic for the joint's
+    solver to actually pull it into place) across the tool's own subtree. Confirmed live: without
+    this, a docked tool's real collider fights the wrist joint's pull against panda_hand's own
+    collider, settling tens of cm short of the joint's target instead of converging to it -- the
+    same reasoning attach_suction_gripper()/attach_screwdriver_gripper() disable collision for
+    permanently-mounted tools, just toggled dynamically here since a parked tool DOES need real
+    collision (sitting in its rack) while a docked one doesn't."""
+    stage = omni.usd.get_context().get_stage()
+    tool_prim = stage.GetPrimAtPath(_tool_prim_path(tool_name))
     for prim in Usd.PrimRange(tool_prim):
         if prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
-        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(enabled)
 
 
-def attach_surface_gripper_physics(prim_path: str = config.ROBOT_2_PRIM_PATH) -> str:
+def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Swaps a tool's FixedJoint from its rack onto the wrist's male coupler -- the "grab" half of
+    a tool change. Caller (see teleop.py's tool-change waypoint queue) is responsible for having
+    already planned/settled the arm at the tool's dock pose first, or this snaps the tool a
+    noticeable distance instead of a clean small correction. Also responsible for having already
+    undocked any PREVIOUSLY docked tool first (undock_tool_to_rack()) -- only one tool should ever
+    be wrist-jointed at a time; docking a second one without releasing the first leaves both
+    simultaneously welded to the same male coupler instead."""
+    stage = omni.usd.get_context().get_stage()
+    rack_joint_path = _rack_joint_path(tool_name)
+    if stage.GetPrimAtPath(rack_joint_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[rack_joint_path])
+        omni.kit.app.get_app().update()
+
+    _create_tool_fixed_joint(
+        _wrist_joint_path(tool_name, robot_prim_path),
+        _male_coupler_prim_path(robot_prim_path),
+        _female_coupler_prim_path(tool_name),
+        body1_local_position=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
+        body1_local_orientation_wxyz=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
+    )
+    _set_tool_collision_enabled(tool_name, enabled=False)
+
+
+def undock_tool_to_rack(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Inverse of dock_tool_to_wrist() -- swaps the FixedJoint back onto the rack. Caller must have
+    already planned/settled the arm back at the tool's dock pose first."""
+    stage = omni.usd.get_context().get_stage()
+    wrist_joint_path = _wrist_joint_path(tool_name, robot_prim_path)
+    if stage.GetPrimAtPath(wrist_joint_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[wrist_joint_path])
+        omni.kit.app.get_app().update()
+
+    _create_tool_fixed_joint(
+        _rack_joint_path(tool_name),
+        config.TOOL_CHANGE_TARGETS[tool_name]["rack_prim_path"],
+        _female_coupler_prim_path(tool_name),
+    )
+    _set_tool_collision_enabled(tool_name, enabled=True)
+
+
+def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/surface_gripper attach mechanism on panda_hand: one
     UsdPhysics.Joint (IsaacAttachmentPointAPI) with PhysicsLimitAPI/DriveAPI compliance tuning --
     without it the joint is a free D6 and lifting leaves the object behind. excludeFromArticulation

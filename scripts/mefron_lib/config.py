@@ -146,19 +146,6 @@ ASSEMBLY_RELATIONSHIPS = {
     },
 }
 
-# --- Second arm (see docs/mefron-history.md) --------------------------------------------------
-# Second UR10 mount pedestal (user-placed in the GUI), replacing an earlier SEKTION cabinet ~2m
-# away. Position/orientation pending user GUI confirmation, like MOUNT_POSITION above.
-ROBOT_2_PRIM_PATH = "/World/Franka2"
-MOUNT_2_POSITION = [3.796979317755996, -4.7095468668675435, 0.78]
-MOUNT_2_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
-TARGET_2_PRIM_PATH = "/World/target2"
-
-ROBOT_3_PRIM_PATH = "/World/Franka3"
-MOUNT_3_POSITION = [3.85262, -3.55485, 0.78]
-MOUNT_3_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
-TARGET_3_PRIM_PATH = "/World/target3"
-
 # Drives ConveyorBelt_A24 via Isaac Sim's isaacsim.asset.gen.conveyor OmniGraph node
 # (CreateConveyorBelt), not a direct PhysX write -- see docs/mefron-history.md for why (two
 # confirmed failure modes on the naive route).
@@ -182,8 +169,15 @@ CONVEYOR_TRAVEL_DISTANCE = 1.1
 CONVEYOR_TOGGLE_KEY = "KEY_1"
 
 
-# Custom Franka-flange suction gripper (arm 2 only) -- see docs/mefron-history.md for the
-# asset-alignment derivation.
+# scripts/vendor_gripper_tool.py's pre-baked export of robot.mount_franka_hand_only()'s hand-only
+# URDF -- one of the 3 dockable ATC tools. Referenced, not live-imported: confirmed live that
+# importing a second robot via the URDF importer into mefron.usd's own stage corrupts the main
+# arm's own link structure through a shared "Robot Description" cache, even at a fully distinct
+# prim path -- see docs/tool-changer.md's gotcha 6.
+GRIPPER_TOOL_HAND_ONLY_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "gripper_tool_hand_only.usd"
+
+# Custom Franka-flange suction gripper -- one of the 3 dockable ATC tools (see the "Automatic tool
+# changer" section below). See docs/mefron-history.md for the asset-alignment derivation.
 SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "suction gripper.usd"
 SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
 # Asset root is already coincident with panda_hand's frame -- no offset/rotation correction
@@ -191,8 +185,8 @@ SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
 SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
-# Electric-screwdriver end-effector, arm 3 only. Same panda_hand-child mounting pattern as
-# SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
+# Electric-screwdriver end-effector, another of the 3 dockable ATC tools. Same panda_hand-child
+# mounting pattern as SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
 SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver.usd"
 SCREWDRIVER_PRIM_NAME = "electric_screwdriver"
 # Asset's own root Xform is already correctly scaled (0.001) -- forces the wrapper prim to
@@ -208,7 +202,9 @@ SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501,
 SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"
 SURFACE_GRIPPER_PRIM_NAME = "SurfaceGripper"
 # Joint's frame on panda_hand's side: cup's physical tip, 0.1m out along +Z (base->tip, like
-# SUCTION_GRIPPER_LOCAL_* above).
+# SUCTION_GRIPPER_LOCAL_* above). Pre-ATC value -- now that the suction gripper docks beyond
+# TOOL_CHANGER_CYLINDER_HEIGHT's standoff instead of sitting directly on panda_hand, this needs
+# re-deriving by hand-jog once the coupler/female geometry exists live. See docs/tool-changer.md.
 SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.1]
 SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # isaac:maxGripDistance -- how far the attachment point searches for something to grab. Schema
@@ -218,17 +214,18 @@ SURFACE_GRIPPER_MAX_GRIP_DISTANCE = 0.03
 # into suction_gripper_approach_on_screen's local z, so change both together.
 SURFACE_GRIPPER_APPROACH_CLEARANCE = 0.01
 
-# Arm 2 keys, none colliding with arm 1's J/B/P/C/O. S/H/R were tried first and confirmed live to
-# double as Kit viewport hotkeys -- see docs/mefron-history.md.
+# Suction attach/detach, only meaningful once TOOL_CHANGE_TARGETS["suction"] is the currently-docked
+# tool -- see teleop.py's tool-gating. Not colliding with J/B/P/C/O. S/H/R were tried first and
+# confirmed live to double as Kit viewport hotkeys -- see docs/mefron-history.md.
 SUCTION_ATTACH_KEY = "V"  # Vacuum on
 SUCTION_DETACH_KEY = "L"  # reLease
 
-# Arm 2's per-object suction approach targets, same shape/purpose as GRASP_TARGETS but for the
-# suction cup: "key" snaps target2 to approach_relationship, P looks up assembly_relationship for
-# whichever object was last approached.
+# Per-object suction approach targets, same shape/purpose as GRASP_TARGETS but for the suction cup:
+# "key" snaps target to approach_relationship, P looks up assembly_relationship for whichever
+# object was last approached. Only meaningful while the suction tool is docked.
 SUCTION_TARGETS = {
     "screen": {
-        "key": "N",  # sNap arm 2's target to the screen-approach pose
+        "key": "N",
         "approach_relationship": "suction_gripper_approach_on_screen",
         "assembly_relationship": "screen_on_main_holder",
     },
@@ -241,8 +238,72 @@ SUCTION_TARGETS = {
 
 SCREEN_PRIM_PATH = "/World/screen"
 
+# --- Automatic tool changer (ATC): one Franka, three swappable tools ---------------------------
+# Male half: a plain cylinder matching the Franka's own ISO 9409-1-50 wrist flange (see
+# SUCTION_GRIPPER_USD's comment above for that Ø63mm reference), riding permanently on panda_hand.
+# Female half: one per tool below, mating with the male coupler the same way every time. See
+# docs/tool-changer.md for why a scripted FixedJoint was chosen over Isaac Sim's Robot Assembler
+# extension or the SurfaceGripper schema.
+TOOL_CHANGER_MALE_PRIM_NAME = "tool_changer_male"
+TOOL_CHANGER_CYLINDER_RADIUS = 0.0315  # Ø63mm
+TOOL_CHANGER_CYLINDER_HEIGHT = 0.02
+TOOL_CHANGER_MALE_LOCAL_POSITION = [0.0, 0.0, 0.0]
+TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+
+# ee_link's fixed pose relative to a tool's female-coupler frame once properly mated -- the whole
+# point of a standardized coupler is this is the SAME for every tool, not measured per-tool.
+# Placeholder (coupler-height standoff only) pending hand-jog confirmation once the coupler/female
+# geometry exists live -- see docs/tool-changer.md's open issues.
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [0.0, 0.0, -TOOL_CHANGER_CYLINDER_HEIGHT]
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+
+# Relative hover clearance above a rack's dock pose the arm holds while aligning X/Y/orientation
+# before descending to dock/undock -- relative to each dock_position, not a fixed world-Z constant
+# like ASSEMBLY_LIFT_HEIGHT (see CLAUDE.md's open issue about that exact mistake).
+TOOL_RACK_APPROACH_CLEARANCE = 0.15
+
+# One entry per dockable tool. "asset" is a USD path, referenced as a child of the rack anchor
+# prim (same pattern for all 3 -- see robot.spawn_dockable_tool()). "female_coupler_parent_link_name"
+# is only set for the gripper: its asset is a multi-link mini-articulation (actuated fingers, not a
+# static prop like the other two), so its rack-anchor child is just an organizing Xform over its
+# real rigid-body links -- female_coupler must attach under that specific link instead (see
+# robot._female_coupler_parent_prim_path()), not left unset/None like the other two tools.
+# dock_position/orientation are placeholders pending user GUI placement, same provenance as
+# MOUNT_POSITION; female_coupler_local_* are placeholders pending hand-jog confirmation against
+# each asset's own root frame, same provenance as SUCTION_GRIPPER_LOCAL_*.
+TOOL_CHANGE_TARGETS = {
+    "gripper": {
+        "key": "NUMPAD_1",
+        "asset": GRIPPER_TOOL_HAND_ONLY_USD,
+        "female_coupler_parent_link_name": "base_link",
+        "rack_prim_path": "/World/tool_rack_gripper",
+        "dock_position": [2.9, -4.4, 0.85],
+        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "female_coupler_local_position": [0.0, 0.0, 0.0],
+        "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+    "suction": {
+        "key": "NUMPAD_2",
+        "asset": SUCTION_GRIPPER_USD,
+        "rack_prim_path": "/World/tool_rack_suction",
+        "dock_position": [3.1, -4.4, 0.85],
+        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "female_coupler_local_position": [0.0, 0.0, 0.0],
+        "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+    "screwdriver": {
+        "key": "NUMPAD_3",
+        "asset": SCREWDRIVER_USD,
+        "rack_prim_path": "/World/tool_rack_screwdriver",
+        "dock_position": [3.3, -4.4, 0.85],
+        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "female_coupler_local_position": [0.0, 0.0, 0.0],
+        "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+}
+
 # isaacsim.exp.full.kit's extra extensions over isaacsim.exp.base.python.kit, enabled only after
-# both Frankas are mounted (crashes the URDF importer if loaded earlier -- see
+# the Franka is mounted (crashes the URDF importer if loaded earlier -- see
 # docs/mefron-history.md). isaacsim.asset.gen.conveyor(.ui) is the one deliberate addition beyond
 # that diff, needed by conveyor.setup_conveyor_belt_graph().
 FULL_EXPERIENCE_EXTRA_EXTENSIONS = [

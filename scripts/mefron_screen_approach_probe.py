@@ -1,7 +1,8 @@
 """One-time headless derivation: a first-pass suction-gripper approach pose for /World/screen, to
 seed config.ASSEMBLY_RELATIONSHIPS["suction_gripper_approach_on_screen"] -- prints numbers to
 paste by hand, a first pass to re-derive once seen (see docs/mefron-history.md's config.py section
-for why it was later superseded). Mounts arm 2 only, no timeline.play()/motion_gen needed."""
+for why it was later superseded). Mounts the single ATC arm with a suction gripper permanently
+attached (pre-tool-changer style) purely to read poses -- no timeline.play()/motion_gen needed."""
 
 from __future__ import annotations
 
@@ -32,12 +33,12 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka(config.ROBOT_2_PRIM_PATH, config.MOUNT_2_POSITION, config.MOUNT_2_ORIENTATION_WXYZ)
-    robot.remove_parallel_jaw_gripper(config.ROBOT_2_PRIM_PATH)
-    robot.attach_suction_gripper(config.ROBOT_2_PRIM_PATH)
+    robot.mount_franka(config.ROBOT_PRIM_PATH, config.MOUNT_POSITION, config.MOUNT_ORIENTATION_WXYZ)
+    robot.remove_parallel_jaw_gripper(config.ROBOT_PRIM_PATH)
+    robot.attach_suction_gripper(config.ROBOT_PRIM_PATH)
 
     stage = omni.usd.get_context().get_stage()
-    hand_trans, hand_quat = SingleXFormPrim(prim_path=f"{config.ROBOT_2_PRIM_PATH}/panda_hand").get_world_pose()
+    hand_trans, hand_quat = SingleXFormPrim(prim_path=f"{config.ROBOT_PRIM_PATH}/panda_hand").get_world_pose()
     screen_trans, screen_quat = SingleXFormPrim(prim_path=config.SCREEN_PRIM_PATH).get_world_pose()
 
     # (a) Literal answer to "pose of screen wrt the suction gripper" -- current live tip frame.

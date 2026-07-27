@@ -100,6 +100,46 @@ def compute_assembly_grasp_target_from_offset(
     )
 
 
+def compute_tool_dock_target(tool_name: str):
+    """ee_link's target world pose for docking/undocking config.TOOL_CHANGE_TARGETS[tool_name]:
+    composes the tool's LIVE female-coupler world pose with the fixed
+    TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_* mate offset -- same composition direction as
+    compute_assembly_grasp_target_from_offset(), just with a fixed offset instead of a measured one
+    (a standardized coupler mates the same way every time, nothing to measure per-tool)."""
+    target = config.TOOL_CHANGE_TARGETS[tool_name]
+    female_coupler_path = f"{target['rack_prim_path']}/tool/female_coupler"
+    coupler_trans, coupler_quat = SingleXFormPrim(
+        prim_path=female_coupler_path, reset_xform_properties=False
+    ).get_world_pose()
+    return compute_dependent_world_pose(
+        coupler_trans,
+        coupler_quat,
+        config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
+        config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
+    )
+
+
+def compute_tool_rack_return_target(tool_name: str):
+    """ee_link's target world pose for RETURNING a currently-docked tool to its own rack. Unlike
+    compute_tool_dock_target(), this can't read the tool's live female-coupler pose -- it's riding
+    on the wrist right now, not sitting statically at the rack, so its live pose reflects the
+    wrist's current position, not the rack's. Uses the rack's fixed dock_position/orientation from
+    config instead, composed the same way spawn_dockable_tool() placed the tool there originally."""
+    target = config.TOOL_CHANGE_TARGETS[tool_name]
+    female_coupler_trans, female_coupler_quat = compute_dependent_world_pose(
+        np.array(target["dock_position"]),
+        np.array(target["dock_orientation_wxyz"]),
+        target["female_coupler_local_position"],
+        target["female_coupler_local_orientation_wxyz"],
+    )
+    return compute_dependent_world_pose(
+        female_coupler_trans,
+        female_coupler_quat,
+        config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
+        config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
+    )
+
+
 def compute_assembly_grasp_target(ee_link_prim_path: str, relationship_name: str = "finger_print_scanner_on_main_holder"):
     """Returns the world pose /World/target should be set to for P: main_holder's live pose composed
     with ASSEMBLY_RELATIONSHIPS gives the part's target pose; the CURRENT live gripper-to-part offset

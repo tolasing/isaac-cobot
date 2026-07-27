@@ -77,15 +77,10 @@ class GripperKeyboardControl:
         self._grasp_approach_object_requested = None
 
 
-def build_gripper_keyboard_control(
-    close_key: str = "C",
-    open_key: str = "O",
-    grasp_key_bindings: dict[str, str] | None = None,
-) -> GripperKeyboardControl:
-    """Subscribes close_key/open_key to open/close the gripper. grasp_key_bindings defaults to
-    config.GRASP_TARGETS (J/B/...), enabling P to snap `target` to the last-grasped object's
-    assembly pose. Pass {} for an arm with no grasp/assembly task (e.g. arm 2) so its P/grasp
-    keys no-op instead of reacting to another arm's keypress."""
+def build_gripper_keyboard_control(close_key: str = "C", open_key: str = "O") -> GripperKeyboardControl:
+    """Subscribes close_key/open_key to open/close the gripper, plus one key per
+    config.GRASP_TARGETS (J/B/...) and P, enabling P to snap `target` to the last-grasped object's
+    assembly pose."""
     import carb.input
     import omni.appwindow
 
@@ -93,18 +88,10 @@ def build_gripper_keyboard_control(
     keyboard = omni.appwindow.get_default_app_window().get_keyboard()
     input_iface = carb.input.acquire_input_interface()
 
-    if grasp_key_bindings is None:
-        grasp_key_bindings = {
-            getattr(carb.input.KeyboardInput, target["key"]): object_name
-            for object_name, target in config.GRASP_TARGETS.items()
-        }
-        supports_assembly_snap = True
-    else:
-        grasp_key_bindings = {
-            getattr(carb.input.KeyboardInput, key): object_name for key, object_name in grasp_key_bindings.items()
-        }
-        supports_assembly_snap = bool(grasp_key_bindings)
-
+    grasp_key_bindings = {
+        getattr(carb.input.KeyboardInput, target["key"]): object_name
+        for object_name, target in config.GRASP_TARGETS.items()
+    }
     close_input = getattr(carb.input.KeyboardInput, close_key)
     open_input = getattr(carb.input.KeyboardInput, open_key)
 
@@ -114,7 +101,7 @@ def build_gripper_keyboard_control(
                 control.set_closed(True)
             elif event.input == open_input:
                 control.set_closed(False)
-            elif supports_assembly_snap and event.input == carb.input.KeyboardInput.P:
+            elif event.input == carb.input.KeyboardInput.P:
                 control.request_assembly_target()
             elif event.input in grasp_key_bindings:
                 control.request_grasp_approach_from_file(grasp_key_bindings[event.input])
@@ -128,10 +115,9 @@ def build_gripper_keyboard_control(
 
 
 class SuctionApproachControl:
-    """One-shot 'snap arm 2's target to an object's suction-approach pose' request (N: screen, M:
-    pcb_assembly -- one key per config.SUCTION_TARGETS entry). Independent of
-    GripperKeyboardControl: arm 2's gripper_control must stay None, since its parallel-jaw finger
-    joints don't exist on the live stage and get_dof_index() would raise on them."""
+    """One-shot 'snap `target` to an object's suction-approach pose' request (N: screen, M:
+    pcb_assembly -- one key per config.SUCTION_TARGETS entry). Only meaningful while the suction
+    tool is docked (see teleop.py's tool-gating in _step_arm())."""
 
     def __init__(self) -> None:
         self._requested_object: str | None = None
@@ -186,50 +172,6 @@ def build_suction_approach_keyboard_control(
     return control
 
 
-class AssemblyPlacementControl:
-    """One-shot 'place the carried part at its assembly pose' request for an arm with no
-    GripperKeyboardControl of its own (arm 2). Same has_pending/consume peek pair as arm 1's P:
-    the two-stage lift-then-drop needs the request to survive across frames until the robot goes
-    idle, not be consumed while a plan is still in flight."""
-
-    def __init__(self) -> None:
-        self._requested = False
-
-    def request_placement(self) -> None:
-        self._requested = True
-
-    def has_pending_placement_request(self) -> bool:
-        return self._requested
-
-    def consume_placement_request(self) -> bool:
-        requested = self._requested
-        self._requested = False
-        return requested
-
-
-def build_assembly_placement_keyboard_control(key: str = "P") -> AssemblyPlacementControl:
-    """A second, independent keyboard subscription for P -- arm 1's GripperKeyboardControl already
-    owns its own P subscription (see build_gripper_keyboard_control()'s docstring: concurrent
-    subscriptions each see the same keypress), so one P press fires both arms' handlers."""
-    import carb.input
-    import omni.appwindow
-
-    control = AssemblyPlacementControl()
-    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
-    input_iface = carb.input.acquire_input_interface()
-    request_input = getattr(carb.input.KeyboardInput, key)
-
-    def _on_keyboard_event(event) -> bool:
-        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input == request_input:
-            control.request_placement()
-        return True
-
-    control._keyboard = keyboard
-    control._input_iface = input_iface
-    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
-    return control
-
-
 class SurfaceGripperKeyboardControl:
     """Fires close_gripper()/open_gripper() once per keypress via the real Surface Gripper runtime
     (isaacsim.robot.surface_gripper) -- its own C++ manager owns the Open/Closing/Closed state
@@ -259,7 +201,11 @@ def build_surface_gripper_keyboard_control(
     gripper_prim_path: str,
     close_key: str = config.SUCTION_ATTACH_KEY,
     open_key: str = config.SUCTION_DETACH_KEY,
+    tool_changer_control: "ToolChangerControl | None" = None,
 ) -> SurfaceGripperKeyboardControl:
+    """tool_changer_control, if given, gates close()/open() on the suction tool actually being the
+    currently-docked one -- pressing V/L while e.g. the screwdriver is docked would otherwise
+    harmlessly search for something to grab at the (unrelated) suction joint's location."""
     import carb.input
     import omni.appwindow
 
@@ -270,11 +216,70 @@ def build_surface_gripper_keyboard_control(
     open_input = getattr(carb.input.KeyboardInput, open_key)
 
     def _on_keyboard_event(event) -> bool:
-        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input in (close_input, open_input):
+            if tool_changer_control is not None and tool_changer_control.currently_docked_tool != "suction":
+                print("[mefron] suction attach/detach ignored -- the suction tool isn't currently docked.", flush=True)
+                return True
             if event.input == close_input:
                 control.close()
-            elif event.input == open_input:
+            else:
                 control.open()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
+class ToolChangerControl:
+    """One-shot 'go swap to this tool' request for the ATC arm (numpad 1/2/3, see
+    config.TOOL_CHANGE_TARGETS). Tracks which tool is currently docked so _step_arm()'s waypoint
+    queue (_build_tool_change_queue()) knows whether a return-to-rack leg is needed first.
+    has_pending/consume mirrors GripperKeyboardControl's assembly-target pair -- the request must
+    survive across frames until the robot goes idle, not be consumed mid-plan."""
+
+    def __init__(self) -> None:
+        self._requested_tool: str | None = None
+        self.currently_docked_tool: str | None = None
+
+    def request_tool(self, tool_name: str) -> None:
+        self._requested_tool = tool_name
+
+    def has_pending_request(self) -> bool:
+        return self._requested_tool is not None
+
+    def consume_request(self) -> str | None:
+        requested = self._requested_tool
+        self._requested_tool = None
+        return requested
+
+    def reset(self) -> None:
+        """Called on every fresh Play, same as the other *Control.reset()s -- but deliberately does
+        NOT clear currently_docked_tool: unlike arm["_state"] (rebuilt every fresh Play since it's
+        bound to the physics view that existed when built), the FixedJoint a Stop leaves on the
+        stage doesn't change, so whichever tool this object last recorded as docked is still
+        physically true after a Stop/Play. Only the one-shot request is transient."""
+        self._requested_tool = None
+
+
+def build_tool_changer_keyboard_control() -> ToolChangerControl:
+    """Subscribes one key per config.TOOL_CHANGE_TARGETS entry (numpad 1/2/3 by default) to
+    request a tool swap."""
+    import carb.input
+    import omni.appwindow
+
+    control = ToolChangerControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    key_bindings = {
+        getattr(carb.input.KeyboardInput, target["key"]): tool_name
+        for tool_name, target in config.TOOL_CHANGE_TARGETS.items()
+    }
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS and event.input in key_bindings:
+            control.request_tool(key_bindings[event.input])
         return True
 
     control._keyboard = keyboard
@@ -409,7 +414,49 @@ def _fresh_arm_state() -> dict:
         # Ramped gripper setpoint state -- see config.GRIPPER_CLOSE_SPEED for why it moves gradually.
         "gripper_setpoint": None,
         "last_gripper_time": None,
+        # Ordered (position, orientation, on_arrival) waypoints for a multi-leg tool-change sequence
+        # -- see _build_tool_change_queue(). Distinct from pending_final_pose (a single chained
+        # hover-then-drop step) since a tool change needs an arbitrary-length chain with
+        # side-effecting callbacks (dock_tool_to_wrist()/undock_tool_to_rack()) at specific legs.
+        "motion_queue": [],
     }
+
+
+def _build_tool_change_queue(tool_changer_control: ToolChangerControl, requested_tool: str) -> list:
+    """Builds the ordered waypoint list for one tool swap: if a different tool is currently docked,
+    first return it to its own rack (hover -> descend -> undock -> retract), then approach the
+    requested tool's rack the same way (hover -> descend -> dock -> retract). Skips the return leg
+    entirely from a bare wrist. Hover clearance is relative to each dock pose (config
+    .TOOL_RACK_APPROACH_CLEARANCE), not a fixed world-Z constant -- see CLAUDE.md's
+    ASSEMBLY_LIFT_HEIGHT open issue for why that would be a mistake here too."""
+    from . import robot
+    from .grasp import compute_tool_dock_target, compute_tool_rack_return_target
+
+    queue = []
+
+    def _add_leg(dock_position, dock_orientation, on_arrival) -> None:
+        hover_position = dock_position + np.array([0.0, 0.0, config.TOOL_RACK_APPROACH_CLEARANCE])
+        queue.append((hover_position, dock_orientation, None))
+        queue.append((dock_position, dock_orientation, on_arrival))
+        queue.append((hover_position, dock_orientation, None))
+
+    current_tool = tool_changer_control.currently_docked_tool
+    if current_tool is not None and current_tool != requested_tool:
+
+        def _on_undock(tool_name=current_tool) -> None:
+            robot.undock_tool_to_rack(tool_name)
+            tool_changer_control.currently_docked_tool = None
+
+        return_position, return_orientation = compute_tool_rack_return_target(current_tool)
+        _add_leg(return_position, return_orientation, _on_undock)
+
+    def _on_dock(tool_name=requested_tool) -> None:
+        robot.dock_tool_to_wrist(tool_name)
+        tool_changer_control.currently_docked_tool = tool_name
+
+    dock_position, dock_orientation = compute_tool_dock_target(requested_tool)
+    _add_leg(dock_position, dock_orientation, _on_dock)
+    return queue
 
 
 def _snap_target_to_assembly_lift_waypoint(state: dict, target, ee_link_prim_path: str, relationship_name: str):
@@ -439,6 +486,7 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     robot_cfg = arm["robot_cfg"]
     target = arm["target"]
     gripper_control = arm.get("gripper_control")
+    tool_changer_control = arm.get("tool_changer_control")
     robot_prim_path = arm["robot_prim_path"]
     target_prim_path = arm["target_prim_path"]
     robot_base_pose = arm["_robot_base_pose"]
@@ -453,7 +501,14 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         state["robot"] = SingleArticulation(prim_path=robot_prim_path, name=f"mefron_teleop_robot_{arm['_name']}")
         state["robot"].initialize()
         state["idx_list"] = [state["robot"].get_dof_index(x) for x in j_names]
-        if gripper_control is not None:
+        # NOT gated on gripper_control alone -- under the ATC, panda_finger_joint1/2 are permanently
+        # deactivated on this arm's OWN articulation (remove_parallel_jaw_gripper(), since the
+        # gripper is now a separate dockable tool module, its own mini-articulation). gripper_control
+        # still exists for J/B/P snap-request bookkeeping; only a future per-tool articulation
+        # handle would let C/O actually drive the docked gripper's fingers -- see
+        # docs/tool-changer.md's open issues. drive_builtin_gripper_joints stays unset (False) until
+        # that lands, so this arm never tries to resolve joints that no longer exist here.
+        if arm.get("drive_builtin_gripper_joints", False):
             state["gripper_idx_list"] = [state["robot"].get_dof_index(x) for x in config.GRIPPER_JOINT_NAMES]
         else:
             state["gripper_idx_list"] = []
@@ -489,24 +544,27 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     if state["past_orientation"] is None:
         state["past_orientation"] = cube_orientation
 
-    # One-shot P/J snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not before --
-    # otherwise cube_position would already reflect the post-snap pose when target_pose is seeded, making the debounce distance 0 forever.
+    suction_control = arm.get("suction_control")
+    surface_gripper_control = arm.get("surface_gripper_control")
+
+    # One-shot P/J/N/M snap requests. Must run AFTER the past_pose/target_pose bootstrap above, not
+    # before -- otherwise cube_position would already reflect the post-snap pose when target_pose
+    # is seeded, making the debounce distance 0 forever.
     if gripper_control is not None:
         if gripper_control.has_pending_assembly_target_request():
             # Only kick off the align/drop once the robot is idle -- consuming mid-plan would
             # silently discard the request (trigger-if below requires cmd_plan is None), and let
             # the in-flight plan's completion wrongly consume pending_final_pose with no hover stop.
-            if gripper_control.last_grasped_object is None:
-                # Nothing grasped yet -- discard rather than defaulting to finger_print_scanner.
-                # Arm 1 shares the P key with arm 2, so every P press reaches here even when the
-                # user only meant to place arm 2's screen.
-                gripper_control.consume_assembly_target_request()
-            elif state["cmd_plan"] is None:
-                gripper_control.consume_assembly_target_request()
-                # Same "actually holding it right now" gate as arm 2's is_closed() check below --
-                # last_grasped_object is sticky (set by J/B, never cleared by O), so without this,
-                # O then P would still fire the placement snap for whatever was last grasped.
-                if gripper_control.closed:
+            if state["cmd_plan"] is None:
+                docked_tool = tool_changer_control.currently_docked_tool if tool_changer_control is not None else None
+                relationship_name = None
+                # Whichever tool is currently docked determines which "last touched" object (if
+                # any) P should place -- J/B and N/M are themselves gated on the matching tool
+                # being docked (see below/above), so at most one of these two can be valid at once.
+                if docked_tool == "gripper" and gripper_control.last_grasped_object is not None and gripper_control.closed:
+                    # Same "actually holding it right now" gate as the suction branch's
+                    # is_closed() check below -- last_grasped_object is sticky (set by J/B, never
+                    # cleared by O), so without this, O then P would still fire a placement snap.
                     object_name = gripper_control.last_grasped_object
                     # Looked up by part_prim_path, not a "{object_name}_on_main_holder" key --
                     # not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
@@ -516,57 +574,78 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                         for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
                         if relationship["part_prim_path"] == part_prim_path
                     )
+                elif (
+                    docked_tool == "suction"
+                    and suction_control is not None
+                    and suction_control.last_approached_object is not None
+                    and (surface_gripper_control is None or surface_gripper_control.is_closed())
+                ):
+                    object_name = suction_control.last_approached_object
+                    relationship_name = config.SUCTION_TARGETS[object_name]["assembly_relationship"]
+
+                gripper_control.consume_assembly_target_request()
+                if relationship_name is not None:
                     cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
                         state, target, ee_link_prim_path, relationship_name
                     )
+                # else: nothing valid to place (nothing grasped/approached with the matching tool
+                # docked, or not actually holding it) -- discard rather than guessing.
         else:
             requested_object = gripper_control.consume_grasp_approach_from_file_request()
             if requested_object is not None:
-                grasp_target = config.GRASP_TARGETS[requested_object]
-                cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
-                    grasp_target["yaml_path"],
-                    grasp_target["grasp_name"],
-                    part_prim_path=grasp_target["part_prim_path"],
-                )
-                target.set_world_pose(position=cube_position, orientation=cube_orientation)
-                open_position, closed_position = compute_grasp_finger_widths_from_file(
-                    grasp_target["yaml_path"], grasp_target["grasp_name"]
-                )
-                gripper_control.set_grasp_widths(open_position, closed_position)
-                gripper_control.set_closed(False)
+                # Only meaningful with the parallel-jaw gripper tool docked -- otherwise there are
+                # no fingers to grasp with regardless of where target snaps to.
+                if tool_changer_control is not None and tool_changer_control.currently_docked_tool != "gripper":
+                    print(
+                        f"[mefron] {arm['_name']}: ignoring grasp-approach request -- the gripper tool isn't docked.",
+                        flush=True,
+                    )
+                else:
+                    grasp_target = config.GRASP_TARGETS[requested_object]
+                    cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
+                        grasp_target["yaml_path"],
+                        grasp_target["grasp_name"],
+                        part_prim_path=grasp_target["part_prim_path"],
+                    )
+                    target.set_world_pose(position=cube_position, orientation=cube_orientation)
+                    open_position, closed_position = compute_grasp_finger_widths_from_file(
+                        grasp_target["yaml_path"], grasp_target["grasp_name"]
+                    )
+                    gripper_control.set_grasp_widths(open_position, closed_position)
+                    gripper_control.set_closed(False)
 
-    # One-shot suction-approach snap (arm 2 only, one key per config.SUCTION_TARGETS entry).
-    # Ungated unlike P -- arm 2 has no carried-object two-stage-lift concern, so an immediate
-    # consume here is safe.
-    suction_control = arm.get("suction_control")
+    # One-shot suction-approach snap, one key per config.SUCTION_TARGETS entry. Ungated on
+    # cmd_plan/idle unlike P -- no carried-object two-stage-lift concern here, so an immediate
+    # consume is safe; gated instead on the suction tool actually being docked.
     if suction_control is not None:
         requested_object = suction_control.consume_approach_request()
         if requested_object is not None:
-            approach_relationship = config.SUCTION_TARGETS[requested_object]["approach_relationship"]
-            cube_position, cube_orientation = compute_part_target_pose(approach_relationship)
-            target.set_world_pose(position=cube_position, orientation=cube_orientation)
+            if tool_changer_control is not None and tool_changer_control.currently_docked_tool != "suction":
+                print(
+                    f"[mefron] {arm['_name']}: ignoring suction-approach request -- the suction tool isn't docked.",
+                    flush=True,
+                )
+            else:
+                approach_relationship = config.SUCTION_TARGETS[requested_object]["approach_relationship"]
+                cube_position, cube_orientation = compute_part_target_pose(approach_relationship)
+                target.set_world_pose(position=cube_position, orientation=cube_orientation)
 
-    # One-shot assembly-placement snap for arms with no GripperKeyboardControl of their own (arm
-    # 2's AssemblyPlacementControl, bound to the same P key via a second subscription). Same
-    # idle-gating as arm 1's P, same reason.
-    assembly_control = arm.get("assembly_control")
+    # One-shot tool-change request (numpad 1/2/3). Gated like P: only start a new multi-leg swap
+    # once the arm is fully idle -- no in-flight plan, and no waypoints left over from a previous
+    # swap -- since each leg's dock/undock side effect must run in the right order.
     if (
-        assembly_control is not None
-        and assembly_control.has_pending_placement_request()
+        tool_changer_control is not None
+        and tool_changer_control.has_pending_request()
         and state["cmd_plan"] is None
+        and not state["motion_queue"]
     ):
-        assembly_control.consume_placement_request()
-        # Mirrors arm 1's GRASP_TARGETS[last_grasped_object] lookup -- arm 2 can place either
-        # screen or pcb_assembly depending on which was last approached (N vs M).
-        object_name = suction_control.last_approached_object if suction_control is not None else None
-        surface_gripper_control = arm.get("surface_gripper_control")
-        # Discard rather than swing toward whichever object is looked up when nothing was ever
-        # approached this session, or after an attach/release with nothing actually held.
-        if object_name is not None and (surface_gripper_control is None or surface_gripper_control.is_closed()):
-            relationship_name = config.SUCTION_TARGETS[object_name]["assembly_relationship"]
-            cube_position, cube_orientation = _snap_target_to_assembly_lift_waypoint(
-                state, target, ee_link_prim_path, relationship_name
-            )
+        requested_tool = tool_changer_control.consume_request()
+        if requested_tool == tool_changer_control.currently_docked_tool:
+            print(f"[mefron] {arm['_name']}: {requested_tool} is already docked -- ignoring.", flush=True)
+        else:
+            state["motion_queue"] = _build_tool_change_queue(tool_changer_control, requested_tool)
+            cube_position, cube_orientation, _ = state["motion_queue"][0]
+            target.set_world_pose(position=cube_position, orientation=cube_orientation)
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
@@ -633,10 +712,22 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     final_position, final_orientation = state["pending_final_pose"]
                     state["pending_final_pose"] = None
                     target.set_world_pose(position=final_position, orientation=final_orientation)
+                elif state["motion_queue"]:
+                    # The just-finished plan drove the arm to motion_queue[0]'s waypoint -- run its
+                    # on_arrival side effect (dock/undock a tool), then advance to the next one.
+                    _, _, on_arrival = state["motion_queue"][0]
+                    state["motion_queue"] = state["motion_queue"][1:]
+                    if on_arrival is not None:
+                        on_arrival()
+                    if state["motion_queue"]:
+                        next_position, next_orientation, _ = state["motion_queue"][0]
+                        target.set_world_pose(position=next_position, orientation=next_orientation)
 
     # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
     # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.
-    if gripper_control is not None:
+    # Gated on drive_builtin_gripper_joints -- see the init block's comment on why gripper_control
+    # alone no longer implies this arm has live finger joints to drive.
+    if gripper_control is not None and arm.get("drive_builtin_gripper_joints", False):
         gripper_target = gripper_control.closed_position if gripper_control.closed else gripper_control.open_position
         if state["gripper_setpoint"] is None:
             state["gripper_setpoint"] = gripper_target
@@ -715,6 +806,9 @@ def run_teleop_loop(
                 suction_control = arm.get("suction_control")
                 if suction_control is not None:
                     suction_control.reset()
+                tool_changer_control = arm.get("tool_changer_control")
+                if tool_changer_control is not None:
+                    tool_changer_control.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
             step_index = 0

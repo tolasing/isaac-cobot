@@ -992,8 +992,95 @@ before trying to automate it again, or look for a genuine reset/detach entry
 point in `isaacsim.robot.surface_gripper._surface_gripper`'s interface
 beyond `open_gripper()`/`close_gripper()`.
 
+## Automatic tool changer (ATC branch)
+
+Replaced the 3-Franka cell with one Franka + a scripted `UsdPhysics.
+FixedJoint`-based tool changer (male coupler permanent on the wrist,
+gripper/suction/screwdriver as detachable modules parked in a rack). Full
+design, Isaac Sim prior-art survey, and open issues:
+`docs/tool-changer.md`. Verified end-to-end headless
+(`scripts/test_mefron_tool_changer_headless.py`, real GPU, both
+`mefron.py --headless` and the dedicated test passing) on 2026-07-25, but
+only after finding and fixing six real bugs by actually running the
+mechanism under PhysX rather than by reading the USD Physics schema docs
+— recorded in full in `docs/tool-changer.md`'s "Gotchas confirmed live"
+section since they're reusable lessons, not just this feature's history.
+**Gotcha 6 specifically was invisible to the headless test** (it only
+checks poses/joints, not cross-robot visual reference integrity) and only
+surfaced when the user opened the scene in the real GUI afterward and
+found the main arm present in the Stage tree but not rendering — a
+reminder that "the headless test passed" isn't the same claim as "nothing
+is broken," only "nothing this test happens to check is broken":
+
+1. A tool's own enabled collision fighting the wrist joint's pull against
+   `panda_hand`'s collider (settled tens of cm short of the target instead
+   of converging — first symptom noticed, took several other fixes before
+   this was isolated as a distinct, independently-real cause).
+2. Per-tool wrist joint paths, not one shared name (defensive fix for
+   suspected stale-target resolution on same-path joint redefinition —
+   applied before gotchas 3-5 were found, never reverted to re-isolate
+   whether it was load-bearing on its own).
+3. The gripper tool's `female_coupler` living under a plain organizing
+   Xform instead of a real `RigidBodyAPI` link (`base_link`) — confirmed
+   by direct `Usd.PrimRange` inspection that the wrapper prim itself
+   carries neither `RigidBodyAPI` nor `ArticulationRootAPI`.
+4. `electric_screwdriver.usd` carrying no baked-in `RigidBodyAPI`
+   anywhere in its subtree at all (confirmed the same way) — unlike the
+   suction gripper asset, which does.
+5. A URDF-importer-synthesized `root_joint` fixing the hand-only tool's
+   free-floating `base_link` to the world — `DeletePrims` silently
+   no-ops on it (same class of gotcha as `remove_parallel_jaw_gripper()`'s
+   existing finger-joint workaround); `SetActive(False)` is what actually
+   removes it.
+6. **Found after 1-5, from the real GUI, not from the headless test, and
+   took two fix attempts**: the hand-only gripper tool's URDF reused
+   `base_link`/`ee_link` — the exact same link names the main arm's own
+   `franka_panda.urdf` uses for its root/tip links. The URDF importer's
+   shared, disk-persisted "Robot Description" cache keys visuals by bare
+   link name, not full prim path, so importing both in the same session
+   let the tool's entry silently overwrite the main arm's own — arm
+   stayed valid/correctly-posed (why headless checks missed it), but its
+   visual mesh reference broke: present in the Stage tree, invisible in
+   the viewport. A stray Save while the names still collided had also
+   baked a stray top-level `/panda_gripper_only` prim directly into
+   `mefron.usd` (same pre-`MovePrim`-staging mechanism as the
+   already-documented `/panda` gotcha), which kept re-poisoning every
+   subsequent run even after the name collision itself was fixed, until
+   that stray prim was also cleaned up (`clear_stray_robot_prims()`).
+   **First fix attempt (renaming the tool's links) fixed the reported
+   symptom but not the actual bug**: a follow-up direct inspection
+   (`Franka.GetChildren()` before/after spawning the tool, prompted by the
+   user reporting the exact same "Franka orange, invisible" symptom again
+   after the rename) found `panda_link0`–`8` disappearing from
+   `/World/Franka` entirely, replaced by the tool's own link names — the
+   shared cache corrupts the whole link *structure*, not just visual
+   references, so no naming scheme fixes it from the importing side.
+   **Real fix**: stop live-importing the gripper tool into `mefron.usd`
+   at all — `scripts/vendor_gripper_tool.py` pre-bakes it into a
+   standalone asset inside its own fresh anonymous stage (never opened
+   from `mefron.usd`), referenced the same way as the suction/screwdriver
+   tools. The link-renaming code was reverted as unnecessary once nothing
+   shares the import anymore.
+
+Debugging method worth repeating: rather than guessing from the schema
+docs, wrote throwaway diagnostic scripts (not committed) that opened the
+stage, spawned the tool(s), and printed live world poses frame-by-frame
+plus `Usd.PrimRange` walks tagging which prims actually carry
+`RigidBodyAPI`/`ArticulationRootAPI`/`CollisionAPI` — each fix's root
+cause became obvious from that output in a way it wasn't from reasoning
+about USD Physics semantics alone.
+
 ## Needs verification
 
+- **ATC numpad tool-changing in the real GUI.** Headlessly verified that
+  `robot.dock_tool_to_wrist()`/`undock_tool_to_rack()` correctly swap the
+  `FixedJoint` and that the tool's `female_coupler` frame converges to the
+  wrist (or rack) once PhysX settles, but the full numpad-key → cuRobo-
+  planned-approach → dock sequence (`teleop.ToolChangerControl` +
+  `_build_tool_change_queue()`) has not been exercised with real keyboard
+  input or a live motion plan — only the underlying joint mechanics were
+  driven directly. Also: `config.TOOL_CHANGE_TARGETS`' rack dock/approach
+  positions are rough placeholders, not yet hand-jogged into place.
 - **`build_scene_mefron.py`'s grasp-physics fixes**
   (`apply_gripper_friction()`, `stiffen_gripper_drive()`) — headless
   read-back confirmed the friction material and drive values land

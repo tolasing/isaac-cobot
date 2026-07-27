@@ -27,6 +27,13 @@ assembly-placement poses are derived by manually jogging the robot to a
 good pose in the GUI and reading back the relative transform, not measured
 on real hardware.
 
+**This branch (`atc`)** replaces the old 3-separate-Frankas cell (one
+arm each for gripper/suction/screwdriver) with **one Franka fitted with
+an automatic tool changer**: a permanent male coupler on the wrist, and
+the three tools as detachable modules parked in their own rack until a
+numpad key docks one. See `docs/tool-changer.md` for the full design,
+alternatives considered, and open issues.
+
 ## Where things live
 
 - **This file** — current state, and gotchas that will immediately break
@@ -36,6 +43,8 @@ on real hardware.
   only summarizes, plus full detail on the open issues below.
 - `docs/grasp-and-assembly-offsets.md` — how the grasp/assembly relative-
   pose constants were derived, plus the open grasp-centering problem.
+- `docs/tool-changer.md` — the ATC's design, alternatives considered
+  (Robot Assembler, USD variants, `SurfaceGripper`), and open issues.
 - `docs/docker-and-devcontainer.md` — Docker/devcontainer environment setup
   (generic infra, not scene-specific).
 - `examples/curobo_reference/` — pristine, unmodified copy of cuRobo's own
@@ -53,17 +62,22 @@ on real hardware.
 
 `scripts/mefron.py` is the live script, a thin entry point over
 `scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
-`assets/mefron/`'s `ur10_mount` pedestal (arm 2 mounts on the paired
-`ur10_mount_01` pedestal the same way), runs a drag-follow teleop loop, and
-provides one grasp key per `config.GRASP_TARGETS` entry (J:
-`finger_print_scanner`, B: `backpanel_support`, via NVIDIA Grasp
-Editor-exported poses) plus P(lace), plus C/O for the gripper and V/L for
-arm 2's suction attach/detach. Opens `mefron.usd` directly via
+`assets/mefron/`'s `ur10_mount` pedestal, fits it with the ATC's male
+coupler (`robot.attach_tool_changer_male_coupler()`), spawns and parks the
+3 dockable tools, and runs a drag-follow teleop loop. Numpad 1/2/3 (see
+`config.TOOL_CHANGE_TARGETS`) sends the arm to dock/undock the
+gripper/suction/screwdriver tool at its own rack (`docs/tool-changer.md`).
+Once the matching tool is docked: J/B (via `config.GRASP_TARGETS`, NVIDIA
+Grasp Editor-exported poses) and C/O for the gripper, N/M (via
+`config.SUCTION_TARGETS`) and V/L for the suction cup; P places whichever
+was last grasped/approached either way. Opens `mefron.usd` directly via
 `open_stage()`.
 
 Pressing a grasp key also stages that object's yaml-specified finger widths
 onto `GripperKeyboardControl` and opens the gripper to pregrasp width — C/O
-ramp toward whichever object was grasped last, not a fixed global width.
+ramp toward whichever object was grasped last, not a fixed global width
+(**though C/O isn't wired to the docked gripper tool's own finger joints
+yet** — see `docs/tool-changer.md`'s open issues).
 P's placement pose is computed by measuring the CURRENT live
 gripper-to-part offset (not a fixed constant) and applying it to the live
 target pose on `main_holder`.
@@ -91,9 +105,14 @@ Current constants (`scripts/mefron_lib/config.py`):
   `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
   `GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` are only the *default*
   widths before any grasp key is pressed — each grasp key overrides them.
-- `OBSTACLE_PRIM_PATHS`: both `ur10_mount`/`ur10_mount_01` pedestals (arms
-  sit ~0.65m apart, each treats the other's pedestal as an obstacle).
-  Deliberately excludes the conveyor/container prims — see open issues.
+- `OBSTACLE_PRIM_PATHS`: currently just `main_holder_jig`. Deliberately
+  excludes the conveyor/container prims — see open issues.
+- `TOOL_CHANGE_TARGETS`: dict keyed by tool name (`gripper`/`suction`/
+  `screwdriver`), each holding its numpad `key`, `asset` (a USD path, or
+  the literal `"hand_only"` meaning `robot.mount_franka_hand_only()`
+  builds it), `rack_prim_path`, `dock_position`/`orientation_wxyz`, and
+  `female_coupler_local_*`. Rack poses are placeholders pending the same
+  hand-jog-then-read-back derivation as `MOUNT_POSITION`.
 
 ## Currently open issues
 
@@ -120,11 +139,20 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   progress — real conveyor CAD is far more complex than the single
   `packing_table` prop it replaced. Needs cuboid obstacle approximations
   instead of raw CAD meshes, or narrower sub-prim selection.
-- **Arm 2's suction release (L key) doesn't actually let go.** The real
+- **The suction cup's release (L key) doesn't actually let go.** The real
   `SurfaceGripperManager` processes attach/detach as queued PhysX/USD
   actions on its own `onPhysicsStep`, so scripting the joint-enabled
   toggle directly from Python races its internal state (three variants
   tried, all reverted). Manual Stage-panel workaround still required.
+- **ATC: C/O isn't wired to the docked gripper tool's own finger joints.**
+  It's a separate mini-articulation from the main arm's own now (see
+  `docs/tool-changer.md`) — needs its own `SingleArticulation` handle
+  scoped to whichever tool is currently docked, rebuilt on the same
+  Stop/Play cadence as the main arm's.
+- **ATC: cuRobo has no collision awareness of whichever tool is currently
+  docked**, and rack dock/approach poses plus `SURFACE_GRIPPER_LOCAL_POSITION`
+  are still placeholders pending hand-jog derivation — see
+  `docs/tool-changer.md`'s open issues for the full list.
 
 ## Must-know gotchas
 
@@ -169,6 +197,33 @@ Full root-cause detail for all of these: `docs/mefron-history.md`
   `kit_bootstrap.py`'s `preload_real_packaging()`.
 - **`ninja`/`pip` are broken in this environment.** Fixed via `apt-get
   install ninja-build` — see `docs/docker-and-devcontainer.md`.
+- **`DeletePrims` silently no-ops on an articulation-internal joint
+  prim.** Confirmed for both the Franka's own finger joints
+  (`remove_parallel_jaw_gripper()` uses `SetActive(False)` instead) and a
+  URDF-importer-synthesized `root_joint` fixing a free-floating
+  `base_link` to the world (`robot.spawn_dockable_tool()`'s hand-only
+  branch) — `SetActive(False)` is what actually removes the constraint.
+- **A `UsdPhysics.FixedJoint`'s target must resolve to a real
+  `RigidBodyAPI` prim**, not just any descendant — a plain organizing
+  Xform over an articulation's real links (or a CAD asset with no
+  baked-in `RigidBodyAPI` at all, confirmed for `electric_screwdriver.usd`)
+  silently fails to be pulled by the joint. See `docs/tool-changer.md`'s
+  gotchas 3–4.
+- **A jointed body's own enabled collision can fight the joint.** If both
+  ends of a `FixedJoint` have real colliders that overlap once pulled
+  together, contact-separation force reaches an equilibrium short of the
+  joint's target instead of converging — disable collision on whichever
+  side doesn't need it once joined. See `docs/tool-changer.md`'s gotcha 2.
+- **Live-importing two robots via the URDF importer into the same
+  file-backed stage isn't safe, no matter how they're named.** Its
+  disk-persisted "Robot Description" cache is shared across every robot
+  imported into that stage — confirmed to corrupt not just visual
+  references but the *link structure itself* (a second import made
+  `panda_link0`–`8` vanish from the first robot's own children). The only
+  real fix is to not share the import: pre-bake the second robot as a
+  standalone asset in its own anonymous stage and reference it instead
+  (`scripts/vendor_gripper_tool.py`). See `docs/tool-changer.md`'s
+  gotcha 6.
 
 ## Pinned versions
 
