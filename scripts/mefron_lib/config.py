@@ -184,6 +184,11 @@ SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
 # needed (unlike the borrowed UR10 asset). See docs/mefron-history.md.
 SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# Asset's own root Xform carries a baked-in 0.001 scale, same as SCREWDRIVER_LOCAL_SCALE below --
+# forces the wrapper prim to identity so robot.py doesn't compound an extra scale factor. Confirmed
+# live 2026-07-27: spawn_dockable_tool() left this uncorrected, so the parked suction tool rendered
+# at ~1/1000th size in the rack.
+SUCTION_GRIPPER_LOCAL_SCALE = [1.0, 1.0, 1.0]
 
 # Electric-screwdriver end-effector, another of the 3 dockable ATC tools. Same panda_hand-child
 # mounting pattern as SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
@@ -285,6 +290,7 @@ TOOL_CHANGE_TARGETS = {
     "suction": {
         "key": "NUMPAD_2",
         "asset": SUCTION_GRIPPER_USD,
+        "local_scale": SUCTION_GRIPPER_LOCAL_SCALE,
         "rack_prim_path": "/World/tool_rack_suction",
         "dock_position": [3.1, -4.4, 0.85],
         "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
@@ -294,6 +300,7 @@ TOOL_CHANGE_TARGETS = {
     "screwdriver": {
         "key": "NUMPAD_3",
         "asset": SCREWDRIVER_USD,
+        "local_scale": SCREWDRIVER_LOCAL_SCALE,
         "rack_prim_path": "/World/tool_rack_screwdriver",
         "dock_position": [3.3, -4.4, 0.85],
         "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],

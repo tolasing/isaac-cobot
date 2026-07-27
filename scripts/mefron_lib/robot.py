@@ -373,6 +373,7 @@ def spawn_dockable_tool(tool_name: str) -> str:
         tool_prim_path,
         local_position=[0.0, 0.0, 0.0],
         local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
+        local_scale=target.get("local_scale"),
         disable_physics=False,
     )
     if target.get("female_coupler_parent_link_name"):
