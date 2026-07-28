@@ -4,3 +4,4 @@ mantra?scanner/** filter=lfs diff=lfs merge=lfs -text
 robots/franka_panda/** filter=lfs diff=lfs merge=lfs -text
 robots/ur10_suction/** filter=lfs diff=lfs merge=lfs -text
 robots/grippers/** filter=lfs diff=lfs merge=lfs -text
+robots/accessories/** filter=lfs diff=lfs merge=lfs -text

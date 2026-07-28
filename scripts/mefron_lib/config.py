@@ -192,14 +192,19 @@ SUCTION_GRIPPER_LOCAL_SCALE = [1.0, 1.0, 1.0]
 
 # Electric-screwdriver end-effector, another of the 3 dockable ATC tools. Same panda_hand-child
 # mounting pattern as SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
-SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver.usd"
-SCREWDRIVER_PRIM_NAME = "electric_screwdriver"
-# Asset's own root Xform is already correctly scaled (0.001) -- forces the wrapper prim to
-# identity so robot.py doesn't compound an extra scale factor.
+# Supersedes the screwdriver-only electric_screwdriver.usd -- this one has the female coupler
+# tool modeled directly onto the CAD body, not a bare abstract female_coupler Xform.
+SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver_with_tool_female.usd"
+SCREWDRIVER_PRIM_NAME = "electric_screwdriver_with_tool_female"
+# Identity, not 0.001 -- this asset's raw mesh data IS mm-scale (unlike electric_screwdriver.usd's
+# pre-scaled mesh), but add_reference_to_stage()'s Metrics Assembler check auto-corrects it on
+# reference-add here (confirmed live, reproducibly); an explicit 0.001 on top double-scales it to
+# 1e-6. See docs/tool-changer.md gotcha 7.
 SCREWDRIVER_LOCAL_SCALE = [1.0, 1.0, 1.0]
 SCREWDRIVER_LOCAL_POSITION = [0.0, 0.0, 0.0]
-# User's live-jogged GUI pose (Orient X/Y/Z = 90/45/90deg, USD rotateXYZ = Rx*Ry*Rz), converted
-# to wxyz.
+# Stale: derived for the old screwdriver-only asset's own CAD origin, via
+# attach_screwdriver_gripper() (unreachable from mefron.py's actual ATC flow -- spawn_dockable_tool()
+# always docks tools at local identity instead). Not re-derived for this asset.
 SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501, 0.6532814824]
 
 # Real isaacsim.robot.schema/surface_gripper physics (distinct from the pure-visual
@@ -302,8 +307,11 @@ TOOL_CHANGE_TARGETS = {
         "asset": SCREWDRIVER_USD,
         "local_scale": SCREWDRIVER_LOCAL_SCALE,
         "rack_prim_path": "/World/tool_rack_screwdriver",
-        "dock_position": [3.3, -4.4, 0.85],
-        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+        # World pose composed from /World/tool_rack's own transform (baked into mefron.usd) and
+        # local position (300, 90, 201.43) on its own -- orientation inherits the rack's, no
+        # additional local rotation. Still a resting pose, not hand-jog-confirmed against the tool.
+        "dock_position": [2.9225900095674113, -4.314820014249236, 0.8137599957252294],
+        "dock_orientation_wxyz": [0.5, -0.5, 0.49999999999999994, -0.5],
         "female_coupler_local_position": [0.0, 0.0, 0.0],
         "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },

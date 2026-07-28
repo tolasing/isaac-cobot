@@ -161,6 +161,26 @@ next person extending this doesn't have to rediscover them:
      unchanged — `mefron_gripper_probe.py`'s own single-robot-per-session
      use of it never hit this bug in the first place.
 
+7. **Whether an mm-modeled CAD asset needs a manual 0.001 `local_scale` isn't predictable from
+   the file alone -- `add_reference_to_stage()` (under `_reference_tool_asset()`, so every tool
+   in `TOOL_CHANGE_TARGETS`) sometimes applies its own automatic correction via the Metrics
+   Assembler (`get_metrics_assembler_interface().check_layers()` -- same mechanism the GUI's
+   content-browser drag-drop uses, confirmed by reading `isaacsim.core.utils.stage`'s source),
+   and a manual `local_scale=[0.001]*3` on top of that double-scales to 1e-6, not the intended
+   0.001.** `electric_screwdriver.usd`/`SUCTION_GRIPPER_USD` need `local_scale=[1,1,1]` because
+   their own mesh data is pre-scaled at export time (no correction needed at all, automatic or
+   manual). `electric_screwdriver_with_tool_female.usd` (the screwdriver's own current
+   `SCREWDRIVER_USD`, mesh data raw mm like `robots/accessories/tool rack.usd`) *also* needs
+   `local_scale=[1,1,1]` -- confirmed live, reproducibly across repeat runs -- but for the
+   opposite reason: the automatic correction reliably fires for this specific file and handles it
+   without help. Trying `local_scale=[0.001]*3` on it first gave a real, measured 1e-6 scale
+   factor (screwdriver bbox a fraction of a millimeter), not the expected 0.32m-scale success
+   `tool rack.usd` got from the identical explicit-0.001 approach when it was still script-spawned
+   (both assets have empty/no-scale default-prim xformOps, so the file's own structure doesn't
+   predict which path fires). **The only reliable check is empirical: reference it via the actual
+   code path and measure the resulting world bbox, never assume from metersPerUnit or a sibling
+   asset's own working value.**
+
 All six confirmed by actually running the mechanism, not by reading docs
 — the first five via `scripts/test_mefron_tool_changer_headless.py`
 (which docks/undocks all 3 tools across two full swap cycles and asserts
@@ -198,10 +218,15 @@ but no screw-driving control wired up yet")
   first pass; each tool's own additional collision volume beyond the
   coupler is a follow-up, consistent with the existing (separately
   tracked) `attach_objects_to_robot()` open issue in CLAUDE.md.
-- **All rack dock/approach positions and female-coupler local offsets are
-  placeholder constants pending the user hand-jogging them in the GUI and
-  reading back the transform** — exactly how `MOUNT_POSITION` and every
-  `ASSEMBLY_RELATIONSHIPS` entry were derived. The mechanism is verified
-  correct (see above); only the exact numbers are provisional.
+- **Rack dock/approach positions and female-coupler local offsets are
+  still mostly placeholder constants** pending the user hand-jogging them
+  in the GUI and reading back the transform — exactly how `MOUNT_POSITION`
+  and every `ASSEMBLY_RELATIONSHIPS` entry were derived. The screwdriver's
+  `dock_position`/`dock_orientation_wxyz` are a first step past that: composed
+  from `/World/tool_rack`'s own transform (now baked into `mefron.usd`, not
+  script-spawned) plus a local offset on it, so it rests on the physical
+  rack instead of floating at a guessed world point — still not hand-jog-
+  confirmed against the actual tool, and gripper/suction haven't had the
+  same treatment yet. `female_coupler_local_*` for all 3 remain unmeasured.
 - Screwdriver gets no new action key (matches its pre-ATC "mounted but
   inert" state) — only dockability via numpad 3.
