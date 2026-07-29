@@ -318,7 +318,10 @@ def attach_tool_changer_male_coupler(prim_path: str = config.ROBOT_PRIM_PATH) ->
 
 
 def _tool_prim_path(tool_name: str) -> str:
-    return f"{config.TOOL_CHANGE_TARGETS[tool_name]['rack_prim_path']}/tool"
+    target = config.TOOL_CHANGE_TARGETS[tool_name]
+    if "baked_tool_prim_path" in target:
+        return target["baked_tool_prim_path"]
+    return f"{target['rack_prim_path']}/tool"
 
 
 def _female_coupler_parent_prim_path(tool_name: str) -> str:
@@ -347,12 +350,14 @@ def spawn_dockable_tool(tool_name: str) -> str:
     """Places one of config.TOOL_CHANGE_TARGETS's tools at its rack position, as a real
     independent rigid body (physics left enabled -- the opposite of attach_suction_gripper()'s/
     attach_screwdriver_gripper()'s permanently-kinematic use of the same assets above) so it can
-    sit jointed to the rack until docked. All 3 tools are referenced USD assets -- the gripper
-    tool is scripts/vendor_gripper_tool.py's pre-baked export of
-    mount_franka_hand_only()'s hand-only URDF, NOT a live import: confirmed live that live-
-    importing a second robot into mefron.usd's own stage lets the URDF importer's shared
-    "Robot Description" cache silently corrupt the main arm's own link structure, even at a fully
-    distinct prim path -- see docs/tool-changer.md's gotcha 6. Returns the tool's own prim path."""
+    sit jointed to the rack until docked. The gripper tool is a referenced USD asset --
+    scripts/vendor_gripper_tool.py's pre-baked export of mount_franka_hand_only()'s hand-only URDF,
+    NOT a live import: confirmed live that live-importing a second robot into mefron.usd's own
+    stage lets the URDF importer's shared "Robot Description" cache silently corrupt the main arm's
+    own link structure, even at a fully distinct prim path -- see docs/tool-changer.md's gotcha 6.
+    Suction/screwdriver are instead baked directly into mefron.usd via the GUI (see
+    feedback_static_scenery_baked_into_scene memory) -- never referenced/repositioned here, only
+    read. Returns the tool's own prim path."""
     target = config.TOOL_CHANGE_TARGETS[tool_name]
     rack_prim_path = target["rack_prim_path"]
     tool_prim_path = _tool_prim_path(tool_name)
@@ -361,6 +366,18 @@ def spawn_dockable_tool(tool_name: str) -> str:
     if stage.GetPrimAtPath(rack_prim_path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[rack_prim_path])
         omni.kit.app.get_app().update()
+
+    if "baked_tool_prim_path" in target:
+        # rack_prim_path is a lightweight, non-physics anchor -- park_tool_at_rack()'s joint needs a
+        # static reference point, and a real rigid body can't be jointed to its own descendant
+        # (female_coupler lives under the baked tool itself). Sync it to the baked tool's CURRENT
+        # live world pose every run, so it always matches wherever the tool was placed in the GUI.
+        tool_world = Gf.Transform(
+            UsdGeom.Xformable(stage.GetPrimAtPath(tool_prim_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        )
+        tool_quat = tool_world.GetRotation().GetQuat()
+        target["dock_position"] = list(tool_world.GetTranslation())
+        target["dock_orientation_wxyz"] = [tool_quat.GetReal(), *tool_quat.GetImaginary()]
     stage.DefinePrim(rack_prim_path, "Xform")
     rack_xform = SingleXFormPrim(prim_path=rack_prim_path)
     rack_xform.set_world_pose(
@@ -368,14 +385,15 @@ def spawn_dockable_tool(tool_name: str) -> str:
         orientation=np.array(target["dock_orientation_wxyz"]),
     )
 
-    _reference_tool_asset(
-        target["asset"],
-        tool_prim_path,
-        local_position=[0.0, 0.0, 0.0],
-        local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
-        local_scale=target.get("local_scale"),
-        disable_physics=False,
-    )
+    if "baked_tool_prim_path" not in target:
+        _reference_tool_asset(
+            target["asset"],
+            tool_prim_path,
+            local_position=[0.0, 0.0, 0.0],
+            local_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
+            local_scale=target.get("local_scale"),
+            disable_physics=False,
+        )
     if target.get("female_coupler_parent_link_name"):
         # Multi-link articulation (currently just the gripper tool) -- confirmed live the URDF
         # importer synthesizes a "root_joint" PhysicsFixedJoint welding its free-floating base_link
@@ -392,12 +410,15 @@ def spawn_dockable_tool(tool_name: str) -> str:
         # FixedJoint targeting a child of tool_prim_path can't resolve any rigid body to pull;
         # apply explicitly rather than trusting the source asset.
         UsdPhysics.RigidBodyAPI.Apply(stage.GetPrimAtPath(tool_prim_path))
-    # Local identity either way -- tool_prim_path's world pose is rack_prim_path's (the dock pose).
-    tool_xform = SingleXFormPrim(prim_path=tool_prim_path)
-    tool_xform.set_local_pose(
-        translation=np.array([0.0, 0.0, 0.0]),
-        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
-    )
+
+    if "baked_tool_prim_path" not in target:
+        # Local identity -- tool_prim_path's world pose is rack_prim_path's (the dock pose). Skipped
+        # for baked tools: tool_prim_path IS the user's hand-placed prim, never touched here.
+        tool_xform = SingleXFormPrim(prim_path=tool_prim_path)
+        tool_xform.set_local_pose(
+            translation=np.array([0.0, 0.0, 0.0]),
+            orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+        )
 
     female_coupler_path = _female_coupler_prim_path(tool_name)
     stage.DefinePrim(female_coupler_path, "Xform")

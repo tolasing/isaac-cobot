@@ -106,8 +106,9 @@ def compute_tool_dock_target(tool_name: str):
     TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_* mate offset -- same composition direction as
     compute_assembly_grasp_target_from_offset(), just with a fixed offset instead of a measured one
     (a standardized coupler mates the same way every time, nothing to measure per-tool)."""
-    target = config.TOOL_CHANGE_TARGETS[tool_name]
-    female_coupler_path = f"{target['rack_prim_path']}/tool/female_coupler"
+    from . import robot
+
+    female_coupler_path = robot._female_coupler_prim_path(tool_name)
     coupler_trans, coupler_quat = SingleXFormPrim(
         prim_path=female_coupler_path, reset_xform_properties=False
     ).get_world_pose()

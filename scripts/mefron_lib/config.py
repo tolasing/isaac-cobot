@@ -177,24 +177,27 @@ CONVEYOR_TOGGLE_KEY = "KEY_1"
 GRIPPER_TOOL_HAND_ONLY_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "gripper_tool_hand_only.usd"
 
 # Custom Franka-flange suction gripper -- one of the 3 dockable ATC tools (see the "Automatic tool
-# changer" section below). See docs/mefron-history.md for the asset-alignment derivation.
-SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "suction gripper.usd"
-SUCTION_GRIPPER_PRIM_NAME = "suction_gripper"
-# Asset root is already coincident with panda_hand's frame -- no offset/rotation correction
-# needed (unlike the borrowed UR10 asset). See docs/mefron-history.md.
+# changer" section below). Supersedes the suction-only "suction gripper.usd" -- this one has the
+# female coupler tool modeled directly onto the CAD body, same reason SCREWDRIVER_USD was swapped
+# to electric_screwdriver_with_tool_female.usd. See docs/mefron-history.md for the old asset's
+# alignment derivation.
+SUCTION_GRIPPER_USD = REPO_ROOT / "robots" / "accessories" / "suction_gripper_with_tool_female.usd"
+SUCTION_GRIPPER_PRIM_NAME = "suction_gripper_with_tool_female"
+# Stale: described the old suction-only asset's own root alignment, via attach_suction_gripper()
+# (unreachable from mefron.py's actual ATC flow -- spawn_dockable_tool() always docks tools at
+# local identity instead). Not re-derived for this asset. See docs/mefron-history.md.
 SUCTION_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 SUCTION_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
-# Asset's own root Xform carries a baked-in 0.001 scale, same as SCREWDRIVER_LOCAL_SCALE below --
-# forces the wrapper prim to identity so robot.py doesn't compound an extra scale factor. Confirmed
-# live 2026-07-27: spawn_dockable_tool() left this uncorrected, so the parked suction tool rendered
-# at ~1/1000th size in the rack.
+# Whether this needs a manual scale isn't predictable from the file alone -- see
+# docs/tool-changer.md gotcha 7. Confirmed live via spawn_dockable_tool()'s actual code path:
+# [1,1,1] gives a ~9x13x11cm world bbox (sane), same outcome as the screwdriver's asset.
 SUCTION_GRIPPER_LOCAL_SCALE = [1.0, 1.0, 1.0]
 
 # Electric-screwdriver end-effector, another of the 3 dockable ATC tools. Same panda_hand-child
 # mounting pattern as SUCTION_GRIPPER_* above (see robot.attach_screwdriver_gripper()).
 # Supersedes the screwdriver-only electric_screwdriver.usd -- this one has the female coupler
 # tool modeled directly onto the CAD body, not a bare abstract female_coupler Xform.
-SCREWDRIVER_USD = REPO_ROOT / "robots" / "grippers" / "electric_screwdriver_with_tool_female.usd"
+SCREWDRIVER_USD = REPO_ROOT / "robots" / "accessories" / "electric_screwdriver_with_tool_female.usd"
 SCREWDRIVER_PRIM_NAME = "electric_screwdriver_with_tool_female"
 # Identity, not 0.001 -- this asset's raw mesh data IS mm-scale (unlike electric_screwdriver.usd's
 # pre-scaled mesh), but add_reference_to_stage()'s Metrics Assembler check auto-corrects it on
@@ -272,15 +275,23 @@ TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # like ASSEMBLY_LIFT_HEIGHT (see CLAUDE.md's open issue about that exact mistake).
 TOOL_RACK_APPROACH_CLEARANCE = 0.15
 
-# One entry per dockable tool. "asset" is a USD path, referenced as a child of the rack anchor
-# prim (same pattern for all 3 -- see robot.spawn_dockable_tool()). "female_coupler_parent_link_name"
-# is only set for the gripper: its asset is a multi-link mini-articulation (actuated fingers, not a
-# static prop like the other two), so its rack-anchor child is just an organizing Xform over its
-# real rigid-body links -- female_coupler must attach under that specific link instead (see
+# The real, GUI-baked rack (see feedback_static_scenery_baked_into_scene memory). Suction/
+# screwdriver are baked as real children of this prim too (see "baked_tool_prim_path" below); a
+# tool's rack_prim_path anchor stays in sync with wherever the baked tool actually sits, so moving
+# the tool (or the rack) in the GUI doesn't need any code/constant changes.
+TOOL_RACK_PRIM_PATH = "/World/tool_rack"
+
+# One entry per dockable tool. Two placement styles: "asset" (a USD path robot.spawn_dockable_tool()
+# references fresh as a child of the rack anchor prim -- currently just the gripper) vs
+# "baked_tool_prim_path" (a prim already hand-placed in mefron.usd -- currently suction/screwdriver;
+# see docs/tool-changer.md's open issues for why). "female_coupler_parent_link_name" is only set for
+# the gripper: its asset is a multi-link mini-articulation (actuated fingers, not a static prop like
+# the other two), so its rack-anchor child is just an organizing Xform over its real rigid-body
+# links -- female_coupler must attach under that specific link instead (see
 # robot._female_coupler_parent_prim_path()), not left unset/None like the other two tools.
-# dock_position/orientation are placeholders pending user GUI placement, same provenance as
-# MOUNT_POSITION; female_coupler_local_* are placeholders pending hand-jog confirmation against
-# each asset's own root frame, same provenance as SUCTION_GRIPPER_LOCAL_*.
+# dock_position/orientation for the gripper are placeholders pending user GUI placement, same
+# provenance as MOUNT_POSITION; female_coupler_local_* for all 3 are placeholders pending hand-jog
+# confirmation against each asset's own root frame, same provenance as SUCTION_GRIPPER_LOCAL_*.
 TOOL_CHANGE_TARGETS = {
     "gripper": {
         "key": "NUMPAD_1",
@@ -294,24 +305,21 @@ TOOL_CHANGE_TARGETS = {
     },
     "suction": {
         "key": "NUMPAD_2",
-        "asset": SUCTION_GRIPPER_USD,
-        "local_scale": SUCTION_GRIPPER_LOCAL_SCALE,
+        # Baked directly into mefron.usd via the GUI (see feedback_static_scenery_baked_into_scene
+        # memory) -- this is the real, hand-placed prim; robot.spawn_dockable_tool() never
+        # references/repositions it, only reads its live pose. "rack_prim_path" below is a separate,
+        # lightweight non-physics anchor Xform, synced to this prim's current world pose every run,
+        # that park_tool_at_rack()'s joint uses as its static reference point.
+        "baked_tool_prim_path": "/World/suction_gripper_with_tool_female",
         "rack_prim_path": "/World/tool_rack_suction",
-        "dock_position": [3.1, -4.4, 0.85],
-        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
         "female_coupler_local_position": [0.0, 0.0, 0.0],
         "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },
     "screwdriver": {
         "key": "NUMPAD_3",
-        "asset": SCREWDRIVER_USD,
-        "local_scale": SCREWDRIVER_LOCAL_SCALE,
+        # Same baked-into-mefron.usd pattern as suction above.
+        "baked_tool_prim_path": "/World/electric_screwdriver_with_tool_female",
         "rack_prim_path": "/World/tool_rack_screwdriver",
-        # World pose composed from /World/tool_rack's own transform (baked into mefron.usd) and
-        # local position (300, 90, 201.43) on its own -- orientation inherits the rack's, no
-        # additional local rotation. Still a resting pose, not hand-jog-confirmed against the tool.
-        "dock_position": [2.9225900095674113, -4.314820014249236, 0.8137599957252294],
-        "dock_orientation_wxyz": [0.5, -0.5, 0.49999999999999994, -0.5],
         "female_coupler_local_position": [0.0, 0.0, 0.0],
         "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },

@@ -633,6 +633,12 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     # One-shot tool-change request (numpad 1/2/3). Gated like P: only start a new multi-leg swap
     # once the arm is fully idle -- no in-flight plan, and no waypoints left over from a previous
     # swap -- since each leg's dock/undock side effect must run in the right order.
+    if tool_changer_control is not None and tool_changer_control.has_pending_request():
+        print(
+            f"[debug] {arm['_name']}: pending tool request, cmd_plan is None={state['cmd_plan'] is None}, "
+            f"motion_queue len={len(state['motion_queue'])}",
+            flush=True,
+        )
     if (
         tool_changer_control is not None
         and tool_changer_control.has_pending_request()
@@ -643,9 +649,31 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         if requested_tool == tool_changer_control.currently_docked_tool:
             print(f"[mefron] {arm['_name']}: {requested_tool} is already docked -- ignoring.", flush=True)
         else:
-            state["motion_queue"] = _build_tool_change_queue(tool_changer_control, requested_tool)
+            print(f"[debug] {arm['_name']}: building tool-change queue for {requested_tool}", flush=True)
+            try:
+                state["motion_queue"] = _build_tool_change_queue(tool_changer_control, requested_tool)
+            except Exception:
+                import traceback
+
+                traceback.print_exc()
+                raise
+            print(f"[debug] {arm['_name']}: queue built, {len(state['motion_queue'])} waypoints", flush=True)
             cube_position, cube_orientation, _ = state["motion_queue"][0]
             target.set_world_pose(position=cube_position, orientation=cube_orientation)
+            # Force the arrival-check below to (re-)plan this waypoint even if it happens to
+            # numerically coincide with wherever the last sequence left target_pose -- confirmed
+            # live: a tool-change queue's first waypoint (hover above the CURRENTLY docked tool's
+            # own rack) is derived from the same rack snapshot as that tool's own dock sequence's
+            # final retract waypoint, so they can be bit-identical. Without this, the "only re-plan
+            # if the target actually moved" check (correctly) sees no change and never calls
+            # plan_single -- but the queue only pops a waypoint once a plan COMPLETES, so it got
+            # stuck forever on waypoint 0, silently blocking every future tool-change request.
+            # (NaN would NOT work here -- NaN comparisons are always False in IEEE 754, so
+            # `norm(...) > threshold` would never trigger and this would permanently block
+            # re-planning instead of forcing it. A large-but-finite offset guarantees the delta
+            # check reads as "changed" reliably.)
+            state["target_pose"] = cube_position + 1.0e6
+            state["target_orientation"] = cube_orientation + 1.0e6
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
@@ -661,6 +689,13 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     cu_js = cu_js.get_ordered_joint_state(motion_gen.kinematics.joint_names)
 
     robot_static = bool(np.max(np.abs(sim_js.velocities)) < config._STATIC_JOINT_VELOCITY_THRESHOLD)
+    if tool_changer_control is not None and tool_changer_control.currently_docked_tool is not None and state["cmd_plan"] is None:
+        print(
+            f"[debug] {arm['_name']}: max joint vel={np.max(np.abs(sim_js.velocities)):.4f} robot_static={robot_static} "
+            f"pose_delta={np.linalg.norm(cube_position - state['target_pose']):.4f} "
+            f"past_match={np.linalg.norm(state['past_pose'] - cube_position) == 0.0}",
+            flush=True,
+        )
 
     if (
         (

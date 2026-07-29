@@ -167,21 +167,40 @@ next person extending this doesn't have to rediscover them:
    Assembler (`get_metrics_assembler_interface().check_layers()` -- same mechanism the GUI's
    content-browser drag-drop uses, confirmed by reading `isaacsim.core.utils.stage`'s source),
    and a manual `local_scale=[0.001]*3` on top of that double-scales to 1e-6, not the intended
-   0.001.** `electric_screwdriver.usd`/`SUCTION_GRIPPER_USD` need `local_scale=[1,1,1]` because
-   their own mesh data is pre-scaled at export time (no correction needed at all, automatic or
-   manual). `electric_screwdriver_with_tool_female.usd` (the screwdriver's own current
-   `SCREWDRIVER_USD`, mesh data raw mm like `robots/accessories/tool rack.usd`) *also* needs
+   0.001.** `electric_screwdriver.usd`/the original suction-only `suction gripper.usd` (what
+   `SUCTION_GRIPPER_USD` named before both tools were swapped to their "_with_tool_female" CAD
+   variants) needed `local_scale=[1,1,1]` because their own mesh data is pre-scaled at export time
+   (no correction needed at all, automatic or manual). `electric_screwdriver_with_tool_female.usd`
+   (`SCREWDRIVER_USD`, mesh data raw mm like `robots/accessories/tool rack.usd`) *also* needs
    `local_scale=[1,1,1]` -- confirmed live, reproducibly across repeat runs -- but for the
    opposite reason: the automatic correction reliably fires for this specific file and handles it
    without help. Trying `local_scale=[0.001]*3` on it first gave a real, measured 1e-6 scale
    factor (screwdriver bbox a fraction of a millimeter), not the expected 0.32m-scale success
    `tool rack.usd` got from the identical explicit-0.001 approach when it was still script-spawned
    (both assets have empty/no-scale default-prim xformOps, so the file's own structure doesn't
-   predict which path fires). **The only reliable check is empirical: reference it via the actual
-   code path and measure the resulting world bbox, never assume from metersPerUnit or a sibling
-   asset's own working value.**
+   predict which path fires). `suction_gripper_with_tool_female.usd` (`SUCTION_GRIPPER_USD`'s
+   current asset) also measured correctly at `local_scale=[1,1,1]` (~9x13x11cm world bbox), not
+   separately re-tested with an explicit 0.001 to identify which of the two reasons applies here.
+   **The only reliable check is empirical: reference it via the actual code path and measure the
+   resulting world bbox, never assume from metersPerUnit or a sibling asset's own working value.**
 
-All six confirmed by actually running the mechanism, not by reading docs
+8. **`grasp.py`'s pose-composition helpers (`compute_dependent_world_pose()` et al.) assume a
+   scale-free rigid pose, and silently give a wrong-but-plausible answer when that's not true.**
+   They read the reference pose via `SingleXFormPrim.get_world_pose()`, which returns only
+   translation + rotation — any scale on the reference prim or its ancestors is dropped, not
+   flagged. `/World/tool_rack` carries a real `xformOp:scale:unitsResolve` of 0.001 (same Metrics-
+   Assembler correction as gotcha 7), so an early version of the rack-relative tool placement that
+   composed a local offset through `compute_dependent_world_pose()` gave a real, measured
+   ~1000x-too-large result (confirmed live — no error, no NaN, just a wrong number). The eventual
+   fix (see the open-issues entry below) sidesteps this class of bug entirely for rack-relative
+   tools by making them real children of `TOOL_RACK_PRIM_PATH` — USD's own scene graph folds in
+   the parent's FULL transform (translate/rotate/scale), no manual re-derivation needed.
+   **`compute_dependent_world_pose()` is still correct for every remaining caller**
+   (`ASSEMBLY_RELATIONSHIPS`, tool-changer coupler mates) — none of their reference prims carry
+   scale — but it's the wrong tool for anything composed against a prim that might, like a rack or
+   fixture referenced from an mm-modeled CAD file.
+
+All eight confirmed by actually running the mechanism, not by reading docs
 — the first five via `scripts/test_mefron_tool_changer_headless.py`
 (which docks/undocks all 3 tools across two full swap cycles and asserts
 both the expected joint topology and that the tool's `female_coupler`
@@ -218,15 +237,41 @@ but no screw-driving control wired up yet")
   first pass; each tool's own additional collision volume beyond the
   coupler is a follow-up, consistent with the existing (separately
   tracked) `attach_objects_to_robot()` open issue in CLAUDE.md.
-- **Rack dock/approach positions and female-coupler local offsets are
-  still mostly placeholder constants** pending the user hand-jogging them
-  in the GUI and reading back the transform — exactly how `MOUNT_POSITION`
-  and every `ASSEMBLY_RELATIONSHIPS` entry were derived. The screwdriver's
-  `dock_position`/`dock_orientation_wxyz` are a first step past that: composed
-  from `/World/tool_rack`'s own transform (now baked into `mefron.usd`, not
-  script-spawned) plus a local offset on it, so it rests on the physical
-  rack instead of floating at a guessed world point — still not hand-jog-
-  confirmed against the actual tool, and gripper/suction haven't had the
-  same treatment yet. `female_coupler_local_*` for all 3 remain unmeasured.
+- **Suction and screwdriver are now baked directly into `mefron.usd` via
+  the GUI** (`/World/tool_rack/suction_gripper_with_tool_female`,
+  `/World/tool_rack/electric_screwdriver_with_tool_female` — see
+  `feedback_static_scenery_baked_into_scene` memory), the same way
+  `tool_rack`/`main_holder` are: hand-placed as real children of
+  `TOOL_RACK_PRIM_PATH` and saved, no Python position constants at all.
+  `config.TOOL_CHANGE_TARGETS[tool]["baked_tool_prim_path"]` points at the
+  baked prim; `robot.spawn_dockable_tool()` never references or
+  repositions it, only reads its live pose. `rack_prim_path` for these two
+  is now a separate, lightweight, non-physics anchor Xform (still spawned
+  fresh each run) that `spawn_dockable_tool()` syncs to the baked tool's
+  *current* `ComputeLocalToWorldTransform()` every launch — it exists only
+  because `park_tool_at_rack()`'s joint needs a static reference point, and
+  a real rigid body can't be jointed to its own descendant (`female_coupler`
+  lives under the baked tool itself). `dock_position`/`dock_orientation_wxyz`
+  are that read-back, kept only because `grasp.py`'s docking math needs a
+  world-space target — never a source of truth themselves.
+
+  This replaces two earlier approaches, both abandoned for the same root
+  cause (Kit's Property-panel Orient widget decomposes a stored quaternion
+  using a different — and itself non-round-tripping — convention than
+  `UsdGeom`'s `RotateXYZ` op, confirmed by reproducing the exact mismatch
+  offline): (1) computing a world pose via a throwaway scratch prim and
+  applying it with `SingleXFormPrim.set_world_pose()` on a *sibling* of
+  `tool_rack`, where the typed `rack_local_*` value never matched what the
+  panel showed; (2) parenting the tool anchor as a **real child** of
+  `TOOL_RACK_PRIM_PATH` and authoring `rack_local_*` directly as its own
+  `translate`/`rotateXYZ` ops — this fixed the Property-panel mismatch (no
+  quaternion round-trip involved), but still required the user to type
+  numbers into `config.py` and trust the sim to place them correctly,
+  which is exactly the class of problem hand-placing in the GUI sidesteps
+  entirely. Gripper hasn't had the same treatment yet (still script-spawned
+  from `GRIPPER_TOOL_HAND_ONLY_USD` at a fixed placeholder `dock_position`/
+  `dock_orientation_wxyz`) — baking it in later just means adding its own
+  `baked_tool_prim_path`, no further code changes needed.
+  `female_coupler_local_*` for all 3 remain unmeasured.
 - Screwdriver gets no new action key (matches its pre-ATC "mounted but
   inert" state) — only dockability via numpad 3.
