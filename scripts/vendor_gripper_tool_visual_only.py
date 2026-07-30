@@ -14,12 +14,12 @@ continuing to chase drive-gain tuning. See docs/tool-changer.md.
 
 Strips all joints (SetActive(False), same proven-reliable pattern as
 robot.remove_parallel_jaw_gripper() for URDF-synthesized joints -- DeletePrims silently no-ops for
-these) and disables (not RemoveAPI -- docs/mefron-history.md notes a prior RemoveAPI attempt
-coincided with a mesh going invisible, never conclusively cleared) all RigidBodyAPI/CollisionAPI,
-same disable_physics=True pattern _reference_tool_asset() already uses for permanently-mounted
-tools. Fingers stay wherever the URDF's default config posed them -- purely static geometry now,
-matching CLAUDE.md's already-documented "C/O isn't wired to the docked gripper tool's own finger
-joints yet" gap; this doesn't remove capability that existed.
+these) and fully RemoveAPI's RigidBodyAPI/CollisionAPI everywhere -- this asset carries zero
+collision by construction now, so _set_tool_collision_enabled() naturally has nothing to toggle for
+the gripper tool and its dock/undock calls become a no-op for it (the tool floats in its rack same
+as suction/screwdriver already do, an already-accepted tradeoff). _enable_finger_joints() re-applies
+RigidBodyAPI to just the two fingers afterward for the C/O drive; the user's own manually-authored
+finger collider lives as a stronger opinion directly in mefron.usd, unaffected by this bake.
 
 Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/vendor_gripper_tool_visual_only.py --headless
 """
@@ -47,22 +47,19 @@ EXPORT_PRIM_PATH = "/gripper_tool_visual_only"
 
 
 def _strip_physics(stage, root_prim_path: str) -> None:
+    """RemoveAPI (not disable) for both CollisionAPI and RigidBodyAPI -- the gripper tool is meant
+    to carry zero collision at all now, so _set_tool_collision_enabled() has nothing left to find
+    for this tool. RigidBodyAPI removal (vs. disable-only) was already confirmed necessary to avoid
+    PhysX's "missing xformstack reset when child of another enabled rigid body" ERROR once
+    spawn_dockable_tool() applies a fresh enabled RigidBodyAPI at the tool root."""
     root_prim = stage.GetPrimAtPath(root_prim_path)
     for prim in Usd.PrimRange(root_prim):
         if prim.IsA(UsdPhysics.Joint):
             prim.SetActive(False)
             continue
         if prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+            prim.RemoveAPI(UsdPhysics.CollisionAPI)
         if prim.HasAPI(UsdPhysics.RigidBodyAPI):
-            # Disabling (not removing) still leaves each link a structurally-applied RigidBodyAPI --
-            # confirmed live via PhysX's own "missing xformstack reset when child of another enabled
-            # rigid body" ERROR (not just a warning) once spawn_dockable_tool()'s flat-asset branch
-            # applies a fresh enabled RigidBodyAPI at the tool root: 5 still-applied (if disabled)
-            # per-link RigidBodyAPIs underneath it is a genuinely invalid nested hierarchy PhysX
-            # itself says causes "unpredicted results" -- unlike CollisionAPI above (toggled at
-            # runtime by _set_tool_collision_enabled(), needs to stay applied), RigidBodyAPI here
-            # must actually be removed, not just disabled.
             prim.RemoveAPI(UsdPhysics.RigidBodyAPI)
 
 

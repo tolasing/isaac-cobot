@@ -67,6 +67,7 @@ def main() -> None:
     for tool_name in config.TOOL_CHANGE_TARGETS:
         robot.spawn_dockable_tool(tool_name)
         robot.park_tool_at_rack(tool_name)
+    robot.enable_gripper_tool_fingers()
 
     if not _headless:
         kit_experience.enable_full_experience_extensions()

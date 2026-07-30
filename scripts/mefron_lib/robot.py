@@ -516,6 +516,60 @@ def park_tool_at_rack(tool_name: str) -> None:
     )
 
 
+def enable_gripper_tool_fingers() -> None:
+    """One-time-per-run structural fixup for the gripper tool's two fingers, called once from
+    mefron.py right after the dockable-tool spawn loop. The fingers/their RigidBodyAPI are hand-
+    authored directly in mefron.usd (see feedback_static_scenery_baked_into_scene memory), but two
+    things PhysX needs are easy to get wrong by hand and are restored here instead: (1) each finger
+    needs UsdGeom.Xformable.SetResetXformStack(True) since it's a RigidBodyAPI'd child of another
+    enabled rigid body (panda_hand/tool root) -- without it PhysX logs "missing xformstack reset
+    when child of another enabled rigid body" and the finger can fly off on the first physics step
+    (confirmed live earlier this session); ClearXformOpOrder()/AddTransformOp() must run BEFORE
+    SetResetXformStack() since they author the same xformOpOrder attribute. (2) the two
+    panda_finger_joint1/2 prismatic joints ship deactivated from the vendor bake (see
+    vendor_gripper_tool_visual_only.py) and must be explicitly reactivated for their DriveAPI to
+    have anything to act on."""
+    stage = omni.usd.get_context().get_stage()
+    tool_prim_path = _tool_prim_path("gripper")
+
+    for finger_name in config.GRIPPER_FINGER_LINK_NAMES:
+        finger_path = f"{tool_prim_path}/{finger_name}"
+        finger_prim = stage.GetPrimAtPath(finger_path)
+        if not finger_prim.IsValid():
+            print(f"[mefron_lib] WARNING: {finger_path} not found -- skipping finger fixup.", flush=True)
+            continue
+        _un_instance_ancestor(finger_prim, finger_path)
+        finger_xformable = UsdGeom.Xformable(finger_prim)
+        if not finger_xformable.GetResetXformStack():
+            world_transform = finger_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            finger_xformable.ClearXformOpOrder()
+            finger_xformable.AddTransformOp().Set(world_transform)
+            finger_xformable.SetResetXformStack(True)
+
+    for joint_name in config.GRIPPER_JOINT_NAMES:
+        joint_path = f"{tool_prim_path}/joints/{joint_name}"
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim.IsValid():
+            print(f"[mefron_lib] WARNING: {joint_path} not found -- skipping joint activation.", flush=True)
+            continue
+        joint_prim.SetActive(True)
+
+
+def set_gripper_tool_finger_target(target_position: float) -> None:
+    """Sets the docked gripper tool's own two finger joints' DriveAPI target position directly --
+    vendor_gripper_tool_visual_only.py bakes a linear DriveAPI onto each panda_finger_joint1/2, so
+    PhysX servos them natively; no SingleArticulation needed, since this tool's joints aren't part
+    of the arm's own articulation (see teleop._step_arm()'s C/O block). Path is fixed since the
+    gripper tool is a baked prim, not dynamically spawned -- see config.TOOL_CHANGE_TARGETS["gripper"]."""
+    stage = omni.usd.get_context().get_stage()
+    tool_prim_path = _tool_prim_path("gripper")
+    for joint_name in config.GRIPPER_JOINT_NAMES:
+        joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/joints/{joint_name}")
+        if not joint_prim.IsValid():
+            continue
+        UsdPhysics.DriveAPI(joint_prim, "linear").GetTargetPositionAttr().Set(target_position)
+
+
 def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """Swaps a tool's FixedJoint from its rack onto the wrist's male coupler -- the "grab" half of
     a tool change. Caller (see teleop.py's tool-change waypoint queue) is responsible for having

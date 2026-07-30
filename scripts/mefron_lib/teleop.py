@@ -396,7 +396,6 @@ def _fresh_arm_state() -> dict:
     return {
         "robot": None,
         "idx_list": None,
-        "gripper_idx_list": None,
         "articulation_controller": None,
         "past_pose": None,
         "past_orientation": None,
@@ -485,6 +484,8 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     from curobo.types.math import Pose
     from curobo.types.state import JointState
 
+    from . import robot
+
     state = arm["_state"]
     motion_gen = arm["motion_gen"]
     robot_cfg = arm["robot_cfg"]
@@ -505,27 +506,20 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         state["robot"] = SingleArticulation(prim_path=robot_prim_path, name=f"mefron_teleop_robot_{arm['_name']}")
         state["robot"].initialize()
         state["idx_list"] = [state["robot"].get_dof_index(x) for x in j_names]
-        # NOT gated on gripper_control alone -- under the ATC, panda_finger_joint1/2 are permanently
-        # deactivated on this arm's OWN articulation (remove_parallel_jaw_gripper(), since the
-        # gripper is now a separate dockable tool module, its own mini-articulation). gripper_control
-        # still exists for J/B/P snap-request bookkeeping; only a future per-tool articulation
-        # handle would let C/O actually drive the docked gripper's fingers -- see
-        # docs/tool-changer.md's open issues. drive_builtin_gripper_joints stays unset (False) until
-        # that lands, so this arm never tries to resolve joints that no longer exist here.
-        if arm.get("drive_builtin_gripper_joints", False):
-            state["gripper_idx_list"] = [state["robot"].get_dof_index(x) for x in config.GRIPPER_JOINT_NAMES]
-        else:
-            state["gripper_idx_list"] = []
+        # panda_finger_joint1/2 are permanently deactivated on this arm's OWN articulation
+        # (remove_parallel_jaw_gripper()) -- the gripper is now a separate dockable tool module with
+        # its own joints, driven directly via robot.set_gripper_tool_finger_target() below instead
+        # of through this arm's articulation_controller. No gripper joint indices to resolve here.
         state["articulation_controller"] = state["robot"].get_articulation_controller()
         # get_dof_index() returning None for a joint name it can't resolve is exactly the kind of
         # thing that, left unchecked, feeds a bad index into apply_action()'s native PhysX tensor
         # call below -- which can crash the whole process rather than raise a catchable exception.
         # Fail loudly here instead.
-        if any(i is None for i in state["idx_list"]) or any(i is None for i in state["gripper_idx_list"]):
+        if any(i is None for i in state["idx_list"]):
             raise RuntimeError(
                 f"[mefron_lib] {arm['_name']}: get_dof_index() could not resolve one or more joints "
-                f"(idx_list={state['idx_list']}, gripper_idx_list={state['gripper_idx_list']}) -- "
-                "refusing to drive this arm with an unresolved joint index."
+                f"(idx_list={state['idx_list']}) -- refusing to drive this arm with an unresolved "
+                "joint index."
             )
 
     if step_index < config._TELEOP_INIT_FRAMES:
@@ -719,7 +713,6 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
             # step_index is NOT reset, so the _TELEOP_INIT_FRAMES default_config snap above is
             # correctly skipped (it's already far past that count), only the handles get refreshed.
             state["idx_list"] = None
-            state["gripper_idx_list"] = None
             state["articulation_controller"] = None
         if state["motion_queue"]:
             next_position, next_orientation, _ = state["motion_queue"][0]
@@ -798,11 +791,11 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                             next_position, next_orientation, _ = state["motion_queue"][0]
                             target.set_world_pose(position=next_position, orientation=next_orientation)
 
-    # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
-    # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.
-    # Gated on drive_builtin_gripper_joints -- see the init block's comment on why gripper_control
-    # alone no longer implies this arm has live finger joints to drive.
-    if gripper_control is not None and arm.get("drive_builtin_gripper_joints", False):
+    # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the drive-target write.
+    # Under the ATC, the gripper's fingers are no longer part of this arm's own articulation (see
+    # the init block's comment above) -- driven directly via robot.set_gripper_tool_finger_target()
+    # on the docked-tool prim's own DriveAPI instead of this arm's articulation_controller.
+    if gripper_control is not None:
         gripper_target = gripper_control.closed_position if gripper_control.closed else gripper_control.open_position
         if state["gripper_setpoint"] is None:
             state["gripper_setpoint"] = gripper_target
@@ -814,11 +807,7 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
             elif state["gripper_setpoint"] > gripper_target:
                 state["gripper_setpoint"] = max(state["gripper_setpoint"] - max_step, gripper_target)
         state["last_gripper_time"] = now
-        gripper_action = ArticulationAction(
-            np.array([state["gripper_setpoint"], state["gripper_setpoint"]]),
-            joint_indices=state["gripper_idx_list"],
-        )
-        state["articulation_controller"].apply_action(gripper_action)
+        robot.set_gripper_tool_finger_target(state["gripper_setpoint"])
 
 
 def run_teleop_loop(
