@@ -283,15 +283,17 @@ TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 # ee_link's fixed pose relative to a tool's female-coupler frame once properly mated -- the whole
 # point of a standardized coupler is this is the SAME for every tool, not measured per-tool.
-# Derived via grasp.compute_relative_pose() on panda_hand/female_coupler's live world poses after
-# hand-jogging the gripper tool flush against the wrist -- see docs/tool-changer.md. The identity-
-# orientation placeholder this replaces was missing a real ~135-degree Z twist between the two
-# frames, confirmed live as the dominant cause of dock_tool_to_wrist()'s violent snap (PhysX logged
-# "found a joint with disjointed body transforms" for wrist_joint_gripper) -- a ~1cm position error
-# alone wouldn't explain a visibly violent correction. Shared across all 3 tools, so re-verify
+# Position was derived via grasp.compute_relative_pose() on panda_hand/female_coupler's live world
+# poses after hand-jogging the gripper tool flush against the wrist -- see docs/tool-changer.md.
+# Orientation reset to identity (2026-07-30): the ~135-degree Z twist previously here was measured
+# against an older bake/placement of gripper_tool_visual_only.usd; after several since-then
+# re-bakes/re-placements (vendor script RemoveAPI rewrite, GUI re-reference, instancing/collision
+# cleanup) the tool's own resting frame no longer needs that compensation -- confirmed live the
+# twist now visibly mis-orients the docked tool, and the male coupler is a plain symmetric cylinder
+# with no keying, so identity is the natural default absent a measured reason otherwise. Re-verify
 # suction/screwdriver's own docking after any future re-derivation of this constant.
 TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [3.2e-06, -0.0002723, -0.0103716]
-TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [0.3826835, -1.3481836e-16, -1.7934385e-16, 0.9238795]
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 # Relative hover clearance above a rack's dock pose the arm holds while aligning X/Y/orientation
 # before descending to dock/undock -- relative to each dock_position, not a fixed world-Z constant
