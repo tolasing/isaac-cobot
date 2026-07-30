@@ -200,11 +200,34 @@ def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None
         prim.SetActive(False)
 
 
+def _un_instance_ancestor(prim, context_path: str) -> None:
+    """Walks up from prim to the nearest instanceable ancestor and un-shares it -- the URDF
+    importer makes imported mesh geometry instanceable by default, so authoring directly on an
+    instance-proxy prim (Set() on an attribute, MakeInvisible(), ...) silently no-ops. Shared by
+    hide_hand_housing()'s visuals/collisions handling below."""
+    ancestor = prim
+    while ancestor.IsValid():
+        if ancestor.IsInstance():
+            print(
+                f"[mefron_lib] {context_path}: un-instancing shared prototype at {ancestor.GetPath()} first.",
+                flush=True,
+            )
+            ancestor.SetInstanceable(False)
+            return
+        ancestor = ancestor.GetParent()
+
+
 def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
-    """Makes prim_path's panda_hand/visuals invisible for an arm converted to suction-only.
-    Visibility only -- panda_hand and its collisions stay active (cuRobo's ee_link; dropping
-    collision geometry would change planning, not just looks). See docs/mefron-history.md for why
-    the nearest instance root gets un-shared first."""
+    """Makes prim_path's panda_hand/visuals invisible and disables panda_hand/collisions, for the
+    ATC's permanently-hidden housing under the male coupler + whichever tool is docked. Old
+    reasoning (docs/mefron-history.md) kept collisions active so the other two arms' planners in
+    the pre-ATC 3-Franka cell would still see this hand as an obstacle -- moot now there's only one
+    arm; leaving it active just lets PhysX contact with the (cuRobo-invisible, see
+    CLAUDE.md's open issues) rack/tool fight the commanded trajectory instead, the same "jointed
+    body's own enabled collision fights the joint" gotcha _set_tool_collision_enabled() already
+    works around on the tool's side. See docs/mefron-history.md for why the nearest instance root
+    gets un-shared first -- collisions gets the same treatment as visuals since it's confirmed to be
+    its own separately-instanceable sub-scope, not covered by un-instancing visuals alone."""
     stage = omni.usd.get_context().get_stage()
     visuals_path = f"{prim_path}/panda_hand/visuals"
     prim = stage.GetPrimAtPath(visuals_path)
@@ -212,18 +235,18 @@ def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
         print(f"[mefron_lib] WARNING: {visuals_path} not found -- skipping hide.", flush=True)
         return
 
-    ancestor = prim
-    while ancestor.IsValid():
-        if ancestor.IsInstance():
-            print(
-                f"[mefron_lib] {visuals_path}: un-instancing shared prototype at {ancestor.GetPath()} before hiding.",
-                flush=True,
-            )
-            ancestor.SetInstanceable(False)
-            break
-        ancestor = ancestor.GetParent()
-
+    _un_instance_ancestor(prim, visuals_path)
     UsdGeom.Imageable(prim).MakeInvisible()
+
+    collisions_path = f"{prim_path}/panda_hand/collisions"
+    collisions_prim = stage.GetPrimAtPath(collisions_path)
+    if not collisions_prim.IsValid():
+        print(f"[mefron_lib] WARNING: {collisions_path} not found -- skipping collision disable.", flush=True)
+        return
+    _un_instance_ancestor(collisions_prim, collisions_path)
+    for p in Usd.PrimRange(collisions_prim):
+        if p.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(p).GetCollisionEnabledAttr().Set(False)
 
 
 def _reference_tool_asset(
@@ -427,6 +450,21 @@ def spawn_dockable_tool(tool_name: str) -> str:
         translation=np.array(target["female_coupler_local_position"]),
         orientation=np.array(target["female_coupler_local_orientation_wxyz"]),
     )
+
+    # Un-instance the tool's own subtree unconditionally -- confirmed live the gripper tool
+    # disappears the moment the main Franka arm appears, the same "shared instanceable prototype"
+    # gotcha hide_hand_housing() already works around for the arm's own panda_hand/visuals, just
+    # hitting a different pairing here: this tool's geometry was derived from the identical
+    # panda_hand URDF mesh source, so it risks sharing one prototype with the live-imported arm.
+    # SetInstanceable(False) directly on every instance prim found (not just walking up from one
+    # leaf, since there may be several independent instance roots in this subtree) un-shares all of
+    # them up front, before any visibility-toggling code elsewhere in this module ever runs.
+    # Materialized first, same reasoning as _set_tool_collision_enabled() -- un-instancing an
+    # ancestor re-composes the stage, which would invalidate an in-progress PrimRange iterator.
+    instance_prims = [p for p in Usd.PrimRange(stage.GetPrimAtPath(tool_prim_path)) if p.IsInstance()]
+    for prim in instance_prims:
+        prim.SetInstanceable(False)
+
     return tool_prim_path
 
 
@@ -486,12 +524,20 @@ def _set_tool_collision_enabled(tool_name: str, enabled: bool) -> None:
     collider, settling tens of cm short of the joint's target instead of converging to it -- the
     same reasoning attach_suction_gripper()/attach_screwdriver_gripper() disable collision for
     permanently-mounted tools, just toggled dynamically here since a parked tool DOES need real
-    collision (sitting in its rack) while a docked one doesn't."""
+    collision (sitting in its rack) while a docked one doesn't. Un-instances each collision-bearing
+    prim first -- same instancing gotcha as hide_hand_housing()'s panda_hand/collisions: this tool
+    is also URDF-derived, so its own collision sub-scopes are instanceable by default and silently
+    no-op a bare Set() call, same root cause as the other confirmed-live "collision never actually
+    disabled" bug on this branch."""
     stage = omni.usd.get_context().get_stage()
     tool_prim = stage.GetPrimAtPath(_tool_prim_path(tool_name))
-    for prim in Usd.PrimRange(tool_prim):
-        if prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(enabled)
+    # Materialize the list before un-instancing any of them -- un-instancing an ancestor
+    # re-composes the stage, which would invalidate an in-progress Usd.PrimRange iterator.
+    collision_prims = [p for p in Usd.PrimRange(tool_prim) if p.HasAPI(UsdPhysics.CollisionAPI)]
+    for prim in collision_prims:
+        _un_instance_ancestor(prim, str(prim.GetPath()))
+    for prim in collision_prims:
+        UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(enabled)
 
 
 def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:

@@ -419,6 +419,10 @@ def _fresh_arm_state() -> dict:
         # hover-then-drop step) since a tool change needs an arbitrary-length chain with
         # side-effecting callbacks (dock_tool_to_wrist()/undock_tool_to_rack()) at specific legs.
         "motion_queue": [],
+        # True once a plan finishes arriving at a waypoint with a real on_arrival side effect
+        # (dock/undock), but before that side effect has actually run -- see _step_arm()'s
+        # robot_static-gated firing, right after computing robot_static, for why.
+        "awaiting_arrival_settle": False,
     }
 
 
@@ -689,6 +693,38 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     cu_js = cu_js.get_ordered_joint_state(motion_gen.kinematics.joint_names)
 
     robot_static = bool(np.max(np.abs(sim_js.velocities)) < config._STATIC_JOINT_VELOCITY_THRESHOLD)
+
+    if state["awaiting_arrival_settle"] and robot_static:
+        # The plan's own cmd_idx reaching its end only means the COMMANDED trajectory says
+        # velocity should be ~0 there -- not that the REAL simulated arm has actually caught up.
+        # Firing dock_tool_to_wrist()/undock_tool_to_rack() before real velocity settles rigidly
+        # couples a previously-static tool onto a still-moving wrist, a genuine physical coupling
+        # shock independent of how well-aligned the joint's pose is. Confirmed live: with a
+        # precisely-derived, warning-free joint pose, the arm still showed real (not commanded)
+        # velocity spiking above 3 rad/s the instant on_arrival() fired immediately on cmd_idx
+        # completion -- see docs/tool-changer.md.
+        state["awaiting_arrival_settle"] = False
+        _, _, on_arrival = state["motion_queue"][0]
+        state["motion_queue"] = state["motion_queue"][1:]
+        if on_arrival is not None:
+            on_arrival()
+            # dock_tool_to_wrist()/undock_tool_to_rack() author a brand-new joint prim live, mid-
+            # Play -- confirmed live this silently stales the cached SingleArticulation/idx_list/
+            # articulation_controller (same "only valid for the PhysX view that existed when built"
+            # gotcha CLAUDE.md documents for Stop, just triggered here by a live scene-graph edit
+            # instead): apply_action() keeps being called with no error, but the real simulated arm
+            # stops responding to any further target drag after this point. Forcing idx_list back to
+            # None re-triggers this function's own rebuild-on-None block on the very next frame,
+            # binding a fresh SingleArticulation to the current (post-joint-creation) PhysX view --
+            # step_index is NOT reset, so the _TELEOP_INIT_FRAMES default_config snap above is
+            # correctly skipped (it's already far past that count), only the handles get refreshed.
+            state["idx_list"] = None
+            state["gripper_idx_list"] = None
+            state["articulation_controller"] = None
+        if state["motion_queue"]:
+            next_position, next_orientation, _ = state["motion_queue"][0]
+            target.set_world_pose(position=next_position, orientation=next_orientation)
+
     if tool_changer_control is not None and tool_changer_control.currently_docked_tool is not None and state["cmd_plan"] is None:
         print(
             f"[debug] {arm['_name']}: max joint vel={np.max(np.abs(sim_js.velocities)):.4f} robot_static={robot_static} "
@@ -748,15 +784,19 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     state["pending_final_pose"] = None
                     target.set_world_pose(position=final_position, orientation=final_orientation)
                 elif state["motion_queue"]:
-                    # The just-finished plan drove the arm to motion_queue[0]'s waypoint -- run its
-                    # on_arrival side effect (dock/undock a tool), then advance to the next one.
+                    # The just-finished plan drove the arm to motion_queue[0]'s waypoint. A hover
+                    # leg (on_arrival=None) has no physical side effect, so advance immediately; a
+                    # dock/undock leg defers its on_arrival side effect until robot_static actually
+                    # confirms the real arm has settled -- see the awaiting_arrival_settle check
+                    # above, right after robot_static is computed.
                     _, _, on_arrival = state["motion_queue"][0]
-                    state["motion_queue"] = state["motion_queue"][1:]
                     if on_arrival is not None:
-                        on_arrival()
-                    if state["motion_queue"]:
-                        next_position, next_orientation, _ = state["motion_queue"][0]
-                        target.set_world_pose(position=next_position, orientation=next_orientation)
+                        state["awaiting_arrival_settle"] = True
+                    else:
+                        state["motion_queue"] = state["motion_queue"][1:]
+                        if state["motion_queue"]:
+                            next_position, next_orientation, _ = state["motion_queue"][0]
+                            target.set_world_pose(position=next_position, orientation=next_orientation)
 
     # Independent of cmd_plan/cuRobo -- applied every frame so it always wins the finger indices'
     # drive-target write, even though get_full_js() re-applies lock_joints on every planned frame too.

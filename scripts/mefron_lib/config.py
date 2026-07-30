@@ -25,7 +25,13 @@ MOUNT_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 FRANKA_URDF_RELATIVE_PATH = "robot/franka_description/franka_panda.urdf"
 FRANKA_DRIVE_STRENGTH = 1047.19751
-FRANKA_DRIVE_DAMPING = 52.35988
+# Bumped ~4x from the original 52.35988 (tuned for a bare wrist) -- confirmed live the ATC's rigid
+# tool-changer FixedJoint underdamps once a real tool is bolted on: joint velocity pins at the
+# Panda wrist joints' own hardware limit (2.61 rad/s) instead of decaying after dock_tool_to_wrist(),
+# once _set_tool_collision_enabled() actually disables the tool's collision (previously silently
+# no-op'ing -- see robot.py -- and accidentally providing contact-friction damping that partly
+# masked this). Empirical first attempt, not yet confirmed sufficient live.
+FRANKA_DRIVE_DAMPING = 210.0
 FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 
 # Reach-envelope obstacles for both arms, not the whole /World/Factory backdrop. Excludes the
@@ -33,6 +39,7 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 # open issues.
 OBSTACLE_PRIM_PATHS = [
     "/World/main_holder_jig",
+    "/World/tool_rack_gripper"
 ]
 
 # Loop-timing constants for teleop.run_teleop_loop(), ported from build_scene.py.
@@ -170,11 +177,22 @@ CONVEYOR_TOGGLE_KEY = "KEY_1"
 
 
 # scripts/vendor_gripper_tool.py's pre-baked export of robot.mount_franka_hand_only()'s hand-only
-# URDF -- one of the 3 dockable ATC tools. Referenced, not live-imported: confirmed live that
-# importing a second robot via the URDF importer into mefron.usd's own stage corrupts the main
-# arm's own link structure through a shared "Robot Description" cache, even at a fully distinct
-# prim path -- see docs/tool-changer.md's gotcha 6.
+# URDF -- referenced, not live-imported: confirmed live that importing a second robot via the URDF
+# importer into mefron.usd's own stage corrupts the main arm's own link structure through a shared
+# "Robot Description" cache, even at a fully distinct prim path -- see docs/tool-changer.md's
+# gotcha 6. Superseded by GRIPPER_TOOL_VISUAL_ONLY_USD below as the ATC gripper tool's actual
+# asset -- kept only as the (dormant) source this real multi-link mini-articulation once was.
 GRIPPER_TOOL_HAND_ONLY_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "gripper_tool_hand_only.usd"
+# scripts/vendor_gripper_tool_visual_only.py's stripped export of the same hand-only URDF -- one of
+# the 3 dockable ATC tools, now the one actually referenced by TOOL_CHANGE_TARGETS. Confirmed live:
+# GRIPPER_TOOL_HAND_ONLY_USD's real joints/mass/inertia, rigidly bolted onto the wrist via
+# dock_tool_to_wrist()'s FixedJoint, produced a genuine dynamic resonance (joint velocity pinned at
+# the Panda wrist joints' own hardware limit, never decaying) independent of pose accuracy,
+# collision state, or joint-damping increases -- suction/screwdriver never hit this because they're
+# simple visual props with one flat RigidBodyAPI, not a separately-jointed mini-articulation. This
+# asset strips all joints/RigidBodyAPI/CollisionAPI to match that same flat shape -- see
+# docs/tool-changer.md.
+GRIPPER_TOOL_VISUAL_ONLY_USD = REPO_ROOT / "robots" / "franka_panda" / "Props" / "gripper_tool_visual_only.usd"
 
 # Custom Franka-flange suction gripper -- one of the 3 dockable ATC tools (see the "Automatic tool
 # changer" section below). Supersedes the suction-only "suction gripper.usd" -- this one has the
@@ -265,10 +283,15 @@ TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 # ee_link's fixed pose relative to a tool's female-coupler frame once properly mated -- the whole
 # point of a standardized coupler is this is the SAME for every tool, not measured per-tool.
-# Placeholder (coupler-height standoff only) pending hand-jog confirmation once the coupler/female
-# geometry exists live -- see docs/tool-changer.md's open issues.
-TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [0.0, 0.0, -TOOL_CHANGER_CYLINDER_HEIGHT]
-TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# Derived via grasp.compute_relative_pose() on panda_hand/female_coupler's live world poses after
+# hand-jogging the gripper tool flush against the wrist -- see docs/tool-changer.md. The identity-
+# orientation placeholder this replaces was missing a real ~135-degree Z twist between the two
+# frames, confirmed live as the dominant cause of dock_tool_to_wrist()'s violent snap (PhysX logged
+# "found a joint with disjointed body transforms" for wrist_joint_gripper) -- a ~1cm position error
+# alone wouldn't explain a visibly violent correction. Shared across all 3 tools, so re-verify
+# suction/screwdriver's own docking after any future re-derivation of this constant.
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [3.2e-06, -0.0002723, -0.0103716]
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [0.3826835, -1.3481836e-16, -1.7934385e-16, 0.9238795]
 
 # Relative hover clearance above a rack's dock pose the arm holds while aligning X/Y/orientation
 # before descending to dock/undock -- relative to each dock_position, not a fixed world-Z constant
@@ -281,25 +304,30 @@ TOOL_RACK_APPROACH_CLEARANCE = 0.15
 # the tool (or the rack) in the GUI doesn't need any code/constant changes.
 TOOL_RACK_PRIM_PATH = "/World/tool_rack"
 
-# One entry per dockable tool. Two placement styles: "asset" (a USD path robot.spawn_dockable_tool()
-# references fresh as a child of the rack anchor prim -- currently just the gripper) vs
-# "baked_tool_prim_path" (a prim already hand-placed in mefron.usd -- currently suction/screwdriver;
-# see docs/tool-changer.md's open issues for why). "female_coupler_parent_link_name" is only set for
-# the gripper: its asset is a multi-link mini-articulation (actuated fingers, not a static prop like
-# the other two), so its rack-anchor child is just an organizing Xform over its real rigid-body
-# links -- female_coupler must attach under that specific link instead (see
-# robot._female_coupler_parent_prim_path()), not left unset/None like the other two tools.
-# dock_position/orientation for the gripper are placeholders pending user GUI placement, same
-# provenance as MOUNT_POSITION; female_coupler_local_* for all 3 are placeholders pending hand-jog
-# confirmation against each asset's own root frame, same provenance as SUCTION_GRIPPER_LOCAL_*.
+# One entry per dockable tool. All 3 now use "baked_tool_prim_path" (a prim already hand-placed in
+# mefron.usd) rather than "asset" (a USD path robot.spawn_dockable_tool() would reference fresh) --
+# the gripper switched over after a referenced GRIPPER_TOOL_VISUAL_ONLY_USD kept landing an
+# imprecise/gapped dock; baking a real, hand-placed prim sidesteps whatever reference-composition
+# quirk caused that. "female_coupler_parent_link_name" is left unset for all 3 tools: the gripper's
+# asset used to be a real multi-link mini-articulation needing it (female_coupler had to attach
+# under its specific base_link, not the tool root), but GRIPPER_TOOL_VISUAL_ONLY_USD strips that
+# down to the same flat, single-rigid-body shape suction/screwdriver already use -- see
+# docs/tool-changer.md for why (a real jointed mini-articulation rigidly bolted onto the wrist
+# produced a genuine dynamic resonance no pose/damping fix could settle).
+# female_coupler_local_* for all 3 are placeholders pending hand-jog confirmation against each
+# asset's own root frame, same provenance as SUCTION_GRIPPER_LOCAL_*.
 TOOL_CHANGE_TARGETS = {
     "gripper": {
         "key": "NUMPAD_1",
-        "asset": GRIPPER_TOOL_HAND_ONLY_USD,
-        "female_coupler_parent_link_name": "base_link",
+        # Baked directly into mefron.usd via the GUI (see feedback_static_scenery_baked_into_scene
+        # memory), same pattern as suction/screwdriver below -- switched from the "asset" (live-
+        # referenced) pattern after confirmed live that a referenced GRIPPER_TOOL_VISUAL_ONLY_USD
+        # kept landing an imprecise/gapped dock; baking a real, hand-placed prim sidesteps whatever
+        # reference-composition quirk caused that (same Metrics-Assembler-adjacent class of issue
+        # noted for SUCTION_GRIPPER_LOCAL_SCALE). robot.spawn_dockable_tool() never
+        # references/repositions this prim, only reads its live pose.
+        "baked_tool_prim_path": "/World/gripper_tool_visual_only",
         "rack_prim_path": "/World/tool_rack_gripper",
-        "dock_position": [2.9, -4.4, 0.85],
-        "dock_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
         "female_coupler_local_position": [0.0, 0.0, 0.0],
         "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },
