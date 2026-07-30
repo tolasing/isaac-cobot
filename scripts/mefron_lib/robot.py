@@ -223,11 +223,10 @@ def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     reasoning (docs/mefron-history.md) kept collisions active so the other two arms' planners in
     the pre-ATC 3-Franka cell would still see this hand as an obstacle -- moot now there's only one
     arm; leaving it active just lets PhysX contact with the (cuRobo-invisible, see
-    CLAUDE.md's open issues) rack/tool fight the commanded trajectory instead, the same "jointed
-    body's own enabled collision fights the joint" gotcha _set_tool_collision_enabled() already
-    works around on the tool's side. See docs/mefron-history.md for why the nearest instance root
-    gets un-shared first -- collisions gets the same treatment as visuals since it's confirmed to be
-    its own separately-instanceable sub-scope, not covered by un-instancing visuals alone."""
+    CLAUDE.md's open issues) rack/tool fight the commanded trajectory instead. See
+    docs/mefron-history.md for why the nearest instance root gets un-shared first -- collisions
+    gets the same treatment as visuals since it's confirmed to be its own separately-instanceable
+    sub-scope, not covered by un-instancing visuals alone."""
     stage = omni.usd.get_context().get_stage()
     visuals_path = f"{prim_path}/panda_hand/visuals"
     prim = stage.GetPrimAtPath(visuals_path)
@@ -459,8 +458,8 @@ def spawn_dockable_tool(tool_name: str) -> str:
     # SetInstanceable(False) directly on every instance prim found (not just walking up from one
     # leaf, since there may be several independent instance roots in this subtree) un-shares all of
     # them up front, before any visibility-toggling code elsewhere in this module ever runs.
-    # Materialized first, same reasoning as _set_tool_collision_enabled() -- un-instancing an
-    # ancestor re-composes the stage, which would invalidate an in-progress PrimRange iterator.
+    # Materialized first -- un-instancing an ancestor re-composes the stage, which would
+    # invalidate an in-progress PrimRange iterator.
     instance_prims = [p for p in Usd.PrimRange(stage.GetPrimAtPath(tool_prim_path)) if p.IsInstance()]
     for prim in instance_prims:
         prim.SetInstanceable(False)
@@ -517,29 +516,6 @@ def park_tool_at_rack(tool_name: str) -> None:
     )
 
 
-def _set_tool_collision_enabled(tool_name: str, enabled: bool) -> None:
-    """Toggles CollisionEnabledAttr (not RigidBodyAPI -- the body must stay dynamic for the joint's
-    solver to actually pull it into place) across the tool's own subtree. Confirmed live: without
-    this, a docked tool's real collider fights the wrist joint's pull against panda_hand's own
-    collider, settling tens of cm short of the joint's target instead of converging to it -- the
-    same reasoning attach_suction_gripper()/attach_screwdriver_gripper() disable collision for
-    permanently-mounted tools, just toggled dynamically here since a parked tool DOES need real
-    collision (sitting in its rack) while a docked one doesn't. Un-instances each collision-bearing
-    prim first -- same instancing gotcha as hide_hand_housing()'s panda_hand/collisions: this tool
-    is also URDF-derived, so its own collision sub-scopes are instanceable by default and silently
-    no-op a bare Set() call, same root cause as the other confirmed-live "collision never actually
-    disabled" bug on this branch."""
-    stage = omni.usd.get_context().get_stage()
-    tool_prim = stage.GetPrimAtPath(_tool_prim_path(tool_name))
-    # Materialize the list before un-instancing any of them -- un-instancing an ancestor
-    # re-composes the stage, which would invalidate an in-progress Usd.PrimRange iterator.
-    collision_prims = [p for p in Usd.PrimRange(tool_prim) if p.HasAPI(UsdPhysics.CollisionAPI)]
-    for prim in collision_prims:
-        _un_instance_ancestor(prim, str(prim.GetPath()))
-    for prim in collision_prims:
-        UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(enabled)
-
-
 def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     """Swaps a tool's FixedJoint from its rack onto the wrist's male coupler -- the "grab" half of
     a tool change. Caller (see teleop.py's tool-change waypoint queue) is responsible for having
@@ -561,7 +537,6 @@ def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_
         body1_local_position=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
         body1_local_orientation_wxyz=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
     )
-    _set_tool_collision_enabled(tool_name, enabled=False)
 
 
 def undock_tool_to_rack(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
@@ -578,7 +553,6 @@ def undock_tool_to_rack(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM
         config.TOOL_CHANGE_TARGETS[tool_name]["rack_prim_path"],
         _female_coupler_prim_path(tool_name),
     )
-    _set_tool_collision_enabled(tool_name, enabled=True)
 
 
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
