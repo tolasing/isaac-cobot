@@ -471,15 +471,16 @@ def _create_tool_fixed_joint(
     joint_path: str,
     body0_path: str,
     body1_path: str,
+    body0_local_position=(0.0, 0.0, 0.0),
+    body0_local_orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
     body1_local_position=(0.0, 0.0, 0.0),
     body1_local_orientation_wxyz=(1.0, 0.0, 0.0, 0.0),
 ) -> None:
     """Plain rigid UsdPhysics.FixedJoint between two prims -- no DriveAPI/LimitAPI compliance,
-    unlike attach_surface_gripper_physics()'s intentionally-soft D6 (a tool-changer coupling should
-    be rigid). body1's local frame defaults to identity (rack parking: body0/body1 origins already
-    coincide) but dock_tool_to_wrist() passes the mate offset (body1 = female coupler expressed in
-    body0/male-coupler-i.e.-ee_link's frame is what PhysX pulls into alignment). Both bodies get
-    excludeFromArticulation since panda_hand is a real articulation link."""
+    unlike attach_surface_gripper_physics()'s intentionally-soft D6. Both local frames default to
+    each body's own prim origin; dock_tool_to_wrist() offsets body0 to the male coupler's outward
+    face (not its center) and body1 to the mate pose. excludeFromArticulation since panda_hand is a
+    real articulation link."""
     stage = omni.usd.get_context().get_stage()
     if stage.GetPrimAtPath(joint_path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[joint_path])
@@ -488,6 +489,8 @@ def _create_tool_fixed_joint(
     joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
     joint.CreateBody0Rel().SetTargets([body0_path])
     joint.CreateBody1Rel().SetTargets([body1_path])
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*body0_local_position))
+    joint.CreateLocalRot0Attr().Set(Gf.Quatf(*body0_local_orientation_wxyz))
     joint.CreateLocalPos1Attr().Set(Gf.Vec3f(*body1_local_position))
     joint.CreateLocalRot1Attr().Set(Gf.Quatf(*body1_local_orientation_wxyz))
     joint.CreateExcludeFromArticulationAttr().Set(True)
@@ -571,23 +574,38 @@ def set_gripper_tool_finger_target(target_position: float) -> None:
 
 
 def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
-    """Swaps a tool's FixedJoint from its rack onto the wrist's male coupler -- the "grab" half of
-    a tool change. Caller (see teleop.py's tool-change waypoint queue) is responsible for having
-    already planned/settled the arm at the tool's dock pose first, or this snaps the tool a
-    noticeable distance instead of a clean small correction. Also responsible for having already
-    undocked any PREVIOUSLY docked tool first (undock_tool_to_rack()) -- only one tool should ever
-    be wrist-jointed at a time; docking a second one without releasing the first leaves both
-    simultaneously welded to the same male coupler instead."""
+    """Swaps a tool's FixedJoint from its rack onto the wrist -- the "grab" half of a tool change.
+    Caller (see teleop.py's tool-change waypoint queue) is responsible for having already
+    planned/settled the arm at the tool's dock pose first, or this snaps the tool a noticeable
+    distance instead of a clean small correction. Also responsible for having already undocked any
+    PREVIOUSLY docked tool first (undock_tool_to_rack()) -- only one tool should ever be
+    wrist-jointed at a time."""
     stage = omni.usd.get_context().get_stage()
     rack_joint_path = _rack_joint_path(tool_name)
     if stage.GetPrimAtPath(rack_joint_path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[rack_joint_path])
         omni.kit.app.get_app().update()
 
+    if tool_name == "gripper":
+        # Same stock panda_hand mesh as the arm's own -- mate panda_link8 directly to it via the
+        # real URDF offset instead of approximating through the male/female coupler geometry (see
+        # config.TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ).
+        _create_tool_fixed_joint(
+            _wrist_joint_path(tool_name, robot_prim_path),
+            f"{robot_prim_path}/panda_link8",
+            f"{_tool_prim_path(tool_name)}/panda_hand",
+            body1_local_orientation_wxyz=config.TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ,
+        )
+        return
+
     _create_tool_fixed_joint(
         _wrist_joint_path(tool_name, robot_prim_path),
         _male_coupler_prim_path(robot_prim_path),
         _female_coupler_prim_path(tool_name),
+        # UsdGeom.Cylinder is centered on its own prim origin, and TOOL_CHANGER_MALE_LOCAL_POSITION
+        # places that origin at the cylinder's middle (see config.py) -- mate at the inner face
+        # instead (confirmed live for the gripper before it moved to the panda_link8 scheme above).
+        body0_local_position=(0.0, 0.0, -config.TOOL_CHANGER_CYLINDER_HEIGHT / 2),
         body1_local_position=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
         body1_local_orientation_wxyz=config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
     )

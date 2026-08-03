@@ -278,22 +278,28 @@ SCREEN_PRIM_PATH = "/World/screen"
 TOOL_CHANGER_MALE_PRIM_NAME = "tool_changer_male"
 TOOL_CHANGER_CYLINDER_RADIUS = 0.0315  # Ø63mm
 TOOL_CHANGER_CYLINDER_HEIGHT = 0.02
-TOOL_CHANGER_MALE_LOCAL_POSITION = [0.0, 0.0, 0.0]
+# +Z half-height, not 0 -- UsdGeom.Cylinder is centered on its own local origin, so at z=0 half its
+# height sits behind panda_hand's origin, overlapping panda_link8. This shifts it flush instead.
+TOOL_CHANGER_MALE_LOCAL_POSITION = [0.0, 0.0, TOOL_CHANGER_CYLINDER_HEIGHT / 2]
 TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 # ee_link's fixed pose relative to a tool's female-coupler frame once properly mated -- the whole
 # point of a standardized coupler is this is the SAME for every tool, not measured per-tool.
-# Position was derived via grasp.compute_relative_pose() on panda_hand/female_coupler's live world
-# poses after hand-jogging the gripper tool flush against the wrist -- see docs/tool-changer.md.
-# Orientation reset to identity (2026-07-30): the ~135-degree Z twist previously here was measured
-# against an older bake/placement of gripper_tool_visual_only.usd; after several since-then
-# re-bakes/re-placements (vendor script RemoveAPI rewrite, GUI re-reference, instancing/collision
-# cleanup) the tool's own resting frame no longer needs that compensation -- confirmed live the
-# twist now visibly mis-orients the docked tool, and the male coupler is a plain symmetric cylinder
-# with no keying, so identity is the natural default absent a measured reason otherwise. Re-verify
-# suction/screwdriver's own docking after any future re-derivation of this constant.
-TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [3.2e-06, -0.0002723, -0.0103716]
+# Reset to identity (2026-08-03): the previous hand-jogged value was measured against the
+# pre-female-tool-head/pre-panda_link8-shifted-male-coupler setup, and just added a stale offset on
+# top of both of today's changes. Visual-only placeholder for now -- re-derive by hand-jog (see
+# docs/tool-changer.md) once the coupler/female-head geometry is final and docking accuracy matters.
+# Only used for suction/screwdriver now -- the gripper docks panda_link8 directly to its own
+# panda_hand instead, see TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ below.
+TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [0.0, 0.0, 0.0]
 TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+
+# The gripper tool's panda_hand is the exact same stock mesh as the arm's own (both exported from
+# franka_panda.urdf), so docking it wants that URDF's real panda_hand_joint offset (panda_link8 ->
+# panda_hand: xyz="0 0 0", rpy="0 0 -0.785398163397") -- not a hand-jogged coupler approximation.
+# This is that offset's inverse (translation stays zero), since it's expressed as body1's own local
+# frame -- see dock_tool_to_wrist()'s gripper-specific branch.
+TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ = [0.9238795325112867, 0.0, 0.0, 0.3826834323650898]
 
 # Relative hover clearance above a rack's dock pose the arm holds while aligning X/Y/orientation
 # before descending to dock/undock -- relative to each dock_position, not a fixed world-Z constant
