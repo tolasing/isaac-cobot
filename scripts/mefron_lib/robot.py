@@ -531,7 +531,9 @@ def enable_gripper_tool_fingers() -> None:
     SetResetXformStack() since they author the same xformOpOrder attribute. (2) the two
     panda_finger_joint1/2 prismatic joints ship deactivated from the vendor bake (see
     vendor_gripper_tool_visual_only.py) and must be explicitly reactivated for their DriveAPI to
-    have anything to act on."""
+    have anything to act on. (3) that same bake left their drive at import_cr5()'s whole-robot
+    default (stiffness=625/damping=10) -- stiffen_gripper_drive() raises it, same as it always did
+    for the pre-ATC arm-mounted gripper, just pointed at the tool's own path now."""
     stage = omni.usd.get_context().get_stage()
     tool_prim_path = _tool_prim_path("gripper")
 
@@ -556,6 +558,8 @@ def enable_gripper_tool_fingers() -> None:
             print(f"[mefron_lib] WARNING: {joint_path} not found -- skipping joint activation.", flush=True)
             continue
         joint_prim.SetActive(True)
+
+    stiffen_gripper_drive(prim_path=tool_prim_path)
 
 
 def set_gripper_tool_finger_target(target_position: float) -> None:
