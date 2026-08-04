@@ -273,26 +273,43 @@ SCREW_PRESENTER_SEAT_LOCAL_POSITION = [0.00666, -0.086, 0.072]
 SCREW_PRESENTER_SEAT_LOCAL_ORIENTATION_WXYZ = [0.0, 1.0, 0.0, 0.0]
 
 SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder"
-# The four REAL mounting pockets, read straight out of main_holder's own CAD: its
-# tn__CutExtrude51..54 collider sub-meshes are 6.65mm square, 20mm deep, entering at the holder's top
-# face (local z=0). A list, not a name-keyed dict like ASSEMBLY_RELATIONSHIPS -- order is the
-# fill sequence. Metres in main_holder's scale-free frame, same convention as that dict.
+# The ten REAL mounting pockets, hand-measured off main_holder's CAD. A list, not a name-keyed dict
+# like ASSEMBLY_RELATIONSHIPS -- order is the fill sequence, matching that sheet's own numbering.
+# Metres in main_holder's scale-free frame, same convention as that dict. Entries 2/3/7/8 keep the
+# tighter values from its tn__CutExtrude51..54 colliders (6.65mm square, 20mm deep, mouth at z=0).
 SCREW_HOLES = [
-    # Identity orientation on all four: main_holder's own world rotation is already 180 deg about X,
+    # Identity orientation throughout: main_holder's own world rotation is already 180 deg about X,
     # so the screw's local +Z (tip) comes out pointing down into the pocket with no extra twist.
-    {"local_position": [0.085675, 0.057955, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    {"local_position": [-0.085675, 0.057955, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    {"local_position": [0.085675, -0.056045, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    {"local_position": [-0.085675, -0.056045, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 1 -- CHECK: y's last digit read as 8, and this sits 1.0mm from entry 4, so one of the two is
+    # misread (they can't both be pockets).
+    {"local_position": [0.08228, 0.11028, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 2 -- sheet says dz=6mm; left at the CAD's z=0 (pocket mouth), which is what works today.
+    {"local_position": [0.08568, -0.05605, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 3 -- sheet says dz=6mm; same call as entry 2.
+    {"local_position": [0.08568, 0.05795, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 4 -- CHECK: x read as 81.38 while entry 6's mirror reads 81.83; see also entry 1's overlap.
+    {"local_position": [0.08138, 0.10983, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 5
+    {"local_position": [0.0, 0.1055, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 6 -- CHECK: x read as 81.83, mirroring entry 4's 81.38. Should be one magnitude, +/-.
+    {"local_position": [-0.08183, 0.10983, 0.0], "local_orientation_wxyz": [1.0,  0.0, 0.0, 0.0]},
+    # 7 -- sheet says dz=6mm; same call as entry 2.
+    {"local_position": [-0.08567, 0.05795, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 8
+    {"local_position": [-0.08567, -0.05605, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 9
+    {"local_position": [-0.08228, -0.11028, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # 10
+    {"local_position": [0.0, -0.11287, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
 ]
 # How far down the hole's own +Z the screw's tip ends up -- 10mm into a 20mm pocket leaves the head
 # just above the face, so a placed screw reads as seated rather than balanced on the surface.
-SCREW_HOLE_INSERTION_DEPTH = 0.010
+SCREW_HOLE_INSERTION_DEPTH = 0.00
 # Relative to each pick/place pose, never a world-Z constant (see ASSEMBLY_LIFT_HEIGHT in CLAUDE.md
 # for that exact mistake). Smaller than TOOL_RACK_APPROACH_CLEARANCE for a computed reason: the tool
 # hangs 275mm below the wrist, so 0.15m of hover puts the far holes ~0.874m from the mount, past the
 # Panda's ~0.855m reach. See docs/tool-changer.md's screw section.
-SCREW_APPROACH_CLEARANCE = 0.05
+SCREW_APPROACH_CLEARANCE = 0.02
 # Number-row 5/6, not numpad -- carb.input.KeyboardInput.KEY_5/KEY_6. Same convention as
 # CONVEYOR_TOGGLE_KEY (KEY_1); numpad 1/2/3 belong to the tool changer.
 SCREW_PICK_KEY = "KEY_5"
