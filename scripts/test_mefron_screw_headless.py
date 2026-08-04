@@ -34,6 +34,9 @@ _SETTLE_FRAMES = 90
 # Zero-snap welds (anchor placed at the body's own pose), so these should converge tightly -- 5mm
 # still absorbs ordinary PhysX settling jitter without masking a real frame/scale mistake.
 _WELD_TOLERANCE = 0.005
+# The carried screw's offset from the bit is a nominal constant, not a settled measurement, so it
+# should converge far tighter than a weld -- 1mm still catches the ~2mm error this guards against.
+_CARRY_TOLERANCE = 0.001
 # Pure pose composition, no physics -- anything above float noise here is a real math bug.
 _MATH_TOLERANCE = 1.0e-6
 # Panda's nominal max reach, for the reachability warning only (never a failure -- an out-of-envelope
@@ -200,7 +203,8 @@ def main() -> None:
         _check_ee_target_round_trip(f"hole {hole_index}", ee_link_prim_path, *grasp.compute_screw_hole_pose(hole_index))
 
     # Pick: the screw leaves the presenter for the wrist. Not driven to the pick pose first (no cuRobo
-    # here), so it welds at whatever offset it currently has -- which is exactly what's asserted next.
+    # here), so the weld's own correction to the nominal carry pose is the whole distance -- which is
+    # exactly what's asserted next.
     robot.attach_screw_to_wrist(0)
     _settle(simulation_app)
     _check("screw 0 jointed to the wrist after picking", stage.GetPrimAtPath(robot._screw_tip_joint_path(0)).IsValid())
@@ -209,8 +213,23 @@ def main() -> None:
         not stage.GetPrimAtPath(robot._screw_presenter_joint_path(0)).IsValid(),
     )
 
+    # Regression: the weld used to freeze the arm's live settled pose into the joint, so cuRobo's
+    # ~2mm residual approach error left the screw permanently off the bit axis (localPos0 x/y ~1mm
+    # instead of 0). Tighter than _WELD_TOLERANCE on purpose -- 5mm wouldn't have caught it.
+    tool_trans, tool_quat = SingleXFormPrim(
+        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+    ).get_world_pose()
+    carried_local_trans, _ = grasp.compute_relative_pose(tool_trans, tool_quat, *_screw_pose(0))
+    carry_error = float(np.linalg.norm(carried_local_trans - np.array(config.SCREW_CARRY_LOCAL_POSITION)))
+    _check(
+        f"carried screw 0 sits on the bit's nominal carry pose, not wherever the arm settled "
+        f"(err={carry_error:.5f}m)",
+        carry_error < _CARRY_TOLERANCE,
+    )
+
     carried_before = grasp.compute_relative_pose(*_hand_pose(), *_screw_pose(0))
-    _nudge_arm(simulation_app)
+    moved = _move_arm(simulation_app, 0)
+    _check(f"the arm actually moved before the ride check (hand moved {moved:.4f}m)", moved > _MIN_ARM_MOVEMENT)
     carried_after = grasp.compute_relative_pose(*_hand_pose(), *_screw_pose(0))
     ride_error = float(np.linalg.norm(np.array(carried_before[0]) - np.array(carried_after[0])))
     _check(f"screw 0 rides the wrist through an arm move (offset drift={ride_error:.4f}m)", ride_error < _WELD_TOLERANCE)
@@ -225,7 +244,8 @@ def main() -> None:
         not stage.GetPrimAtPath(robot._screw_tip_joint_path(0)).IsValid(),
     )
 
-    _nudge_arm(simulation_app)
+    moved = _move_arm(simulation_app, 1)
+    _check(f"the arm actually moved away before the stay check (hand moved {moved:.4f}m)", moved > _MIN_ARM_MOVEMENT)
     placed_trans_after, _ = _screw_pose(0)
     stay_error = float(np.linalg.norm(placed_trans_before - placed_trans_after))
     _check(

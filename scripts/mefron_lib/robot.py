@@ -736,23 +736,32 @@ def attach_screw_to_wrist(index: int, robot_prim_path: str = config.ROBOT_PRIM_P
     direct analogue of dock_tool_to_wrist(). body0 is panda_hand itself: it's a real rigid body at
     unit scale, so localPos0 is unambiguous -- unlike the docked tool prim, whose 0.001 scale makes
     a joint's own frame exactly the kind of guess docs/tool-changer.md's gotcha 8 warns about.
-    Caller must have settled the arm at the pick pose first."""
+    Caller must have settled the arm at the pick pose first. Welds at the nominal carry pose, see below."""
     stage = omni.usd.get_context().get_stage()
-    from .grasp import compute_relative_pose
+    from .grasp import compute_dependent_world_pose, compute_relative_pose
 
     presenter_joint_path = _screw_presenter_joint_path(index)
     if stage.GetPrimAtPath(presenter_joint_path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[presenter_joint_path])
         omni.kit.app.get_app().update()
 
-    # Measured live rather than read from SCREW_CARRY_LOCAL_* -- whatever pose the arm actually
-    # settled at is what gets welded, so any approach error stays a visible offset instead of
-    # becoming a snap the instant the joint appears.
+    # The NOMINAL carry pose (docked tool's live pose + SCREW_CARRY_LOCAL_*), not the arm's settled
+    # pose: welding the live hand->screw offset froze cuRobo's ~2mm residual approach error into the
+    # joint, leaving the screw permanently off the bit axis for the rest of the cycle.
+    tool_trans, tool_quat = SingleXFormPrim(
+        prim_path=_tool_prim_path("screwdriver"), reset_xform_properties=False
+    ).get_world_pose()
+    screw_trans, screw_quat = compute_dependent_world_pose(
+        tool_trans, tool_quat, config.SCREW_CARRY_LOCAL_POSITION, config.SCREW_CARRY_LOCAL_ORIENTATION_WXYZ
+    )
+    # Move the screw onto that pose before jointing, so the correction isn't a visible snap -- same
+    # re-authoring weld_screw_into_hole() does, and safe here since a screw carries no colliders.
+    SingleXFormPrim(prim_path=_screw_prim_path(index), reset_xform_properties=False).set_world_pose(
+        position=screw_trans, orientation=screw_quat
+    )
+
     hand_path = f"{robot_prim_path}/panda_hand"
     hand_trans, hand_quat = SingleXFormPrim(prim_path=hand_path, reset_xform_properties=False).get_world_pose()
-    screw_trans, screw_quat = SingleXFormPrim(
-        prim_path=_screw_prim_path(index), reset_xform_properties=False
-    ).get_world_pose()
     local_trans, local_quat = compute_relative_pose(hand_trans, hand_quat, screw_trans, screw_quat)
 
     _create_tool_fixed_joint(
