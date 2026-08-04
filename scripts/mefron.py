@@ -69,6 +69,13 @@ def main() -> None:
         robot.park_tool_at_rack(tool_name)
     robot.enable_gripper_tool_fingers()
 
+    # Placeholder screw presenter, with the first screw already waiting on it -- the rest pop in one
+    # at a time as each is placed. clear_screws() first so a run never inherits a previous run's
+    # screws (the URDF importer rewrites mefron.usd every run; see CLAUDE.md).
+    robot.clear_screws()
+    robot.ensure_screw_presenter()
+    robot.present_screw(0)
+
     if not _headless:
         kit_experience.enable_full_experience_extensions()
 
@@ -120,6 +127,13 @@ def main() -> None:
         "P to place on main_holder (whichever object was last approached).",
         flush=True,
     )
+    screw_control = teleop.build_screw_keyboard_control()
+    print(
+        f"[mefron] Screwdriver tool (once docked): press {config.SCREW_PICK_KEY} to pick the presented "
+        f"screw, {config.SCREW_PLACE_KEY} to place it in the next of "
+        f"{len(config.SCREW_HOLES)} main_holder holes. No screw-driving rotation.",
+        flush=True,
+    )
     conveyor.setup_conveyor_belt_graph()
     conveyor_control = conveyor.build_conveyor_control()
     print(
@@ -142,6 +156,7 @@ def main() -> None:
             "suction_control": suction_approach_control,
             "surface_gripper_control": surface_gripper_control,
             "tool_changer_control": tool_changer_control,
+            "screw_control": screw_control,
         },
     ]
     teleop.run_teleop_loop(simulation_app, arms, conveyor_control=conveyor_control)

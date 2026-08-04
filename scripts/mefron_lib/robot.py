@@ -631,6 +631,156 @@ def undock_tool_to_rack(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM
     )
 
 
+def _screw_prim_path(index: int) -> str:
+    return f"{config.SCREW_SCOPE_PRIM_PATH}/screw_{index}"
+
+
+# One joint path per lifecycle stage, never redefined in place -- docs/tool-changer.md's gotcha 5
+# (PhysX kept solving against a stale body1 when a joint prim was redefined at the same path).
+def _screw_presenter_joint_path(index: int) -> str:
+    return f"{_screw_prim_path(index)}/presenter_joint"
+
+
+def _screw_tip_joint_path(index: int) -> str:
+    return f"{_screw_prim_path(index)}/tip_joint"
+
+
+def _screw_hole_joint_path(index: int) -> str:
+    return f"{_screw_prim_path(index)}/hole_joint"
+
+
+def _screw_hole_anchor_path(index: int) -> str:
+    return f"{config.SCREW_SCOPE_PRIM_PATH}/hole_anchor_{index}"
+
+
+def clear_screws() -> None:
+    """Deletes the whole script-owned screw scope, so a run never inherits screws from a previous
+    one. Needed for the same reason clear_stray_robot_prims() is: the URDF importer rewrites
+    mefron.usd on every run (see CLAUDE.md), so anything spawned here can get baked in. Deliberately
+    leaves config.SCREW_PRESENTER_PRIM_PATH alone -- that one may be hand-placed."""
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(config.SCREW_SCOPE_PRIM_PATH).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[config.SCREW_SCOPE_PRIM_PATH])
+        omni.kit.app.get_app().update()
+
+
+def ensure_screw_presenter() -> str:
+    """Stand-in for the real screw presenter: returns config.SCREW_PRESENTER_PRIM_PATH, creating it
+    at the SCREW_PRESENTER_FALLBACK_* pose only if it doesn't already exist. Same baked-vs-fallback
+    duality as TOOL_CHANGE_TARGETS' baked_tool_prim_path -- hand-place this prim in the GUI and its
+    own pose wins, with no config change."""
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(config.SCREW_PRESENTER_PRIM_PATH).IsValid():
+        print(f"[mefron_lib] using the scene's own {config.SCREW_PRESENTER_PRIM_PATH} pose.", flush=True)
+        return config.SCREW_PRESENTER_PRIM_PATH
+
+    stage.DefinePrim(config.SCREW_PRESENTER_PRIM_PATH, "Xform")
+    SingleXFormPrim(prim_path=config.SCREW_PRESENTER_PRIM_PATH).set_world_pose(
+        position=np.array(config.SCREW_PRESENTER_FALLBACK_POSITION),
+        orientation=np.array(config.SCREW_PRESENTER_FALLBACK_ORIENTATION_WXYZ),
+    )
+    print(
+        f"[mefron_lib] spawned placeholder {config.SCREW_PRESENTER_PRIM_PATH} at "
+        f"{config.SCREW_PRESENTER_FALLBACK_POSITION} -- hand-place it in the GUI and save to override.",
+        flush=True,
+    )
+    return config.SCREW_PRESENTER_PRIM_PATH
+
+
+def present_screw(index: int) -> str:
+    """Pops a screw in at the presenter, jointed to it so it can't fall -- a screw is ALWAYS
+    joint-fixed to something (presenter, wrist, or hole), the same invariant park_tool_at_rack()
+    states for tools. Explicit mass/inertia because the placeholder asset carries no colliders for
+    PhysX to derive either from."""
+    from .grasp import compute_screw_presenter_pose
+
+    stage = omni.usd.get_context().get_stage()
+    screw_prim_path = _screw_prim_path(index)
+    presenter_trans, presenter_quat = compute_screw_presenter_pose()
+
+    # A Scope, not an Xform -- it can't carry a transform at all, so a screw's own local pose below
+    # is guaranteed to be its world pose.
+    stage.DefinePrim(config.SCREW_SCOPE_PRIM_PATH, "Scope")
+    # disable_physics=False -- unlike a permanently-kinematic mounted tool, this has to be a real
+    # rigid body for a FixedJoint's solver to move it at all (docs/tool-changer.md's gotcha 2).
+    _reference_tool_asset(
+        config.SCREW_USD,
+        screw_prim_path,
+        local_position=presenter_trans,
+        local_orientation_wxyz=presenter_quat,
+        disable_physics=False,
+    )
+    screw_prim = stage.GetPrimAtPath(screw_prim_path)
+    UsdPhysics.RigidBodyAPI.Apply(screw_prim)
+    mass_api = UsdPhysics.MassAPI.Apply(screw_prim)
+    mass_api.CreateMassAttr().Set(config.SCREW_MASS)
+    mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*config.SCREW_DIAGONAL_INERTIA))
+
+    # Both frames default to their own origins, and the presenter anchor IS the screw's own pose, so
+    # this welds with zero snap -- exactly how park_tool_at_rack() avoids one.
+    _create_tool_fixed_joint(
+        _screw_presenter_joint_path(index), config.SCREW_PRESENTER_PRIM_PATH, screw_prim_path
+    )
+    return screw_prim_path
+
+
+def attach_screw_to_wrist(index: int, robot_prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Swaps a presented screw's joint onto the wrist -- the "pick" half of a screw cycle, and the
+    direct analogue of dock_tool_to_wrist(). body0 is panda_hand itself: it's a real rigid body at
+    unit scale, so localPos0 is unambiguous -- unlike the docked tool prim, whose 0.001 scale makes
+    a joint's own frame exactly the kind of guess docs/tool-changer.md's gotcha 8 warns about.
+    Caller must have settled the arm at the pick pose first."""
+    stage = omni.usd.get_context().get_stage()
+    from .grasp import compute_relative_pose
+
+    presenter_joint_path = _screw_presenter_joint_path(index)
+    if stage.GetPrimAtPath(presenter_joint_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[presenter_joint_path])
+        omni.kit.app.get_app().update()
+
+    # Measured live rather than read from SCREW_CARRY_LOCAL_* -- whatever pose the arm actually
+    # settled at is what gets welded, so any approach error stays a visible offset instead of
+    # becoming a snap the instant the joint appears.
+    hand_path = f"{robot_prim_path}/panda_hand"
+    hand_trans, hand_quat = SingleXFormPrim(prim_path=hand_path, reset_xform_properties=False).get_world_pose()
+    screw_trans, screw_quat = SingleXFormPrim(
+        prim_path=_screw_prim_path(index), reset_xform_properties=False
+    ).get_world_pose()
+    local_trans, local_quat = compute_relative_pose(hand_trans, hand_quat, screw_trans, screw_quat)
+
+    _create_tool_fixed_joint(
+        _screw_tip_joint_path(index),
+        hand_path,
+        _screw_prim_path(index),
+        body0_local_position=tuple(local_trans),
+        body0_local_orientation_wxyz=tuple(local_quat),
+    )
+
+
+def weld_screw_into_hole(index: int, hole_index: int) -> None:
+    """Releases a carried screw into its hole -- the "drop" half, and the analogue of
+    undock_tool_to_rack(): the screw leaves the wrist for a static anchor at its own current pose,
+    never free-falling. Also re-authors the screw's own USD xform, so a Stop restores it AT the hole
+    instead of snapping back to wherever it was first spawned."""
+    stage = omni.usd.get_context().get_stage()
+    screw_prim_path = _screw_prim_path(index)
+    tip_joint_path = _screw_tip_joint_path(index)
+    if stage.GetPrimAtPath(tip_joint_path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[tip_joint_path])
+        omni.kit.app.get_app().update()
+
+    screw_xform = SingleXFormPrim(prim_path=screw_prim_path, reset_xform_properties=False)
+    screw_trans, screw_quat = screw_xform.get_world_pose()
+    screw_xform.set_world_pose(position=screw_trans, orientation=screw_quat)
+
+    anchor_path = _screw_hole_anchor_path(hole_index)
+    stage.DefinePrim(anchor_path, "Xform")
+    SingleXFormPrim(prim_path=anchor_path).set_world_pose(position=screw_trans, orientation=screw_quat)
+    # Anchor placed at the screw's own live pose, so identity local frames on both sides weld with
+    # zero snap. A static world anchor, not main_holder itself: see docs/tool-changer.md for why.
+    _create_tool_fixed_joint(_screw_hole_joint_path(index), anchor_path, screw_prim_path)
+
+
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/surface_gripper attach mechanism on panda_hand: one
     UsdPhysics.Joint (IsaacAttachmentPointAPI) with PhysicsLimitAPI/DriveAPI compliance tuning --

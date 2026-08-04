@@ -228,6 +228,68 @@ SCREWDRIVER_LOCAL_POSITION = [0.0, 0.0, 0.0]
 # always docks tools at local identity instead). Not re-derived for this asset.
 SCREWDRIVER_LOCAL_ORIENTATION_WXYZ = [0.2705980501, 0.6532814824, -0.2705980501, 0.6532814824]
 
+# --- Screw pick-and-place (screwdriver tool only) -----------------------------------------------
+# Hand-authored placeholder fastener, NOT real CAD -- two plain Cylinders whose own origin is the
+# screw's TIP, body running back along local -Z (see the asset's own comment). No colliders on
+# purpose: every stage of a screw's life is joint-driven, so contact would only fight the joint.
+SCREW_USD = REPO_ROOT / "assets" / "mefron" / "screw_m3.usd"
+# Script-owned scope, cleared and rebuilt every run (robot.clear_screws()) -- holds every spawned
+# screw plus its own joints/anchors. Deliberately separate from SCREW_PRESENTER_PRIM_PATH below,
+# which may be a hand-placed prim and must survive.
+SCREW_SCOPE_PRIM_PATH = "/World/screws"
+# Tip-to-head-face length of the placeholder above, and an M3 screw's rough real mass. The explicit
+# inertia matters because the screw has no colliders for PhysX to derive one from.
+SCREW_LENGTH = 0.012
+SCREW_MASS = 0.002
+SCREW_DIAGONAL_INERTIA = [1.0e-7, 1.0e-7, 1.0e-7]
+
+# The bit's tip in the DOCKED tool root's own frame, in metres, composed against that prim's
+# scale-free get_world_pose(). CAD-derived, not a guess: SCREWDRIVER_USD's mesh points reach
+# z=274.854mm (x/y centroid 0.00, symmetric +-6.99mm 5mm back from the tip, so on-axis), and its
+# female coupler head occupies z 0->10mm, confirming +Z runs coupler->tip. See docs/tool-changer.md.
+SCREWDRIVER_TIP_LOCAL_POSITION = [0.0, 0.0, 0.2748543]
+# Where a carried screw sits in that same frame: one screw-length past the tip, so the head's outer
+# face lands exactly ON the bit tip. Identity orientation -- the screw's own +Z (tip direction)
+# already agrees with the tool's +Z, so no twist is needed.
+SCREW_CARRY_LOCAL_POSITION = [0.0, 0.0, SCREWDRIVER_TIP_LOCAL_POSITION[2] + SCREW_LENGTH]
+SCREW_CARRY_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+
+# Stand-in for the real screw presenter the user doesn't have yet. Same baked-vs-fallback duality as
+# TOOL_CHANGE_TARGETS' baked_tool_prim_path/dock_position: if this prim already exists in mefron.usd
+# (hand-placed in the GUI), its live world pose wins and the fallback below is ignored entirely.
+SCREW_PRESENTER_PRIM_PATH = "/World/screw_presenter"
+# This anchor's pose IS the presented screw's pose (tip at the table surface, head up -- the
+# orientation a real presenter holds a screw in). Free table: parts sit at y <= -5.20, main_holder at
+# y >= -4.90, and it puts the wrist ~0.59m from MOUNT_POSITION, well inside the Panda's envelope.
+SCREW_PRESENTER_FALLBACK_POSITION = [2.90, -5.05, 0.905]
+SCREW_PRESENTER_FALLBACK_ORIENTATION_WXYZ = [0.0, 1.0, 0.0, 0.0]
+
+SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder"
+# The four REAL mounting pockets, read straight out of main_holder's own CAD: its
+# tn__CutExtrude51..54 collider sub-meshes are 6.65mm square, 20mm deep, entering at the holder's top
+# face (local z=0). A list, not a name-keyed dict like ASSEMBLY_RELATIONSHIPS -- order is the
+# fill sequence. Metres in main_holder's scale-free frame, same convention as that dict.
+SCREW_HOLES = [
+    # Identity orientation on all four: main_holder's own world rotation is already 180 deg about X,
+    # so the screw's local +Z (tip) comes out pointing down into the pocket with no extra twist.
+    {"local_position": [0.085675, 0.057955, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.085675, 0.057955, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [0.085675, -0.056045, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.085675, -0.056045, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+]
+# How far down the hole's own +Z the screw's tip ends up -- 10mm into a 20mm pocket leaves the head
+# just above the face, so a placed screw reads as seated rather than balanced on the surface.
+SCREW_HOLE_INSERTION_DEPTH = 0.010
+# Relative to each pick/place pose, never a world-Z constant (see ASSEMBLY_LIFT_HEIGHT in CLAUDE.md
+# for that exact mistake). Smaller than TOOL_RACK_APPROACH_CLEARANCE for a computed reason: the tool
+# hangs 275mm below the wrist, so 0.15m of hover puts the far holes ~0.874m from the mount, past the
+# Panda's ~0.855m reach. See docs/tool-changer.md's screw section.
+SCREW_APPROACH_CLEARANCE = 0.05
+# Number-row 5/6, not numpad -- carb.input.KeyboardInput.KEY_5/KEY_6. Same convention as
+# CONVEYOR_TOGGLE_KEY (KEY_1); numpad 1/2/3 belong to the tool changer.
+SCREW_PICK_KEY = "KEY_5"
+SCREW_PLACE_KEY = "KEY_6"
+
 # Real isaacsim.robot.schema/surface_gripper physics (distinct from the pure-visual
 # SUCTION_GRIPPER_* above) -- bare structural minimum only, no compliance tuning.
 SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"

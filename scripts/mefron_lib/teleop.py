@@ -288,6 +288,77 @@ def build_tool_changer_keyboard_control() -> ToolChangerControl:
     return control
 
 
+class ScrewControl:
+    """One-shot 'pick the presented screw' (config.SCREW_PICK_KEY) and 'place it in the next hole'
+    (SCREW_PLACE_KEY) requests, only meaningful while the screwdriver tool is docked. Two separate
+    requests rather than one cycle, so the pick can be inspected before committing to the placement.
+    has_pending/consume mirrors ToolChangerControl -- a request must survive across frames until the
+    arm goes idle, not be consumed mid-plan."""
+
+    def __init__(self) -> None:
+        self._pick_requested = False
+        self._place_requested = False
+        # Next config.SCREW_HOLES index to fill, and which screw (if any) is on the bit right now.
+        self.hole_index = 0
+        self.carried_screw_index: int | None = None
+
+    def request_pick(self) -> None:
+        self._pick_requested = True
+
+    def request_place(self) -> None:
+        self._place_requested = True
+
+    def has_pending_pick_request(self) -> bool:
+        return self._pick_requested
+
+    def has_pending_place_request(self) -> bool:
+        return self._place_requested
+
+    def consume_pick_request(self) -> bool:
+        requested = self._pick_requested
+        self._pick_requested = False
+        return requested
+
+    def consume_place_request(self) -> bool:
+        requested = self._place_requested
+        self._place_requested = False
+        return requested
+
+    def reset(self) -> None:
+        """Called on every fresh Play. Deliberately clears ONLY the one-shot requests, not
+        hole_index/carried_screw_index -- same reasoning as ToolChangerControl.reset(): the
+        FixedJoints a Stop leaves on the stage don't change, so already-filled holes are still
+        filled, and restarting the sequence would drive a second screw into an occupied pocket."""
+        self._pick_requested = False
+        self._place_requested = False
+
+
+def build_screw_keyboard_control() -> ScrewControl:
+    """Subscribes config.SCREW_PICK_KEY/SCREW_PLACE_KEY, its own subscription like every other
+    control here -- the screwdriver has no existing per-key control to piggyback onto."""
+    import carb.input
+    import omni.appwindow
+
+    control = ScrewControl()
+    keyboard = omni.appwindow.get_default_app_window().get_keyboard()
+    input_iface = carb.input.acquire_input_interface()
+    pick_input = getattr(carb.input.KeyboardInput, config.SCREW_PICK_KEY)
+    place_input = getattr(carb.input.KeyboardInput, config.SCREW_PLACE_KEY)
+
+    def _on_keyboard_event(event) -> bool:
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if event.input == pick_input:
+                control.request_pick()
+            elif event.input == place_input:
+                control.request_place()
+        return True
+
+    control._keyboard = keyboard
+    control._input_iface = input_iface
+    control._subscription_id = input_iface.subscribe_to_keyboard_events(keyboard, _on_keyboard_event)
+    return control
+
+
 def get_obstacles(robot_prim_path: str = config.ROBOT_PRIM_PATH, target_prim_path: str = config.TARGET_PRIM_PATH):
     from curobo.util.usd_helper import UsdHelper
 
@@ -425,23 +496,43 @@ def _fresh_arm_state() -> dict:
     }
 
 
+def _start_motion_queue(state: dict, target, queue: list):
+    """Installs a fresh waypoint queue and snaps `target` to its first leg, returning that pose so
+    the caller's own cube_position/orientation stay in sync. The +1.0e6 forces the re-plan check in
+    _step_arm() to fire even when the new waypoint numerically coincides with the previous
+    sequence's last one -- see docs/tool-changer.md's gotcha 9 for the bug that motivated it."""
+    state["motion_queue"] = queue
+    position, orientation, _ = queue[0]
+    target.set_world_pose(position=position, orientation=orientation)
+    state["target_pose"] = position + 1.0e6
+    state["target_orientation"] = orientation + 1.0e6
+    return position, orientation
+
+
+def _add_hover_descend_retract_leg(queue: list, position, orientation, on_arrival, clearance: float) -> None:
+    """Appends one hover -> descend -> act -> retract leg to a motion queue. Shared by the tool-change
+    and screw queues. Hover clearance is relative to the leg's own target, never a fixed world-Z
+    constant -- see CLAUDE.md's ASSEMBLY_LIFT_HEIGHT open issue for why that would be a mistake."""
+    hover_position = position + np.array([0.0, 0.0, clearance])
+    queue.append((hover_position, orientation, None))
+    queue.append((position, orientation, on_arrival))
+    queue.append((hover_position, orientation, None))
+
+
 def _build_tool_change_queue(tool_changer_control: ToolChangerControl, requested_tool: str) -> list:
     """Builds the ordered waypoint list for one tool swap: if a different tool is currently docked,
     first return it to its own rack (hover -> descend -> undock -> retract), then approach the
     requested tool's rack the same way (hover -> descend -> dock -> retract). Skips the return leg
-    entirely from a bare wrist. Hover clearance is relative to each dock pose (config
-    .TOOL_RACK_APPROACH_CLEARANCE), not a fixed world-Z constant -- see CLAUDE.md's
-    ASSEMBLY_LIFT_HEIGHT open issue for why that would be a mistake here too."""
+    entirely from a bare wrist."""
     from . import robot
     from .grasp import compute_tool_dock_target, compute_tool_rack_return_target
 
     queue = []
 
     def _add_leg(dock_position, dock_orientation, on_arrival) -> None:
-        hover_position = dock_position + np.array([0.0, 0.0, config.TOOL_RACK_APPROACH_CLEARANCE])
-        queue.append((hover_position, dock_orientation, None))
-        queue.append((dock_position, dock_orientation, on_arrival))
-        queue.append((hover_position, dock_orientation, None))
+        _add_hover_descend_retract_leg(
+            queue, dock_position, dock_orientation, on_arrival, config.TOOL_RACK_APPROACH_CLEARANCE
+        )
 
     current_tool = tool_changer_control.currently_docked_tool
     if current_tool is not None and current_tool != requested_tool:
@@ -459,6 +550,58 @@ def _build_tool_change_queue(tool_changer_control: ToolChangerControl, requested
 
     dock_position, dock_orientation = compute_tool_dock_target(requested_tool)
     _add_leg(dock_position, dock_orientation, _on_dock)
+    return queue
+
+
+def _build_screw_pick_queue(screw_control: ScrewControl, ee_link_prim_path: str) -> list:
+    """One hover -> descend -> weld-to-wrist -> retract leg onto the presented screw. Poses are
+    computed here, at request time, off the presenter's and the docked tool's live poses -- the same
+    "compute once, on the keypress" approach P uses."""
+    from . import robot
+    from .grasp import compute_ee_target_for_screw_pose, compute_screw_presenter_pose
+
+    screw_index = screw_control.hole_index
+    screw_trans, screw_quat = compute_screw_presenter_pose()
+    pick_position, pick_orientation = compute_ee_target_for_screw_pose(ee_link_prim_path, screw_trans, screw_quat)
+
+    def _on_pick(index=screw_index) -> None:
+        robot.attach_screw_to_wrist(index)
+        screw_control.carried_screw_index = index
+        print(f"[mefron] screw {index} picked off the presenter.", flush=True)
+
+    queue: list = []
+    _add_hover_descend_retract_leg(
+        queue, pick_position, pick_orientation, _on_pick, config.SCREW_APPROACH_CLEARANCE
+    )
+    return queue
+
+
+def _build_screw_place_queue(screw_control: ScrewControl, ee_link_prim_path: str) -> list:
+    """One hover -> descend -> release-into-hole -> retract leg onto config.SCREW_HOLES[hole_index],
+    computed off main_holder's live pose. On arrival the screw is welded in and the NEXT one is
+    presented, so there's always one waiting on the presenter."""
+    from . import robot
+    from .grasp import compute_ee_target_for_screw_pose, compute_screw_hole_pose
+
+    hole_index = screw_control.hole_index
+    screw_index = screw_control.carried_screw_index
+    hole_trans, hole_quat = compute_screw_hole_pose(hole_index)
+    place_position, place_orientation = compute_ee_target_for_screw_pose(ee_link_prim_path, hole_trans, hole_quat)
+
+    def _on_place(index=screw_index, hole=hole_index) -> None:
+        robot.weld_screw_into_hole(index, hole)
+        screw_control.carried_screw_index = None
+        screw_control.hole_index = hole + 1
+        print(f"[mefron] screw {index} placed in hole {hole}.", flush=True)
+        if screw_control.hole_index < len(config.SCREW_HOLES):
+            robot.present_screw(screw_control.hole_index)
+        else:
+            print("[mefron] all screw holes filled.", flush=True)
+
+    queue: list = []
+    _add_hover_descend_retract_leg(
+        queue, place_position, place_orientation, _on_place, config.SCREW_APPROACH_CLEARANCE
+    )
     return queue
 
 
@@ -656,22 +799,40 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 traceback.print_exc()
                 raise
             print(f"[debug] {arm['_name']}: queue built, {len(state['motion_queue'])} waypoints", flush=True)
-            cube_position, cube_orientation, _ = state["motion_queue"][0]
-            target.set_world_pose(position=cube_position, orientation=cube_orientation)
-            # Force the arrival-check below to (re-)plan this waypoint even if it happens to
-            # numerically coincide with wherever the last sequence left target_pose -- confirmed
-            # live: a tool-change queue's first waypoint (hover above the CURRENTLY docked tool's
-            # own rack) is derived from the same rack snapshot as that tool's own dock sequence's
-            # final retract waypoint, so they can be bit-identical. Without this, the "only re-plan
-            # if the target actually moved" check (correctly) sees no change and never calls
-            # plan_single -- but the queue only pops a waypoint once a plan COMPLETES, so it got
-            # stuck forever on waypoint 0, silently blocking every future tool-change request.
-            # (NaN would NOT work here -- NaN comparisons are always False in IEEE 754, so
-            # `norm(...) > threshold` would never trigger and this would permanently block
-            # re-planning instead of forcing it. A large-but-finite offset guarantees the delta
-            # check reads as "changed" reliably.)
-            state["target_pose"] = cube_position + 1.0e6
-            state["target_orientation"] = cube_orientation + 1.0e6
+            cube_position, cube_orientation = _start_motion_queue(state, target, state["motion_queue"])
+
+    # One-shot screw pick/place requests (config.SCREW_PICK_KEY/SCREW_PLACE_KEY), idle-gated exactly
+    # like the tool-change block above: each leg's weld side effect has to run at its own waypoint.
+    # Pick takes priority over a place pressed in the same window; the place just waits for the next
+    # idle frame rather than being dropped.
+    screw_control = arm.get("screw_control")
+    if screw_control is not None and state["cmd_plan"] is None and not state["motion_queue"]:
+        docked_tool = tool_changer_control.currently_docked_tool if tool_changer_control is not None else None
+        holes_left = screw_control.hole_index < len(config.SCREW_HOLES)
+        if screw_control.has_pending_pick_request():
+            screw_control.consume_pick_request()
+            if docked_tool != "screwdriver":
+                print(f"[mefron] {arm['_name']}: ignoring screw pick -- the screwdriver tool isn't docked.", flush=True)
+            elif screw_control.carried_screw_index is not None:
+                print(f"[mefron] {arm['_name']}: ignoring screw pick -- a screw is already on the bit.", flush=True)
+            elif not holes_left:
+                print(f"[mefron] {arm['_name']}: ignoring screw pick -- all screw holes are filled.", flush=True)
+            else:
+                cube_position, cube_orientation = _start_motion_queue(
+                    state, target, _build_screw_pick_queue(screw_control, ee_link_prim_path)
+                )
+        elif screw_control.has_pending_place_request():
+            screw_control.consume_place_request()
+            if docked_tool != "screwdriver":
+                print(f"[mefron] {arm['_name']}: ignoring screw place -- the screwdriver tool isn't docked.", flush=True)
+            elif screw_control.carried_screw_index is None:
+                print(f"[mefron] {arm['_name']}: ignoring screw place -- no screw on the bit.", flush=True)
+            elif not holes_left:
+                print(f"[mefron] {arm['_name']}: ignoring screw place -- all screw holes are filled.", flush=True)
+            else:
+                cube_position, cube_orientation = _start_motion_queue(
+                    state, target, _build_screw_place_queue(screw_control, ee_link_prim_path)
+                )
 
     sim_js = state["robot"].get_joints_state()
     if sim_js is None:
@@ -873,6 +1034,9 @@ def run_teleop_loop(
                 tool_changer_control = arm.get("tool_changer_control")
                 if tool_changer_control is not None:
                     tool_changer_control.reset()
+                screw_control = arm.get("screw_control")
+                if screw_control is not None:
+                    screw_control.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
             step_index = 0

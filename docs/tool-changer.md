@@ -200,7 +200,22 @@ next person extending this doesn't have to rediscover them:
    scale — but it's the wrong tool for anything composed against a prim that might, like a rack or
    fixture referenced from an mm-modeled CAD file.
 
-All eight confirmed by actually running the mechanism, not by reading docs
+9. **A waypoint queue can deadlock on waypoint 0 when the new first waypoint
+   numerically coincides with the previous sequence's last one.** A
+   tool-change queue's first waypoint (hover above the *currently* docked
+   tool's rack) is derived from the same rack snapshot as that tool's own
+   dock sequence's final retract waypoint, so they can be bit-identical.
+   `_step_arm()`'s "only re-plan if the target actually moved" check then
+   (correctly) sees no change and never calls `plan_single` — but the queue
+   only pops a waypoint once a plan *completes*, so it sat on waypoint 0
+   forever, silently blocking every future request. Fixed in
+   `teleop._start_motion_queue()` by offsetting the stored
+   `target_pose`/`target_orientation` by a large finite `+1.0e6`, forcing the
+   delta check to read as "changed". **NaN would not work**: IEEE 754 makes
+   every NaN comparison `False`, so `norm(...) > threshold` would never fire
+   and re-planning would be blocked permanently instead of forced.
+
+All nine confirmed by actually running the mechanism, not by reading docs
 — the first five via `scripts/test_mefron_tool_changer_headless.py`
 (which docks/undocks all 3 tools across two full swap cycles and asserts
 both the expected joint topology and that the tool's `female_coupler`
@@ -273,5 +288,114 @@ but no screw-driving control wired up yet")
   `dock_orientation_wxyz`) — baking it in later just means adding its own
   `baked_tool_prim_path`, no further code changes needed.
   `female_coupler_local_*` for all 3 remain unmeasured.
-- Screwdriver gets no new action key (matches its pre-ATC "mounted but
-  inert" state) — only dockability via numpad 3.
+## Screw pick-and-place (the screwdriver's own action keys)
+
+The screwdriver is no longer inert: with it docked, `config.SCREW_PICK_KEY`
+(number-row **5**) picks the presented screw and `SCREW_PLACE_KEY` (**6**)
+carries it to the next `main_holder` hole and leaves it there. **No
+screw-driving rotation** — deliberately out of scope, the fastener just gets
+deposited. Two keys rather than one cycle so the pick can be inspected before
+committing to the placement.
+
+### A screw is always joint-fixed to something
+
+Exactly the invariant `robot.park_tool_at_rack()` states for tools, which
+makes this whole feature a direct analogue of dock/undock — and means a screw
+can never free-fall, so it never depends on `main_holder`'s collider (whose
+convex-decomposition tuning is still an open issue):
+
+| Stage | Joint path | body0 | body1 |
+|---|---|---|---|
+| presented | `screw_<i>/presenter_joint` | `/World/screw_presenter` (non-physics anchor) | screw |
+| carried | `screw_<i>/tip_joint` | `panda_hand` | screw |
+| placed | `screw_<i>/hole_joint` | `hole_anchor_<i>` (non-physics anchor) | screw |
+
+Three rules, each inherited from a gotcha above:
+
+- **A distinct joint path per stage**, never redefined in place (gotcha 5).
+- **Zero-snap welds.** `_create_tool_fixed_joint()` defaults both local frames
+  to the bodies' own origins, so a joint only welds cleanly when the two
+  frames already coincide. The presenter and hole anchors are therefore
+  *placed at the screw's own live pose* — the same trick
+  `park_tool_at_rack()` uses. The tip joint can't use an anchor (a joint
+  whose body0 isn't a rigid body anchors to the **world**, frozen, so it
+  wouldn't follow the arm), so it instead passes a live-measured
+  `body0_local_*` from `compute_relative_pose(panda_hand, screw)`.
+- **body0 for the tip joint is `panda_hand`, not the docked tool prim.** The
+  tool prim carries a 0.001 `unitsResolve` scale, and whether PhysX reads a
+  joint's `localPos` in scaled or unscaled units is exactly the ambiguity
+  gotcha 8 warns about. `panda_hand` is a real rigid body at unit scale, and
+  the tool is rigidly welded to it, so the two are physically equivalent —
+  this just avoids the trap. `attach_surface_gripper_physics()` already
+  targets `panda_hand` the same way.
+
+The screw itself gets `RigidBodyAPI` plus an explicit `MassAPI` (2 g, small
+non-zero diagonal inertia — it has no colliders for PhysX to derive either
+from) and **no colliders at all**: nothing to fight the holder's mesh
+collider (gotcha 2), and nothing needs contact since every stage is
+joint-driven.
+
+### Two constants that are CAD-derived, not hand-jogged
+
+- **`SCREWDRIVER_TIP_LOCAL_POSITION` = 274.854 mm along the docked tool
+  root's local +Z.** `SCREWDRIVER_USD`'s own mesh points reach exactly that
+  z, and the geometry there is axisymmetric (x/y centroid 0.00, symmetric
+  ±6.99 mm 5 mm back from the tip), so the bit is on-axis. The asset's
+  female coupler head occupies local z 0→10 mm, confirming +Z runs
+  coupler→tip. Supersedes the `assembly` branch's guessed 265 mm
+  `panda_hand`-frame value.
+- **`SCREW_HOLES` = the four real mounting pockets.** `main_holder`'s
+  `tn__CutExtrude51..54` collider sub-meshes are 6.65 mm square, 20 mm deep,
+  entering at its top face (local z=0): centres `(±85.675, +57.955)` and
+  `(±85.675, −56.045)` mm. Identity `local_orientation_wxyz` on all four,
+  because `main_holder`'s own world rotation is already 180° about X, so a
+  screw's local +Z (its tip) comes out pointing down into the pocket.
+
+Both are stored in **metres**, matching `ASSEMBLY_RELATIONSHIPS`: these
+offsets are composed against `SingleXFormPrim.get_world_pose()`, which drops
+`main_holder`'s 0.001 scale (gotcha 8 again).
+
+`SCREW_CARRY_LOCAL_POSITION` is one screw-length past the tip with **identity**
+orientation — the placeholder screw asset's origin is its tip with the body
+running back along local −Z, so its +Z already agrees with the tool's and the
+head's outer face lands exactly on the bit tip with no twist.
+
+### Reach is the binding constraint
+
+The tool hangs 275 mm below the wrist, so a hole at world z≈0.99 needs the
+wrist at z≈1.277 — about 0.78 m from `MOUNT_POSITION` for the far pair
+(x≈3.229) against the Panda's ~0.855 m envelope. A 0.15 m hover (what the
+tool rack uses) would push those hover waypoints to ~0.874 m, **past reach**;
+hence `SCREW_APPROACH_CLEARANCE = 0.05` (worst hover ≈0.807 m).
+`test_mefron_screw_headless.py` prints each leg's distance from the mount and
+warns past the envelope. If `plan_single success=False` still appears for the
+far holes, the fix is scene layout — move `main_holder`/the jig closer via the
+GUI or the conveyor — or a smaller clearance, not code.
+
+### Presenter: the same baked-or-fallback duality as the tools
+
+`config.SCREW_PRESENTER_PRIM_PATH` (`/World/screw_presenter`) is a stand-in
+for the real screw presenter. If that prim already exists in `mefron.usd`
+(hand-placed in the GUI, per the `feedback_static_scenery_baked_into_scene`
+memory), its live pose wins and `SCREW_PRESENTER_FALLBACK_*` is ignored —
+identical to `TOOL_CHANGE_TARGETS`' `baked_tool_prim_path` vs
+`dock_position`. Its pose *is* the presented screw's pose (the ground truth a
+real presenter would define), which is why `grasp.compute_reference_world_pose()`
+had to be revived: the tool's pick pose is derived *from* it by inverse
+composition, not the other way round. The anchor is never deleted by the
+script, unlike everything under `SCREW_SCOPE_PRIM_PATH`, which
+`robot.clear_screws()` wipes every run.
+
+### Open issues specific to screws
+
+- **A placed screw is welded to a static world anchor, so it does not follow
+  `main_holder` if the jig moves afterward.** Accepted for now, and exactly
+  what `park_tool_at_rack()` already does for tools. Jointing directly to
+  `main_holder` (a real rigid body) would fix it but reintroduces the
+  scaled-body `localPos` ambiguity above — worth doing once that convention
+  is confirmed live.
+- **cuRobo has no collision awareness of the carried screw or the
+  presenter**, consistent with the tool-collision and
+  `attach_objects_to_robot()` open issues.
+- **`screw_m3.usd` is not real CAD** — two plain cylinders at M3 nominal
+  dimensions, standing in until a real fastener drawing exists.

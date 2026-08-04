@@ -69,9 +69,18 @@ coupler (`robot.attach_tool_changer_male_coupler()`), spawns and parks the
 gripper/suction/screwdriver tool at its own rack (`docs/tool-changer.md`).
 Once the matching tool is docked: J/B (via `config.GRASP_TARGETS`, NVIDIA
 Grasp Editor-exported poses) and C/O for the gripper, N/M (via
-`config.SUCTION_TARGETS`) and V/L for the suction cup; P places whichever
-was last grasped/approached either way. Opens `mefron.usd` directly via
-`open_stage()`.
+`config.SUCTION_TARGETS`) and V/L for the suction cup, 5/6 for the
+screwdriver; P places whichever was last grasped/approached either way.
+Opens `mefron.usd` directly via `open_stage()`.
+
+**Screws (screwdriver tool):** 5 picks the screw waiting on the placeholder
+presenter (`/World/screw_presenter`), 6 carries it to the next of
+`config.SCREW_HOLES`' four holes on `main_holder` and leaves it there, then
+pops the next screw in at the presenter. **No screw-driving rotation** —
+deliberately out of scope. A screw is always joint-fixed to something
+(presenter → wrist → hole), never free-falling, mirroring
+`park_tool_at_rack()`'s invariant for tools. The bit-tip offset and all four
+hole poses are CAD-derived, not hand-jogged — see `docs/tool-changer.md`.
 
 Pressing a grasp key also stages that object's yaml-specified finger widths
 onto `GripperKeyboardControl` and opens the gripper to pregrasp width — C/O
@@ -107,6 +116,12 @@ Current constants (`scripts/mefron_lib/config.py`):
   widths before any grasp key is pressed — each grasp key overrides them.
 - `OBSTACLE_PRIM_PATHS`: currently just `main_holder_jig`. Deliberately
   excludes the conveyor/container prims — see open issues.
+- `SCREW_HOLES`: the four real mounting pockets read out of `main_holder`'s own
+  CAD (its `tn__CutExtrude51..54` collider sub-meshes), in metres in its
+  scale-free frame. `SCREWDRIVER_TIP_LOCAL_POSITION` is likewise mesh-derived
+  (274.854mm along the docked tool's local +Z). `SCREW_PRESENTER_FALLBACK_*`
+  is the only placeholder here — override it by hand-placing
+  `/World/screw_presenter` in the GUI.
 - `TOOL_CHANGE_TARGETS`: dict keyed by tool name (`gripper`/`suction`/
   `screwdriver`), each holding its numpad `key`, `asset` (a USD path, or
   the literal `"hand_only"` meaning `robot.mount_franka_hand_only()`
@@ -150,9 +165,16 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   scoped to whichever tool is currently docked, rebuilt on the same
   Stop/Play cadence as the main arm's.
 - **ATC: cuRobo has no collision awareness of whichever tool is currently
-  docked**, and rack dock/approach poses plus `SURFACE_GRIPPER_LOCAL_POSITION`
-  are still placeholders pending hand-jog derivation — see
-  `docs/tool-changer.md`'s open issues for the full list.
+  docked** (nor of a carried screw), and rack dock/approach poses plus
+  `SURFACE_GRIPPER_LOCAL_POSITION` are still placeholders pending hand-jog
+  derivation — see `docs/tool-changer.md`'s open issues for the full list.
+- **Screws: reach is tight and placed screws don't follow the jig.** The
+  27.5cm screwdriver puts the far two holes ~0.78m from the mount against the
+  Panda's ~0.855m envelope, so `SCREW_APPROACH_CLEARANCE` is 0.05 (not the
+  rack's 0.15) and an unreachable hole is a scene-layout fix, not a code one.
+  A placed screw is welded to a static world anchor, so it stays behind if the
+  conveyor moves `main_holder` afterward — same limitation
+  `park_tool_at_rack()` has. Both in `docs/tool-changer.md`.
 
 ## Must-know gotchas
 

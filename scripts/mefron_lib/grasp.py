@@ -33,6 +33,19 @@ def compute_dependent_world_pose(reference_trans, reference_quat, relative_trans
     return trans, rot_matrices_to_quats(np.array([rot]))[0]
 
 
+def compute_reference_world_pose(dependent_trans, dependent_quat, relative_trans, relative_quat_wxyz):
+    """True inverse of compute_dependent_world_pose(): given the world pose a rigidly-offset CHILD
+    frame should end up at, plus that fixed offset, returns the pose the reference frame itself must
+    reach. Needed because a screw's presented/hole pose is the ground truth, while the tool holding
+    it is what actually gets driven there."""
+    from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
+
+    dep_rot, rel_rot = quats_to_rot_matrices(np.array([dependent_quat, relative_quat_wxyz]))
+    ref_rot = dep_rot @ rel_rot.T
+    ref_trans = np.array(dependent_trans) - ref_rot @ np.array(relative_trans)
+    return ref_trans, rot_matrices_to_quats(np.array([ref_rot]))[0]
+
+
 def compute_grasp_approach_pose_from_file(
     yaml_path: str,
     grasp_name: str,
@@ -138,6 +151,57 @@ def compute_tool_rack_return_target(tool_name: str):
         female_coupler_quat,
         config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION,
         config.TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ,
+    )
+
+
+def compute_screw_presenter_pose():
+    """The presented screw's own world pose -- read live off config.SCREW_PRESENTER_PRIM_PATH, so a
+    hand-placed presenter prim in mefron.usd is honored without touching config."""
+    # reset_xform_properties=False -- a hand-placed/CAD-referenced presenter can carry the same
+    # xformOp:scale:unitsResolve op the default would silently strip.
+    return SingleXFormPrim(
+        prim_path=config.SCREW_PRESENTER_PRIM_PATH, reset_xform_properties=False
+    ).get_world_pose()
+
+
+def compute_screw_hole_pose(hole_index: int):
+    """The world pose a screw's own frame should end up at for config.SCREW_HOLES[hole_index]:
+    main_holder's LIVE pose composed with that hole's local pose, then pushed
+    SCREW_HOLE_INSERTION_DEPTH along the hole's OWN +Z (not world -Z) so a re-oriented hole entry
+    still seats inward. Same live-relative principle as compute_part_target_pose()."""
+    hole = config.SCREW_HOLES[hole_index]
+    # reset_xform_properties=False -- main_holder carries an xformOp:scale:unitsResolve op; see
+    # compute_part_target_pose() above.
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
+    ).get_world_pose()
+    entry_trans, entry_quat = compute_dependent_world_pose(
+        mount_trans, mount_quat, hole["local_position"], hole["local_orientation_wxyz"]
+    )
+    return compute_dependent_world_pose(
+        entry_trans, entry_quat, [0.0, 0.0, config.SCREW_HOLE_INSERTION_DEPTH], [1.0, 0.0, 0.0, 0.0]
+    )
+
+
+def compute_ee_target_for_screw_pose(ee_link_prim_path: str, screw_trans, screw_quat):
+    """ee_link's target world pose for putting a screw carried on the bit at screw_trans/quat.
+    Two steps: SCREW_CARRY_LOCAL_* inverts to the docked tool root's required pose, then the LIVE
+    tool-root-to-ee_link offset (measured, not a constant -- so this stays right even though
+    TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_* is still a placeholder) converts that to ee_link's."""
+    from . import robot
+
+    # reset_xform_properties=False on the tool -- it carries an xformOp:scale:unitsResolve op.
+    tool_trans, tool_quat = SingleXFormPrim(
+        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+    ).get_world_pose()
+    ee_trans, ee_quat = SingleXFormPrim(prim_path=ee_link_prim_path, reset_xform_properties=False).get_world_pose()
+    ee_wrt_tool_trans, ee_wrt_tool_quat = compute_relative_pose(tool_trans, tool_quat, ee_trans, ee_quat)
+
+    target_tool_trans, target_tool_quat = compute_reference_world_pose(
+        screw_trans, screw_quat, config.SCREW_CARRY_LOCAL_POSITION, config.SCREW_CARRY_LOCAL_ORIENTATION_WXYZ
+    )
+    return compute_dependent_world_pose(
+        target_tool_trans, target_tool_quat, ee_wrt_tool_trans, ee_wrt_tool_quat
     )
 
 
