@@ -306,7 +306,7 @@ convex-decomposition tuning is still an open issue):
 
 | Stage | Joint path | body0 | body1 |
 |---|---|---|---|
-| presented | `screw_<i>/presenter_joint` | `/World/screw_presenter` (non-physics anchor) | screw |
+| presented | `screw_<i>/presenter_joint` | `presenter_anchor_<i>` (non-physics anchor) | screw |
 | carried | `screw_<i>/tip_joint` | `panda_hand` | screw |
 | placed | `screw_<i>/hole_joint` | `hole_anchor_<i>` (non-physics anchor) | screw |
 
@@ -379,12 +379,25 @@ for the real screw presenter. If that prim already exists in `mefron.usd`
 (hand-placed in the GUI, per the `feedback_static_scenery_baked_into_scene`
 memory), its live pose wins and `SCREW_PRESENTER_FALLBACK_*` is ignored —
 identical to `TOOL_CHANGE_TARGETS`' `baked_tool_prim_path` vs
-`dock_position`. Its pose *is* the presented screw's pose (the ground truth a
-real presenter would define), which is why `grasp.compute_reference_world_pose()`
-had to be revived: the tool's pick pose is derived *from* it by inverse
-composition, not the other way round. The anchor is never deleted by the
-script, unlike everything under `SCREW_SCOPE_PRIM_PATH`, which
+`dock_position`. Its pose composed with `SCREW_PRESENTER_SEAT_LOCAL_*` *is* the
+presented screw's pose (the ground truth a real presenter would define), which
+is why `grasp.compute_reference_world_pose()` had to be revived: the tool's pick
+pose is derived *from* it by inverse composition, not the other way round. The
+presenter prim is never deleted by the script, unlike everything under
+`SCREW_SCOPE_PRIM_PATH` (including the per-screw `presenter_anchor_<i>`), which
 `robot.clear_screws()` wipes every run.
+
+As of the CAD presenter baked in by commit 621bad4, the prim origin is **not**
+the seat: `robots/accessories/screw presenter.usd` is 126 × 216 × 153 mm with
+its origin at the base-plate centre, so `SCREW_PRESENTER_SEAT_LOCAL_POSITION`
+carries the seat offset — `(6.66, -86.00, 72.00)` mm in the presenter's own
+scale-free frame, stored in metres like `SCREW_HOLES`. That prim's baked
+`xformOp:orient` is identity, which would present the screw head-down, so
+`SCREW_PRESENTER_SEAT_LOCAL_ORIENTATION_WXYZ` carries the 180°-about-X flip
+(GUI-verified) that puts the tip in the seat and the head up. Without it the
+pick pose put the tool root ~0.29 m *below* the seat, inside the table; with it
+the wrist sits at z≈1.253, 0.772 m from `MOUNT_POSITION` — inside the ~0.855 m
+envelope, ~0.80 m once `SCREW_APPROACH_CLEARANCE` hovers above it.
 
 ### Open issues specific to screws
 

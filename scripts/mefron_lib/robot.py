@@ -653,6 +653,10 @@ def _screw_hole_anchor_path(index: int) -> str:
     return f"{config.SCREW_SCOPE_PRIM_PATH}/hole_anchor_{index}"
 
 
+def _screw_presenter_anchor_path(index: int) -> str:
+    return f"{config.SCREW_SCOPE_PRIM_PATH}/presenter_anchor_{index}"
+
+
 def clear_screws() -> None:
     """Deletes the whole script-owned screw scope, so a run never inherits screws from a previous
     one. Needed for the same reason clear_stray_robot_prims() is: the URDF importer rewrites
@@ -716,11 +720,14 @@ def present_screw(index: int) -> str:
     mass_api.CreateMassAttr().Set(config.SCREW_MASS)
     mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*config.SCREW_DIAGONAL_INERTIA))
 
-    # Both frames default to their own origins, and the presenter anchor IS the screw's own pose, so
-    # this welds with zero snap -- exactly how park_tool_at_rack() avoids one.
-    _create_tool_fixed_joint(
-        _screw_presenter_joint_path(index), config.SCREW_PRESENTER_PRIM_PATH, screw_prim_path
-    )
+    # Anchor at the seat pose, not the presenter prim itself: identity local frames on both sides
+    # then weld with zero snap (as weld_screw_into_hole() does), and body0 stays clear of the
+    # presenter's 0.001 unitsResolve scale -- docs/tool-changer.md's gotcha 8. Either way body0 isn't
+    # a rigid body, so the screw is anchored to the world.
+    anchor_path = _screw_presenter_anchor_path(index)
+    stage.DefinePrim(anchor_path, "Xform")
+    SingleXFormPrim(prim_path=anchor_path).set_world_pose(position=presenter_trans, orientation=presenter_quat)
+    _create_tool_fixed_joint(_screw_presenter_joint_path(index), anchor_path, screw_prim_path)
     return screw_prim_path
 
 

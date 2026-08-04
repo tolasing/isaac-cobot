@@ -258,11 +258,19 @@ SCREW_CARRY_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # TOOL_CHANGE_TARGETS' baked_tool_prim_path/dock_position: if this prim already exists in mefron.usd
 # (hand-placed in the GUI), its live world pose wins and the fallback below is ignored entirely.
 SCREW_PRESENTER_PRIM_PATH = "/World/screw_presenter"
-# This anchor's pose IS the presented screw's pose (tip at the table surface, head up -- the
-# orientation a real presenter holds a screw in). Free table: parts sit at y <= -5.20, main_holder at
-# y >= -4.90, and it puts the wrist ~0.59m from MOUNT_POSITION, well inside the Panda's envelope.
-SCREW_PRESENTER_FALLBACK_POSITION = [2.90, -5.05, 0.905]
+# The prim's ORIGIN pose, not the screw's -- SCREW_PRESENTER_SEAT_LOCAL_* below composes on top.
+# Chosen so the composed screw still lands at [2.90, -5.05, 0.905] (free table: parts sit at
+# y <= -5.20, main_holder at y >= -4.90), putting the wrist ~0.59m from MOUNT_POSITION.
+SCREW_PRESENTER_FALLBACK_POSITION = [2.89334, -4.964, 0.977]
 SCREW_PRESENTER_FALLBACK_ORIENTATION_WXYZ = [0.0, 1.0, 0.0, 0.0]
+# Where the presenter actually holds the screw, in ITS own scale-free local frame -- metres, same
+# convention as SCREW_HOLES. The baked CAD presenter's prim origin is its base-plate centre, ~72mm
+# below the seat, so this offset is what makes the pose a screw pose rather than a base-plate pose.
+SCREW_PRESENTER_SEAT_LOCAL_POSITION = [0.00666, -0.086, 0.072]
+# 180 deg about X (GUI-verified): the screw asset's origin is its TIP with the body running back
+# along local -Z, so this points the tip down into the seat and the head UP, where a bit descending
+# from above can reach it. Identity presented it head-down. Same rotation the old fallback used.
+SCREW_PRESENTER_SEAT_LOCAL_ORIENTATION_WXYZ = [0.0, 1.0, 0.0, 0.0]
 
 SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder"
 # The four REAL mounting pockets, read straight out of main_holder's own CAD: its

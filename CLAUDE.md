@@ -119,9 +119,12 @@ Current constants (`scripts/mefron_lib/config.py`):
 - `SCREW_HOLES`: the four real mounting pockets read out of `main_holder`'s own
   CAD (its `tn__CutExtrude51..54` collider sub-meshes), in metres in its
   scale-free frame. `SCREWDRIVER_TIP_LOCAL_POSITION` is likewise mesh-derived
-  (274.854mm along the docked tool's local +Z). `SCREW_PRESENTER_FALLBACK_*`
-  is the only placeholder here — override it by hand-placing
-  `/World/screw_presenter` in the GUI.
+  (274.854mm along the docked tool's local +Z). `/World/screw_presenter` is now
+  a real CAD asset baked into `mefron.usd`, so its live pose wins and
+  `SCREW_PRESENTER_FALLBACK_*` is unused on this scene;
+  `SCREW_PRESENTER_SEAT_LOCAL_POSITION` = `(6.66, -86.00, 72.00)`mm is where that
+  presenter holds the screw, since the prim origin is its base plate, with a
+  180°-about-X seat orientation so the head faces up.
 - `TOOL_CHANGE_TARGETS`: dict keyed by tool name (`gripper`/`suction`/
   `screwdriver`), each holding its numpad `key`, `asset` (a USD path, or
   the literal `"hand_only"` meaning `robot.mount_franka_hand_only()`

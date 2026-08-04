@@ -155,13 +155,20 @@ def compute_tool_rack_return_target(tool_name: str):
 
 
 def compute_screw_presenter_pose():
-    """The presented screw's own world pose -- read live off config.SCREW_PRESENTER_PRIM_PATH, so a
-    hand-placed presenter prim in mefron.usd is honored without touching config."""
+    """The presented screw's own world pose: the live presenter prim's pose composed with
+    SCREW_PRESENTER_SEAT_LOCAL_*, since the prim origin is the CAD base plate, not the seat. Read
+    live so a hand-placed presenter in mefron.usd is honored without touching config."""
     # reset_xform_properties=False -- a hand-placed/CAD-referenced presenter can carry the same
     # xformOp:scale:unitsResolve op the default would silently strip.
-    return SingleXFormPrim(
+    presenter_trans, presenter_quat = SingleXFormPrim(
         prim_path=config.SCREW_PRESENTER_PRIM_PATH, reset_xform_properties=False
     ).get_world_pose()
+    return compute_dependent_world_pose(
+        presenter_trans,
+        presenter_quat,
+        config.SCREW_PRESENTER_SEAT_LOCAL_POSITION,
+        config.SCREW_PRESENTER_SEAT_LOCAL_ORIENTATION_WXYZ,
+    )
 
 
 def compute_screw_hole_pose(hole_index: int):
