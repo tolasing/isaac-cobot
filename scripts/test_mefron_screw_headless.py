@@ -244,6 +244,22 @@ def main() -> None:
         not stage.GetPrimAtPath(robot._screw_tip_joint_path(0)).IsValid(),
     )
 
+    # Regression, the place-side twin of the carry check above: welding the arm's settled pose left
+    # screws ~2-3mm out in x/y and ~5mm too deep in main_holder's own frame. Adding the insertion
+    # depth straight onto local_position is exact only while every hole's orientation is identity.
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
+    ).get_world_pose()
+    placed_local_trans, _ = grasp.compute_relative_pose(mount_trans, mount_quat, *_screw_pose(0))
+    want_local = np.array(config.SCREW_HOLES[0]["local_position"]) + np.array(
+        [0.0, 0.0, config.SCREW_HOLE_INSERTION_DEPTH]
+    )
+    hole_error = float(np.linalg.norm(placed_local_trans - want_local))
+    _check(
+        f"placed screw 0 seats at hole 0's nominal pose in main_holder's frame (err={hole_error:.5f}m)",
+        hole_error < _CARRY_TOLERANCE,
+    )
+
     moved = _move_arm(simulation_app, 1)
     _check(f"the arm actually moved away before the stay check (hand moved {moved:.4f}m)", moved > _MIN_ARM_MOVEMENT)
     placed_trans_after, _ = _screw_pose(0)

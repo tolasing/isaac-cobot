@@ -775,25 +775,31 @@ def attach_screw_to_wrist(index: int, robot_prim_path: str = config.ROBOT_PRIM_P
 
 def weld_screw_into_hole(index: int, hole_index: int) -> None:
     """Releases a carried screw into its hole -- the "drop" half, and the analogue of
-    undock_tool_to_rack(): the screw leaves the wrist for a static anchor at its own current pose,
-    never free-falling. Also re-authors the screw's own USD xform, so a Stop restores it AT the hole
-    instead of snapping back to wherever it was first spawned."""
+    undock_tool_to_rack(): the screw leaves the wrist for a static anchor, never free-falling. Seats
+    it at the hole's own nominal pose, not the arm's -- see below. Also re-authors the screw's own USD
+    xform, so a Stop restores it AT the hole instead of snapping back to where it was first spawned."""
     stage = omni.usd.get_context().get_stage()
+    from .grasp import compute_screw_hole_pose
+
     screw_prim_path = _screw_prim_path(index)
     tip_joint_path = _screw_tip_joint_path(index)
     if stage.GetPrimAtPath(tip_joint_path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[tip_joint_path])
         omni.kit.app.get_app().update()
 
+    # The hole's nominal pose (main_holder's LIVE pose + SCREW_HOLES[hole_index] + insertion depth),
+    # not wherever the arm settled: welding the live pose left placed screws 2-3mm out in x/y and
+    # ~5mm too deep, measured by reparenting them under main_holder. A real screw is constrained by
+    # the pocket, not by the arm's accuracy -- same reasoning as attach_screw_to_wrist()'s weld.
+    screw_trans, screw_quat = compute_screw_hole_pose(hole_index)
     screw_xform = SingleXFormPrim(prim_path=screw_prim_path, reset_xform_properties=False)
-    screw_trans, screw_quat = screw_xform.get_world_pose()
     screw_xform.set_world_pose(position=screw_trans, orientation=screw_quat)
 
     anchor_path = _screw_hole_anchor_path(hole_index)
     stage.DefinePrim(anchor_path, "Xform")
     SingleXFormPrim(prim_path=anchor_path).set_world_pose(position=screw_trans, orientation=screw_quat)
-    # Anchor placed at the screw's own live pose, so identity local frames on both sides weld with
-    # zero snap. A static world anchor, not main_holder itself: see docs/tool-changer.md for why.
+    # Anchor placed at that same pose, so identity local frames on both sides weld with zero snap. A
+    # static world anchor, not main_holder itself: see docs/tool-changer.md for why.
     _create_tool_fixed_joint(_screw_hole_joint_path(index), anchor_path, screw_prim_path)
 
 
