@@ -639,6 +639,125 @@ Omniverse License Agreement content-pack terms (same as `assets/mefron/`).
 Now effectively dormant along with `mefron2.py` itself, kept only because
 that script still references it.
 
+## Contact vibration on gripper approach (friction thresholds)
+
+**Symptom**: as arm 1's gripper carries `finger_print_scanner` toward
+`main_holder` to place it, `main_holder` and the surrounding
+scanner-assembly parts vibrate violently — "as if reacting to the
+gripper's approach", i.e. visibly *before* real contact.
+
+Everything below was measured off the live asset via two read-only
+headless probes under the full experience kit, plus this install's own
+`PhysxSchema` `schema.usda` — not inferred.
+
+### Two plausible causes ruled out first
+
+- **Solver iterations were already raised, twice.** `mefron.usd` ships a
+  `/PhysicsScene` (capital P) authored with
+  `minPositionIterationCount=8`, `minVelocityIterationCount=2`,
+  `enableStabilization=True`, `bounceThreshold=0.2` — set by `abbe511`,
+  whose own message names this exact symptom ("reduce jitter on
+  approach/place/retreat near `main_holder`"). On top of that, *every*
+  assembly part already carries per-body
+  `solverPositionIterationCount=16`, 4× the PhysX default of 4. A
+  repo-wide grep for `PhysxSchema`/`solverPositionIteration` finds
+  nothing, which makes this look untried — it isn't, the tuning just
+  lives inside a binary `.usd` where git can't show it. That invisibility
+  is itself why the new tuning went into `config.py`/`robot.py` instead.
+- **Contact/rest offset were not misconfigured.** Every collider has
+  `physxCollision:contactOffset = -inf` and `restOffset = -inf`. The
+  schema defines `-inf` as "default is picked by the simulation based on
+  the shape extent" and, for rest offset, "the simulation sets a suitable
+  value. For rigid bodies, this value is zero." So contact offset already
+  auto-scales per shape and rest offset is already 0. Isaac Sim's own
+  collider docs warn a **too-small** contact offset causes "jittering or
+  missed contacts or even tunneling" — hardcoding a small value here
+  could have made the symptom worse, so it's deliberately left alone.
+
+### Actual root cause
+
+Two `PhysxSceneAPI` parameters are **absolute distances that do not scale
+with object size**, and both were at their stock unauthored defaults:
+
+- `physxScene:frictionOffsetThreshold` = `0.04` — "A threshold of contact
+  separation distance used to decide if a contact point will experience
+  friction forces."
+- `physxScene:frictionCorrelationDistance` = `0.025` — "used to decide
+  whether contacts are close enough to be merged into a single friction
+  anchor point or not."
+
+Measured world-space part sizes: `screen` **5.75mm** thick,
+`backpanel_support` 12mm, `PCB_Assembly` 20mm, `main_holder` **22mm**,
+all 6–25cm across. So friction forces were being computed across up to
+**4cm of separation** — the gripper pulls on `main_holder` and its
+neighbours while still centimetres away, which is the reported symptom
+verbatim. And every contact within **2.5cm** collapsed into one friction
+anchor, so on a 22mm part the whole friction force acted through a single
+jumping anchor point. NVIDIA's guidance for the first parameter is
+explicit: decrease it when simulating very small objects.
+
+Secondary contributors, also measured: `timeStepsPerSecond=60`
+(unauthored default) against a 10000 N/m position-driven finger and
+7.9g–340g parts; `sleepThreshold=0.0` on every part, so nothing can ever
+sleep and micro-jitter integrates forever; `linearDamping=0.0`/
+`angularDamping=0.05` on every part **except** `/World/screen`, already
+hand-set to `1.0/1.0` — evidence this was being fought part-by-part;
+`minVelocityIterationCount=2`, the one iteration lever never raised
+(PhysX prescribes raising *velocity* iterations when bodies are
+"depenetrated too violently").
+
+Confirmed healthy and left alone: `enableGPUDynamics=True`,
+`broadphaseType=GPU`, `solverType=TGS` (so the parts' `sdf` colliders are
+properly supported — SDF needs the GPU pipeline), and the resting
+surface: the parts sit on `ConveyorBelt_*/Belt`, already
+`kinematic=True`. At-rest baseline with no robot in the scene: max
+per-frame position step **9e-6 m**, angular velocity ~**1e-3 rad/s** —
+the scene is stable until the gripper arrives, consistent with a
+proximity-triggered friction cause rather than a resting-contact one.
+
+### Fix
+
+Two runtime-only functions in `robot.py`, kept separate so the
+scene-level and per-part halves can be A/B'd, following
+`apply_gripper_friction()`/`stiffen_gripper_drive()`'s convention
+(constants in `config.py`, re-applied every run, never saved into
+`mefron.usd`): `tune_physics_scene()` and
+`tune_assembly_part_stability()`, both called from `mefron.py`'s `main()`
+before any `timeline.play()`.
+
+`tune_physics_scene()` resolves the *existing* scene prim rather than
+assuming a path — `mefron.usd`'s is `/PhysicsScene` but
+`run_teleop_loop()`'s fallback creates `/physicsScene`, and authoring a
+second scene prim leaves PhysX picking one arbitrarily.
+
+Regression test: `scripts/test_mefron_contact_stability_headless.py`
+parks the gripper at both the grasp and the placement pose and measures
+each part's per-frame position delta and angular velocity, with
+thresholds (1e-3 m/frame, 0.5 rad/s) set ~100× above the measured noise
+floor above. `--no-tuning` captures the pre-fix baseline for comparison.
+
+`PHYSICS_TIME_STEPS_PER_SECOND` is deliberately pinned at the stock `60`
+rather than raised, even though a higher rate would genuinely help
+stiff-finger-vs-light-part contact: `mefron.py` sets
+`/app/player/useFixedTimeStepping`, so each `update()` advances physics
+by exactly one step — doubling the rate to 120 would halve the sim-time
+each frame covers, i.e. run the whole sim at half speed. It's authored
+explicitly anyway so the value is git-visible and one edit to raise.
+Note also that `ASSEMBLY_PART_LINEAR_DAMPING` applies to
+`main_holder_jig`, which the belt pushes by friction — its terminal
+conveyor speed drops (it still reaches `ConveyorControl`'s target, just
+slower).
+
+If it regresses, in order: raise `PHYSICS_MIN_VELOCITY_ITERATIONS`; raise
+`PHYSICS_TIME_STEPS_PER_SECOND` to 120 and accept the half-speed cost
+above; A/B `enableStabilization` off (authored `True` in `mefron.usd`
+though the schema default is `False`); raise `stabilizationThreshold` off
+its 1e-5 default; then the structural option — fixed-joint `main_holder` to
+`main_holder_jig` (physically correct, it's clamped in a jig) to remove
+the dynamic-on-dynamic SDF contact stack, or raise `sdfResolution` on
+`screen`, whose 5.75mm thickness spans only ~8 SDF voxels at the default
+256.
+
 ## `main_holder` convex-decomposition collision tuning
 
 **Researched and confirmed against this Isaac Sim install's actual
@@ -665,9 +784,16 @@ real schema files, not memory) confirmed:
   volume-error-driven clustering step.
 - `main_holder`'s actual collider prim (confirmed via headless
   inspection, not assumed by analogy):
-  `/World/Factory/main_holder/tn__mainholder_kA` — `approximation` is
-  `convexHull` on-disk in `mefron.usd` as of this check (any live GUI
+  `/World/Factory/main_holder/tn__mainholder_kA` — `approximation` was
+  `convexHull` on-disk in `mefron.usd` as of that check (any live GUI
   edit to `convexDecomposition` is session-local until saved).
+  **Superseded — re-measured during the contact-vibration investigation
+  above**: every collision mesh under `/World/main_holder` (and under
+  every other scanner-assembly part) is now `approximation = "sdf"`,
+  saved into `mefron.usd`, with `sdfResolution` at the 256 default (300
+  on `main_holder_jig`). So this whole convex-decomposition entry is
+  historical: the sinking/stud-loss tradeoff it describes no longer
+  applies, because the collider isn't a decomposition any more.
 - Recommended values, given to the user as a GUI walkthrough, **not**
   implemented in code — deliberately: the user pushed back on hardcoding
   per-part collision tuning as not scalable, and this is an

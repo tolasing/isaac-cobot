@@ -12,7 +12,7 @@ import omni.kit.app
 import omni.kit.commands
 import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdPhysics
 
 from import_cr5 import import_cr5
 
@@ -498,3 +498,57 @@ def stiffen_gripper_drive(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
         drive = UsdPhysics.DriveAPI.Apply(joint_prim, "linear")
         drive.CreateStiffnessAttr().Set(config.GRIPPER_DRIVE_STIFFNESS)
         drive.CreateDampingAttr().Set(config.GRIPPER_DRIVE_DAMPING)
+
+
+def _resolve_physics_scene():
+    """Returns the stage's existing PhysicsScene prim, defining /physicsScene only if there is none.
+    mefron.usd ships one at /PhysicsScene (capital P) -- assuming a path here would author a SECOND
+    scene prim, and PhysX then picks one arbitrarily. Same either-casing check teleop.run_teleop_loop() does."""
+    stage = omni.usd.get_context().get_stage()
+    for path in ("/PhysicsScene", "/physicsScene"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            return prim
+    for prim in stage.Traverse():
+        if prim.IsA(UsdPhysics.Scene):
+            return prim
+    return UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+
+
+def tune_physics_scene() -> None:
+    """Shrinks the scene's friction thresholds to match the scanner-assembly parts' real size, raises
+    velocity iterations, and pins the physics rate. Runtime-only like apply_gripper_friction(), so it
+    overrides whatever mefron.usd authored. See config's own comments and docs/mefron-history.md."""
+    scene_prim = _resolve_physics_scene()
+    physx_scene = PhysxSchema.PhysxSceneAPI.Apply(scene_prim)
+    physx_scene.CreateFrictionOffsetThresholdAttr().Set(config.PHYSICS_FRICTION_OFFSET_THRESHOLD)
+    physx_scene.CreateFrictionCorrelationDistanceAttr().Set(config.PHYSICS_FRICTION_CORRELATION_DISTANCE)
+    physx_scene.CreateMinVelocityIterationCountAttr().Set(config.PHYSICS_MIN_VELOCITY_ITERATIONS)
+    physx_scene.CreateTimeStepsPerSecondAttr().Set(config.PHYSICS_TIME_STEPS_PER_SECOND)
+    print(
+        f"[mefron_lib] tuned {scene_prim.GetPath()}: "
+        f"frictionOffsetThreshold={config.PHYSICS_FRICTION_OFFSET_THRESHOLD} "
+        f"frictionCorrelationDistance={config.PHYSICS_FRICTION_CORRELATION_DISTANCE} "
+        f"minVelocityIterations={config.PHYSICS_MIN_VELOCITY_ITERATIONS} "
+        f"timeStepsPerSecond={config.PHYSICS_TIME_STEPS_PER_SECOND}",
+        flush=True,
+    )
+
+
+def tune_assembly_part_stability() -> None:
+    """Damps the assembly parts and lets them actually sleep once settled -- their live sleepThreshold
+    is 0.0 (never sleeps) and only /World/screen had any damping. Runtime-only, re-applied every run."""
+    stage = omni.usd.get_context().get_stage()
+    for part_path in config.ASSEMBLY_PART_PRIM_PATHS:
+        prim = stage.GetPrimAtPath(part_path)
+        if not prim.IsValid():
+            print(f"[mefron_lib] WARNING: {part_path} not found -- skipping stability tuning.", flush=True)
+            continue
+        if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            print(f"[mefron_lib] WARNING: {part_path} has no RigidBodyAPI -- skipping stability tuning.", flush=True)
+            continue
+        physx_body = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+        physx_body.CreateLinearDampingAttr().Set(config.ASSEMBLY_PART_LINEAR_DAMPING)
+        physx_body.CreateAngularDampingAttr().Set(config.ASSEMBLY_PART_ANGULAR_DAMPING)
+        physx_body.CreateSleepThresholdAttr().Set(config.ASSEMBLY_PART_SLEEP_THRESHOLD)
+        physx_body.CreateMaxDepenetrationVelocityAttr().Set(config.ASSEMBLY_PART_MAX_DEPENETRATION_VELOCITY)

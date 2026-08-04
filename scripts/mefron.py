@@ -61,6 +61,12 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
+    # Before any timeline.play(): both author physics properties PhysX only reads when it builds its
+    # scene. tune_physics_scene() also settles which PhysicsScene prim is the live one, so
+    # run_teleop_loop()'s own /physicsScene fallback can never fire with an untuned scene.
+    robot.tune_physics_scene()
+    robot.tune_assembly_part_stability()
+
     robot.mount_franka()
     robot.apply_gripper_friction()
     robot.stiffen_gripper_drive()

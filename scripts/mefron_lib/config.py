@@ -110,6 +110,42 @@ GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 200.0
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
+# PhysX scene contact tuning, applied by robot.tune_physics_scene(). frictionOffsetThreshold and
+# frictionCorrelationDistance are ABSOLUTE distances that don't scale with part size -- their 0.04/
+# 0.025 stock defaults are 2-7x the thickness of every scanner-assembly part, so friction was being
+# applied across up to 4cm of separation. Full measurements: docs/mefron-history.md.
+PHYSICS_FRICTION_OFFSET_THRESHOLD = 0.002
+PHYSICS_FRICTION_CORRELATION_DISTANCE = 0.001
+# The one iteration lever never raised here -- position iterations are already 16 per body (authored
+# in mefron.usd, see docs/mefron-history.md), so deliberately not touched.
+PHYSICS_MIN_VELOCITY_ITERATIONS = 4
+# Stock 60, authored anyway so it's git-visible and one edit to raise. Raising it helps stiff-finger-
+# vs-light-part contact, but mefron.py sets /app/player/useFixedTimeStepping (one step per update()),
+# so 120 would halve the sim-time each frame covers -- i.e. run the whole sim at half speed. Only
+# worth that cost if the friction thresholds above prove insufficient alone.
+PHYSICS_TIME_STEPS_PER_SECOND = 60
+
+# Per-part stability, applied by robot.tune_assembly_part_stability(). Matches what was already
+# hand-set on /World/screen alone, so no part gets its damping lowered. Caveat: main_holder_jig is
+# the body the belt pushes by friction, so linear damping lowers its terminal speed -- it still
+# reaches ConveyorControl's target, just slower. Check belt travel if that matters.
+ASSEMBLY_PART_LINEAR_DAMPING = 1.0
+ASSEMBLY_PART_ANGULAR_DAMPING = 1.0
+# Live value is 0.0 on every part == can never sleep, so settled parts jitter forever. This is the
+# PhysxRigidBodyAPI schema default.
+ASSEMBLY_PART_SLEEP_THRESHOLD = 5.0e-5
+ASSEMBLY_PART_MAX_DEPENETRATION_VELOCITY = 1.0
+# The scanner-assembly parts plus their fixture -- same prim paths already used by
+# ASSEMBLY_RELATIONSHIPS/HIGH_FRICTION_PRIM_PATHS/OBSTACLE_PRIM_PATHS above.
+ASSEMBLY_PART_PRIM_PATHS = [
+    "/World/main_holder",
+    "/World/main_holder_jig",
+    "/World/finger_print_scanner",
+    "/World/screen",
+    "/World/backpanel_support",
+    "/World/PCB_Assembly_color_fixed",
+]
+
 # Grasp Editor-exported grasp-approach poses + per-object finger widths, keyed by object name and
 # wired to a keyboard key in teleop.build_gripper_keyboard_control(). "key" is a carb.input.KeyboardInput
 # attribute name (resolved via getattr in teleop.py, since this module stays free of omni/curobo imports).

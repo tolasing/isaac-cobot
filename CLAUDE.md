@@ -44,7 +44,8 @@ on real hardware.
   `test_mefron_*_headless.py`): `kit_bootstrap.py` (packaging preload +
   stale-config cleanup, stdlib-only so it's safe to import before
   `SimulationApp` exists), `config.py` (all constants), `grasp.py` (pose
-  math), `robot.py` (mount/friction/drive), `teleop.py` (keyboard control +
+  math), `robot.py` (mount/friction/drive + PhysX contact tuning),
+  `teleop.py` (keyboard control +
   `run_teleop_loop()`). `mefron2.py` (dormant/superseded, see below) keeps
   its own diverged copies of everything except the packaging-preload block.
 
@@ -170,8 +171,22 @@ Currently open issues (see the linked docs for full diagnosis):
   carried-object collision awareness) is not yet wired to the C/O keys —
   `franka.yml` already has a spare `attached_object` link ready for it.
 - `main_holder`'s convex-decomposition collision tuning (fixes sinking +
-  lost mounting studs) is researched but not yet applied/saved to
-  `mefron.usd` — see `docs/mefron-history.md`.
+  lost mounting studs) was researched but is now **historical** — every
+  scanner-assembly part's collider is `approximation = "sdf"` in
+  `mefron.usd` as of a 2026-08-03 re-measurement, not a convex
+  decomposition at all. See `docs/mefron-history.md`.
+- **Contact vibration on gripper approach — fixed, pending live GUI
+  confirmation.** `main_holder` and its neighbours shook as the gripper
+  came near. Root cause was NOT solver iterations (already 16 per body)
+  or contact offset (auto-sized from shape extent via the `-inf`
+  sentinel): it was `physxScene:frictionOffsetThreshold` (0.04) and
+  `frictionCorrelationDistance` (0.025) — absolute distances that don't
+  scale with part size, against parts only 5.75–22mm thick, so friction
+  was applied across up to 4cm of separation. Fixed by
+  `robot.tune_physics_scene()` / `robot.tune_assembly_part_stability()`;
+  measured by `scripts/test_mefron_contact_stability_headless.py`
+  (`--no-tuning` captures the pre-fix baseline). Full detail:
+  `docs/mefron-history.md`.
 - **Conveyor line has no collision awareness yet.** The new
   `ConveyorBelt_*`/`container_h20*` prims (added when the packing table
   became a conveyor line) are deliberately left out of
