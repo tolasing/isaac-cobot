@@ -253,11 +253,12 @@ but no screw-driving control wired up yet")
   coupler is a follow-up, consistent with the existing (separately
   tracked) `attach_objects_to_robot()` open issue in CLAUDE.md.
 - **Suction and screwdriver are now baked directly into `mefron.usd` via
-  the GUI** (`/World/tool_rack/suction_gripper_with_tool_female`,
-  `/World/tool_rack/electric_screwdriver_with_tool_female` — see
+  the GUI** (`/World/suction_gripper_with_tool_female`,
+  `/World/electric_screwdriver_with_tool_female` — direct children of
+  `/World`, not of `tool_rack`, confirmed live — see
   `feedback_static_scenery_baked_into_scene` memory), the same way
-  `tool_rack`/`main_holder` are: hand-placed as real children of
-  `TOOL_RACK_PRIM_PATH` and saved, no Python position constants at all.
+  `tool_rack`/`main_holder` are: hand-placed and saved, no Python position
+  constants at all.
   `config.TOOL_CHANGE_TARGETS[tool]["baked_tool_prim_path"]` points at the
   baked prim; `robot.spawn_dockable_tool()` never references or
   repositions it, only reads its live pose. `rack_prim_path` for these two
