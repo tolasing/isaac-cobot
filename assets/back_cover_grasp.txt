@@ -1,0 +1,33 @@
+# ===== mefron: main_holder_back_cover T_H_S probe (read-only) =====
+import numpy as np
+import omni.usd
+from pxr import Usd, UsdGeom, Gf
+from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
+
+MOUNT_PRIM_PATH = "/World/main_holder"
+PART_PRIM_PATH  = "/World/main_holder_back_cover"  # adjust to whatever name it actually landed as
+
+stage = omni.usd.get_context().get_stage()
+
+def world_pose(path):
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        raise RuntimeError(f"no prim at {path}")
+    t = Gf.Transform(UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()))
+    pos = np.array(t.GetTranslation())
+    q = t.GetRotation().GetQuat()
+    quat_wxyz = np.array([q.GetReal(), *q.GetImaginary()])
+    return pos, quat_wxyz
+
+mount_trans, mount_quat = world_pose(MOUNT_PRIM_PATH)
+part_trans, part_quat = world_pose(PART_PRIM_PATH)
+
+mount_rot, part_rot = quats_to_rot_matrices(np.array([mount_quat, part_quat]))
+rel_rot = mount_rot.T @ part_rot
+rel_trans = mount_rot.T @ (part_trans - mount_trans)
+rel_quat = rot_matrices_to_quats(np.array([rel_rot]))[0]
+
+print(f"[probe] main_holder world pose: pos={list(mount_trans)} quat_wxyz={list(mount_quat)}")
+print(f"[probe] back_cover world pose:  pos={list(part_trans)} quat_wxyz={list(part_quat)}")
+print(f"[probe] local_position={list(rel_trans)}")
+print(f"[probe] local_orientation_wxyz={list(rel_quat)}")
