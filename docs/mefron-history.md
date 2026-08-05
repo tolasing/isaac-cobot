@@ -1070,6 +1070,53 @@ plus `Usd.PrimRange` walks tagging which prims actually carry
 cause became obvious from that output in a way it wasn't from reasoning
 about USD Physics semantics alone.
 
+## Screw pick-and-place — weld-to-live-pose bug (ATC branch)
+
+`attach_screw_to_wrist()` and `weld_screw_into_hole()`
+(`scripts/mefron_lib/robot.py`) both originally welded a screw at
+whatever pose it happened to be holding *live* — the arm's own settled
+pose, not a nominal computed one — at the moment of the weld. Both
+silently baked cuRobo's usual residual approach error into the joint as
+a *permanent* misplacement, and both were found and fixed the same day,
+~1h16m apart, by the same technique.
+
+**Pick side, fixed 2026-08-04 (`a439f30`).** `attach_screw_to_wrist()`
+measured the live `panda_hand`→screw offset and froze it into the tip
+joint: `localPos0` read `(0.00065, -0.0009, 0.2887)` / `localRot0
+(0.166, 0.093, -0.038)` deg instead of the nominal `(0, 0, 0.2868543)`/
+identity — leaving the screw ~2mm off the bit axis for the whole carry
+and eventual placement. Visible in the GUI as the screw not lining up
+with the bit; reproduced on both screwdriver assets, ruling out tool
+geometry as the cause. Fix: compose the nominal carry pose from the
+docked tool's live pose plus `SCREW_CARRY_LOCAL_*`, move the screw onto
+it, *then* weld — so the correction is one clean re-authoring rather
+than a joint-solver-driven jitter.
+
+**Place side, fixed the same day (`f0a305c`), "the place-side twin of
+`a439f30`."** `weld_screw_into_hole()` had the identical bug: it read
+the carried screw's live world pose (wherever the arm ended up after
+6's descend leg) and froze that against `main_holder`, so `SCREW_HOLES`
+only ever drove the target the arm was *asked* to reach, never where
+the screw actually landed. Measured by reparenting two placed screws
+under `main_holder`: off their configured pockets by `(-2.88, +1.47,
++4.82)mm` and `(-2.81, -0.79, +4.85)mm`, plus a few tenths of a degree.
+Fix: weld at `compute_screw_hole_pose(hole_index)` — `main_holder`'s
+live pose composed with `SCREW_HOLES[hole_index]` and pushed
+`SCREW_HOLE_INSERTION_DEPTH` along the hole's own +Z — instead of the
+screw's live pose.
+
+**Deliberate tradeoff, both sides, kept intentionally.** The fix
+doesn't make the arm more accurate — it relocates cuRobo's residual
+from "permanently baked into the final position" to "a one-time,
+~2mm-scale snap onto the nominal pose at the instant of the weld." A
+clean-looking placement (or a screw sitting cleanly on the bit) is
+therefore no longer evidence the arm actually arrived — per `f0a305c`:
+"the bit still separates from the screw by that residual at the
+instant of release." If the underlying arm accuracy itself ever needs
+fixing, that's convergent arrival in `run_teleop_loop()` (see
+`docs/ee-arrival-accuracy.md`'s ~3mm ee-arrival-shortfall
+investigation), not another change here.
+
 ## Needs verification
 
 - **ATC numpad tool-changing in the real GUI.** Headlessly verified that
