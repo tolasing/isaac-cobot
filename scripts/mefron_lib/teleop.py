@@ -749,6 +749,13 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                         part_prim_path=grasp_target["part_prim_path"],
                     )
                     target.set_world_pose(position=cube_position, orientation=cube_orientation)
+                    # Only the ignore paths printed before, so a snap that fired but landed
+                    # somewhere unexpected was indistinguishable from a key that never registered.
+                    print(
+                        f"[mefron] {arm['_name']}: grasp approach '{requested_object}' -- target snapped to "
+                        f"{np.round(cube_position, 4).tolist()}.",
+                        flush=True,
+                    )
                     open_position, closed_position = compute_grasp_finger_widths_from_file(
                         grasp_target["yaml_path"], grasp_target["grasp_name"]
                     )
@@ -878,14 +885,6 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         if state["motion_queue"]:
             next_position, next_orientation, _ = state["motion_queue"][0]
             target.set_world_pose(position=next_position, orientation=next_orientation)
-
-    if tool_changer_control is not None and tool_changer_control.currently_docked_tool is not None and state["cmd_plan"] is None:
-        print(
-            f"[debug] {arm['_name']}: max joint vel={np.max(np.abs(sim_js.velocities)):.4f} robot_static={robot_static} "
-            f"pose_delta={np.linalg.norm(cube_position - state['target_pose']):.4f} "
-            f"past_match={np.linalg.norm(state['past_pose'] - cube_position) == 0.0}",
-            flush=True,
-        )
 
     if (
         (

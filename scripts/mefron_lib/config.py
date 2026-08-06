@@ -81,6 +81,10 @@ GRIPPER_DYNAMIC_FRICTION = 1.5
 GRIPPER_FINGER_LINK_NAMES = ["panda_leftfinger", "panda_rightfinger"]
 GRIPPER_DRIVE_STIFFNESS = 10000.0
 GRIPPER_DRIVE_DAMPING = 200.0
+# "force" (stiffness in N/m) over the assets' baked "acceleration", where the gains are
+# mass-normalized and a few-gram finger turns STIFFNESS into well under a newton of real grip --
+# parts slipped out. maxForce (20N, baked) stays the clamp. See docs/mefron-history.md.
+GRIPPER_DRIVE_TYPE = "force"
 HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
 # Grasp Editor-exported poses + per-object finger widths, keyed by object name and wired to a key

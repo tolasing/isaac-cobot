@@ -896,5 +896,6 @@ def stiffen_gripper_drive(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
             print(f"[mefron_lib] WARNING: {joint_prim.GetPath()} not found -- skipping stiffen.", flush=True)
             continue
         drive = UsdPhysics.DriveAPI.Apply(joint_prim, "linear")
+        drive.CreateTypeAttr().Set(config.GRIPPER_DRIVE_TYPE)
         drive.CreateStiffnessAttr().Set(config.GRIPPER_DRIVE_STIFFNESS)
         drive.CreateDampingAttr().Set(config.GRIPPER_DRIVE_DAMPING)

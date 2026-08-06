@@ -7,11 +7,11 @@ gripper_frame: /World/panda_hand
 grasps:
    "grasp_0":
       confidence: 1.0
-      position: [0.035729789415247154, 0.0400462054692106, -0.15689995191001982]
-      orientation: {w: -0.0030936238548316944, xyz: [0.0018790374136485246, 0.0004629224398017042, 0.9999933421841656]}
+      position: [0.041841280045567995, 0.039747484823344635, -0.09709294193925565]
+      orientation: {w: -0.0035367149399973337, xyz: [0.001920678321349474, 0.00044075129630557206, 0.9999918041566711]}
       cspace_position:
-         panda_finger_joint1: 0.030471576377749443
-         panda_finger_joint2: 0.030471578240394592
+         panda_finger_joint1: 0.0 #30471576377749443
+         panda_finger_joint2: 0.0 #30471578240394592
       pregrasp_cspace_position:
          panda_finger_joint1: 0.03998401388525963
          panda_finger_joint2: 0.03998401761054993
