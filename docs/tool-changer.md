@@ -68,7 +68,7 @@ plain rigid weld).
   (`config.TOOL_RACK_APPROACH_CLEARANCE`) is relative to each dock pose,
   not a fixed world-Z constant like `ASSEMBLY_LIFT_HEIGHT` — see
   CLAUDE.md's open issue about that exact mistake.
-- **Tool-gating**: J/B (grasp), C/O (gripper open/close), N/M
+- **Tool-gating**: J/B/K (grasp), C/O (gripper open/close), N/M
   (suction-approach), and suction attach/detach are only honored when the
   matching tool is currently docked; otherwise they print a warning and
   no-op. P stays tool-agnostic (places whichever object was last

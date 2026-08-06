@@ -78,7 +78,7 @@ dockable tools (`enable_gripper_tool_fingers()` right after), and runs a
 drag-follow teleop loop. Numpad 1/2/3 (see `config.TOOL_CHANGE_TARGETS`)
 sends the arm to dock/undock the gripper/suction/screwdriver tool at its own
 rack (`docs/tool-changer.md`).
-Once the matching tool is docked: J/B (via `config.GRASP_TARGETS`, NVIDIA
+Once the matching tool is docked: J/B/K (via `config.GRASP_TARGETS`, NVIDIA
 Grasp Editor-exported poses) and C/O for the gripper, N/M (via
 `config.SUCTION_TARGETS`) and V/L for the suction cup, 5/6 for the
 screwdriver; P places whichever was last grasped/approached either way.

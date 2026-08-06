@@ -98,8 +98,15 @@ GRASP_TARGETS = {
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
     },
-    # pcb_assembly (K) retired 2026-07-22 for arm 2's suction cup instead -- redundant-branch
-    # twisting on approach, root cause + ruled-out fix in docs/mefron-history.md.
+    "main_holder_back_cover": {
+        "key": "K",
+        "yaml_path": REPO_ROOT / "assets" / "main_holder_back_cover.yaml",
+        "grasp_name": "grasp_0",
+        "part_prim_path": "/World/main_holder_back_cover",
+    },
+    # pcb_assembly's K retired 2026-07-22 for arm 2's suction cup instead -- redundant-branch
+    # twisting on approach, root cause + ruled-out fix in docs/mefron-history.md; the freed key
+    # now drives main_holder_back_cover above.
 }
 
 # T_H_S: each part's pose expressed in main_holder's own local frame at the correctly assembled
@@ -126,6 +133,15 @@ ASSEMBLY_RELATIONSHIPS = {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/main_holder",
         "local_position": [0.02688002586364746, -0.012380123138427736, 0.01234102249145508],
+        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+    # Probed live with assets/back_cover_grasp.txt while the cover sat assembled on main_holder.
+    # Zeros/identity are the probe's own output (it printed ~1e-16 float noise); z is negative
+    # because main_holder's frame is flipped 180 deg about X, so this is 15mm *up* in world.
+    "main_holder_back_cover_on_main_holder": {
+        "part_prim_path": "/World/main_holder_back_cover",
+        "mount_prim_path": "/World/main_holder",
+        "local_position": [0.0, 0.0, -0.015],
         "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
     },
     "pcb_assembly_on_backpanel_support": {
