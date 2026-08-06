@@ -99,6 +99,25 @@ def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_m
     )
 
 
+def assembly_weld_local_pose(relationship_name: str):
+    """The local offset the O/L release weld seats a part at: config.ASSEMBLY_WELD_POSES' own
+    freshly-measured value when it has one, else the same ASSEMBLY_RELATIONSHIPS offset P drives to.
+    Split on purpose -- P's target is the motion-validated pose, the weld's is the measured assembled
+    one; see ASSEMBLY_WELD_POSES' comment."""
+    weld = config.ASSEMBLY_WELD_POSES.get(relationship_name) or config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    return weld["local_position"], weld["local_orientation_wxyz"]
+
+
+def compute_part_weld_pose(relationship_name: str):
+    """The world pose that weld seats the part at -- the mount's LIVE pose composed with the offset
+    above. Same live-relative principle as compute_part_target_pose(), just the weld's own offset."""
+    mount_prim_path = config.ASSEMBLY_RELATIONSHIPS[relationship_name]["mount_prim_path"]
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=mount_prim_path, reset_xform_properties=False
+    ).get_world_pose()
+    return compute_dependent_world_pose(mount_trans, mount_quat, *assembly_weld_local_pose(relationship_name))
+
+
 def compute_assembly_grasp_target_from_offset(
     grasp_offset_position,
     grasp_offset_orientation_wxyz,

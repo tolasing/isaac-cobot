@@ -820,11 +820,36 @@ def _assembly_weld_joint_path(part_prim_path: str) -> str:
 def clear_assembly_welds() -> None:
     """Deletes the whole script-owned assembly-weld scope, so a run never inherits a previous one's
     anchors/joints. Same reasoning as clear_screws(): the URDF importer rewrites mefron.usd on every
-    run (see CLAUDE.md), so anything spawned here can get baked in."""
+    run (see CLAUDE.md), so anything spawned here can get baked in. Also repairs collision on the
+    assembly parts: an earlier weld disabled their colliders, and that same importer rewrite could
+    persist it -- which silently breaks re-grasping (fingers pass through) and the SurfaceGripper's
+    attach (V finds nothing). Nothing else here turns those off, so re-enabling is safe."""
     stage = omni.usd.get_context().get_stage()
     if stage.GetPrimAtPath(config.ASSEMBLY_WELD_SCOPE_PRIM_PATH).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[config.ASSEMBLY_WELD_SCOPE_PRIM_PATH])
         omni.kit.app.get_app().update()
+
+    for relationship in config.ASSEMBLY_RELATIONSHIPS.values():
+        part_prim_path = relationship["part_prim_path"]
+        if any(not enabled for enabled in _collision_enabled_flags(part_prim_path)):
+            print(
+                f"[mefron_lib] {part_prim_path} had collision disabled on load -- re-enabling "
+                "(left behind by an older release weld; see this function's docstring).",
+                flush=True,
+            )
+            _set_prim_collision_enabled(part_prim_path, True)
+
+
+def _collision_enabled_flags(prim_path: str) -> list:
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return []
+    return [
+        bool(UsdPhysics.CollisionAPI(p).GetCollisionEnabledAttr().Get())
+        for p in Usd.PrimRange(prim)
+        if p.HasAPI(UsdPhysics.CollisionAPI)
+    ]
 
 
 def _set_prim_collision_enabled(prim_path: str, enabled: bool) -> None:
@@ -894,17 +919,17 @@ def sync_assembly_anchors() -> None:
 
 
 def weld_part_at_assembly_pose(relationship_name: str) -> bool:
-    """Snaps a released part onto its exact nominal ASSEMBLY_RELATIONSHIPS pose and welds it to its
-    mount's anchor -- the assembly analogue of weld_screw_into_hole(), and the reason a placed part
-    no longer slips under gravity. No-ops (returns False) past config.ASSEMBLY_WELD_MAX_DISTANCE, so
-    a release far from the assembly position stays an ordinary release."""
-    from .grasp import compute_part_target_pose
+    """Snaps a released part onto its exact nominal assembly pose and welds it to its mount's anchor
+    -- the assembly analogue of weld_screw_into_hole(), and the reason a placed part no longer slips
+    under gravity. That pose is config.ASSEMBLY_WELD_POSES', NOT the (separate) one P drove to.
+    No-ops (returns False) past config.ASSEMBLY_WELD_MAX_DISTANCE, so a far release stays ordinary."""
+    from .grasp import assembly_weld_local_pose, compute_part_weld_pose
 
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
     part_prim_path = relationship["part_prim_path"]
     part_xform = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False)
     live_trans, _ = part_xform.get_world_pose()
-    target_trans, target_quat = compute_part_target_pose(relationship_name)
+    target_trans, target_quat = compute_part_weld_pose(relationship_name)
     distance = float(np.linalg.norm(np.array(live_trans) - np.array(target_trans)))
     if distance > config.ASSEMBLY_WELD_MAX_DISTANCE:
         print(
@@ -918,17 +943,19 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
     # Re-author the part's own USD xform too, so a Stop restores it ASSEMBLED rather than snapping it
     # back to where it started -- same reason weld_screw_into_hole() does it.
     part_xform.set_world_pose(position=target_trans, orientation=target_quat)
-    # Collision off while welded: an enabled collider fights the joint holding it (gotcha 2), and
-    # main_holder's own convex-decomposition collider is a known open issue that makes parts sink.
-    _set_prim_collision_enabled(part_prim_path, False)
-    # body0_local_* IS the relationship constant -- it already expresses the part's pose in the
-    # mount's frame, and the anchor is unscaled and kept coincident with that frame.
+    # Deliberately does NOT disable the part's colliders. An earlier version did (gotcha 2, contact
+    # fighting the joint) and it broke re-grasping and the SurfaceGripper's own attach -- see
+    # clear_assembly_welds(). The anchor is KINEMATIC, so contact can't move a welded part anyway.
+    # body0_local_* IS the weld offset just snapped to -- it already expresses the part's pose in the
+    # mount's frame, and the anchor is unscaled and kept coincident with that frame. Must come from
+    # the same source as target_trans/quat above, or the joint would pull the part back off it.
+    weld_local_position, weld_local_orientation = assembly_weld_local_pose(relationship_name)
     _create_tool_fixed_joint(
         _assembly_weld_joint_path(part_prim_path),
         anchor_path,
         part_prim_path,
-        body0_local_position=tuple(relationship["local_position"]),
-        body0_local_orientation_wxyz=tuple(relationship["local_orientation_wxyz"]),
+        body0_local_position=tuple(weld_local_position),
+        body0_local_orientation_wxyz=tuple(weld_local_orientation),
     )
     print(
         f"[mefron_lib] welded {part_prim_path} at its {relationship_name} pose ({distance:.3f}m correction).",
@@ -938,16 +965,15 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
 
 
 def release_assembly_weld(part_prim_path: str) -> bool:
-    """Inverse of weld_part_at_assembly_pose(): deletes that part's weld joint and re-enables its
-    collision, so a welded part can be picked back up. Stateless -- the joint prim's presence on the
-    stage IS the state, so this stays correct across a Stop/Play."""
+    """Inverse of weld_part_at_assembly_pose(): deletes that part's weld joint so it can be picked
+    back up. Doesn't touch collision -- the weld no longer disables it. Stateless: the joint prim's
+    presence on the stage IS the state, so this stays correct across a Stop/Play."""
     stage = omni.usd.get_context().get_stage()
     joint_path = _assembly_weld_joint_path(part_prim_path)
     if not stage.GetPrimAtPath(joint_path).IsValid():
         return False
     omni.kit.commands.execute("DeletePrims", paths=[joint_path])
     omni.kit.app.get_app().update()
-    _set_prim_collision_enabled(part_prim_path, True)
     print(f"[mefron_lib] released the assembly weld on {part_prim_path}.", flush=True)
     return True
 

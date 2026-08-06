@@ -1080,10 +1080,12 @@ def run_teleop_loop(
         simulation_app.update()
 
         if not timeline.is_playing():
+            # Once per not-playing stretch (startup, and after each Stop) rather than every 100
+            # frames -- the repeat buried every other print in the terminal.
+            if was_playing or not_playing_frames == 0:
+                print("[mefron] Click Play to start cuRobo teleop.", flush=True)
             was_playing = False
             not_playing_frames += 1
-            if not_playing_frames % 100 == 0:
-                print("[mefron] Click Play to start cuRobo teleop.", flush=True)
             continue
 
         if not was_playing:

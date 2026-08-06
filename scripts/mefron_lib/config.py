@@ -38,9 +38,7 @@ FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
 # conveyor/container prims -- hangs cuRobo's mesh-collision-world construction; see CLAUDE.md's
 # open issues.
 OBSTACLE_PRIM_PATHS = [
-    "/World/main_holder_jig",
-    "/World/tool_rack_gripper"
-]
+"/World/ConveyorBelt_A06_01",]
 
 # Loop-timing constants for teleop.run_teleop_loop(), ported from build_scene.py.
 _TELEOP_INIT_FRAMES = 10
@@ -179,6 +177,35 @@ ASSEMBLY_RELATIONSHIPS = {
         "mount_prim_path": "/World/PCB_Assembly_color_fixed",
         "local_position": [-0.0028148316864434492, 4.480405335696105e-06, 0.11491755932216695],
         "local_orientation_wxyz": [0.011293781372283615, 0.38247333692520136, 0.9238856699972284, 0.004676089968013461],
+    },
+}
+
+# Where the O/L release weld SEATS each part, overriding ASSEMBLY_RELATIONSHIPS' offset for the weld
+# only -- P still DRIVES to that dict's (motion-validated) pose. Measured together 2026-08-06 from
+# ONE hand-placed assembly (every part on the jig at once, then read back), so these are mutually
+# consistent rather than each measured in its own session; float noise below 1e-16 cleaned to exact
+# zeros/identity. A relationship with no entry here welds at its ASSEMBLY_RELATIONSHIPS pose
+# (main_holder_back_cover -- it wasn't on the jig for that measurement). The two poses differing IS
+# the point, but keep them inside ASSEMBLY_WELD_MAX_DISTANCE: the gap is how far the part visibly
+# jumps on release (worst here: backpanel_support, 12mm).
+ASSEMBLY_WELD_POSES = {
+    "finger_print_scanner_on_main_holder": {
+        "local_position": [-0.05765, 0.02069, 0.01875],
+        "local_orientation_wxyz": [0.0, 0.0, 0.0, 1.0],
+    },
+    "backpanel_support_on_main_holder": {
+        "local_position": [0.02346, -0.01392, 0.01375],
+        "local_orientation_wxyz": [0.0, 1.0, 0.0, 0.0],
+    },
+    "screen_on_main_holder": {
+        "local_position": [0.02688, -0.01238, 0.01965],
+        "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+    },
+    # Mounts on backpanel_support, itself a welded part, so this was measured against wherever THAT
+    # was placed -- the two stay a set. Rotation came back an exact 90 deg about Z (was 90.12).
+    "pcb_assembly_on_backpanel_support": {
+        "local_position": [-0.00158, -0.02139, 0.005],
+        "local_orientation_wxyz": [0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
     },
 }
 

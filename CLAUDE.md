@@ -210,7 +210,14 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   `SurfaceGripperManager` processes attach/detach as queued PhysX/USD
   actions on its own `onPhysicsStep`, so scripting the joint-enabled
   toggle directly from Python races its internal state (three variants
-  tried, all reverted). Manual Stage-panel workaround still required. The
+  tried, all reverted). Manual Stage-panel workaround still required.
+  **Sharpened 2026-08-06 (live):** after L, `SurfaceGripperJoint`'s `body1`
+  rel reads **empty in USD** — yet the screen still follows the wrist when
+  the arm moves away, so **PhysX keeps the constraint after the USD side is
+  cleared**. Any release check reading USD (`body1`, `jointEnabled`) or the
+  manager's Open/Closed status therefore reports "released" while the part is
+  still physically held — a deferral gated on that was tried and did not
+  work. Whatever detects a real release has to come from the PhysX side. The
   L release weld now pins the part at its assembly pose either way, so watch
   for the arm tugging against a part it hasn't actually let go of.
 - **The ee settles ~3mm short of `/World/target`, along the approach axis.**
