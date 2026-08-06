@@ -109,6 +109,18 @@ P's placement pose is computed by measuring the CURRENT live
 gripper-to-part offset (not a fixed constant) and applying it to the live
 target pose on `main_holder`.
 
+**Releasing welds the part (O for the gripper, L for the suction cup).**
+Release within `ASSEMBLY_WELD_MAX_DISTANCE` of the part's nominal
+`ASSEMBLY_RELATIONSHIPS` pose and it snaps exactly onto that pose and gets
+joint-fixed there (`robot.weld_part_at_assembly_pose()`) — the same
+FixedJoint mechanism the tool changer and screws use, so an assembled part
+can't slip under gravity or sit visibly off. Past that distance, O/L is an
+ordinary release. A grasp/approach key un-welds that object first
+(`release_assembly_weld()`), so it can be picked back up. Deliberate
+tradeoff, same as the screws': placement accuracy is now **masked**, not
+fixed — a clean-looking assembly is no longer evidence the arm arrived.
+Full design: `docs/grasp-and-assembly-offsets.md`.
+
 `scripts/mefron_gripper_probe.py` imports just the Franka hand (no arm, no
 motion_gen) onto its own free-floating `base_link`, for dragging into place
 against a part mesh in Stop mode to measure a grasp pose directly.
@@ -127,7 +139,11 @@ Current constants (`scripts/mefron_lib/config.py`):
   reads them from the yaml live.
 - `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`: the
   part's pose in `main_holder`'s local frame. P measures the live grasp
-  offset rather than using a fixed constant.
+  offset rather than using a fixed constant; the O/L release weld uses this
+  same entry twice — as the pose to snap to, and (unchanged) as the weld
+  joint's own `body0_local_*`.
+- `ASSEMBLY_WELD_MAX_DISTANCE = 0.05`, `ASSEMBLY_WELD_SCOPE_PRIM_PATH`
+  (`/World/assembly_welds`, wiped every run like the screw scope).
 - `_TELEOP_VELOCITY_SCALE = 0.6`, `_TELEOP_ACCELERATION_SCALE = 0.1`,
   `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
   `GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` are only the *default*
@@ -169,11 +185,15 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   fingertips at grasp time, so one finger contacts first and shifts the
   part sideways. Not a joint/drive asymmetry (ruled out) — see
   `docs/grasp-and-assembly-offsets.md`.
-- **Assembly placement (P) still doesn't land cleanly.** A lift/rotate/
-  descend redesign was tried and reverted after finding `ASSEMBLY_LIFT_HEIGHT`
-  is a fixed world-Z constant with no relationship to where things actually
-  are, unlike every other pose in this system. Next attempt: make lift
-  clearance relative, not absolute.
+- **Assembly placement (P) still doesn't land cleanly — now deliberately
+  masked rather than fixed.** The O/L release weld snaps the part onto its
+  nominal pose regardless of where the arm actually left it, which is the
+  accepted answer for this scene (visual pipeline, no VLA training). The
+  underlying inaccuracy is untouched: a lift/rotate/descend redesign was
+  tried and reverted after finding `ASSEMBLY_LIFT_HEIGHT` is a fixed world-Z
+  constant with no relationship to where things actually are, unlike every
+  other pose in this system. If it's ever revisited: make lift clearance
+  relative, not absolute.
 - `attach_objects_to_robot()`/`detach_object_from_robot()` (carried-object
   collision awareness) isn't wired to the C/O keys yet — `franka.yml`
   already has a spare `attached_object` link ready for it.
@@ -190,7 +210,9 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   `SurfaceGripperManager` processes attach/detach as queued PhysX/USD
   actions on its own `onPhysicsStep`, so scripting the joint-enabled
   toggle directly from Python races its internal state (three variants
-  tried, all reverted). Manual Stage-panel workaround still required.
+  tried, all reverted). Manual Stage-panel workaround still required. The
+  L release weld now pins the part at its assembly pose either way, so watch
+  for the arm tugging against a part it hasn't actually let go of.
 - **The ee settles ~3mm short of `/World/target`, along the approach axis.**
   Measured live: cuRobo is exact (`FK(commanded joints)` hits the target to
   0.00mm/0.001°) — the whole error is joint tracking lag, ~0.18° on joints

@@ -33,12 +33,23 @@ class GripperKeyboardControl:
         self.closed_position = config.GRIPPER_CLOSED_POSITION
         self._assembly_target_requested = False
         self._grasp_approach_object_requested: str | None = None
+        self._release_requested = False
         # Last config.GRASP_TARGETS key whose grasp-approach request was made -- lets P look up the
         # matching config.ASSEMBLY_RELATIONSHIPS entry instead of a single hardcoded object.
         self.last_grasped_object: str | None = None
 
     def set_closed(self, closed: bool) -> None:
         self.closed = closed
+
+    def request_release(self) -> None:
+        """Set by the open key ONLY when the gripper was actually closed -- the teleop loop turns
+        this into an assembly weld (see robot.weld_part_at_assembly_pose())."""
+        self._release_requested = True
+
+    def consume_release_request(self) -> bool:
+        requested = self._release_requested
+        self._release_requested = False
+        return requested
 
     def set_grasp_widths(self, open_position: float, closed_position: float) -> None:
         self.open_position = open_position
@@ -75,6 +86,7 @@ class GripperKeyboardControl:
         self.last_grasped_object = None
         self._assembly_target_requested = False
         self._grasp_approach_object_requested = None
+        self._release_requested = False
 
 
 def build_gripper_keyboard_control(close_key: str = "C", open_key: str = "O") -> GripperKeyboardControl:
@@ -100,6 +112,10 @@ def build_gripper_keyboard_control(close_key: str = "C", open_key: str = "O") ->
             if event.input == close_input:
                 control.set_closed(True)
             elif event.input == open_input:
+                # Only a close->open transition is a real release: J/B/K also open the gripper (to
+                # pregrasp width), and re-pressing O when already open must not fire an assembly weld.
+                if control.closed:
+                    control.request_release()
                 control.set_closed(False)
             elif event.input == carb.input.KeyboardInput.P:
                 control.request_assembly_target()
@@ -183,12 +199,22 @@ class SurfaceGripperKeyboardControl:
 
         self.gripper_prim_path = gripper_prim_path
         self._interface = surface_gripper.acquire_surface_gripper_interface()
+        self._release_requested = False
 
     def close(self) -> None:
         self._interface.close_gripper(self.gripper_prim_path)
 
     def open(self) -> None:
+        # Flagged only when something was actually held, mirroring GripperKeyboardControl's own
+        # close->open gate -- the teleop loop turns this into an assembly weld.
+        if self.is_closed():
+            self._release_requested = True
         self._interface.open_gripper(self.gripper_prim_path)
+
+    def consume_release_request(self) -> bool:
+        requested = self._release_requested
+        self._release_requested = False
+        return requested
 
     def is_closed(self) -> bool:
         import isaacsim.robot.surface_gripper._surface_gripper as surface_gripper
@@ -605,6 +631,37 @@ def _build_screw_place_queue(screw_control: ScrewControl, ee_link_prim_path: str
     return queue
 
 
+def _invalidate_articulation_handles(state: dict) -> None:
+    """Forces _step_arm()'s own rebuild-on-None block to rebind SingleArticulation/idx_list/
+    articulation_controller next frame. Authoring a joint prim live mid-Play silently stales them
+    (confirmed for dock/undock -- see _step_arm()'s awaiting_arrival_settle block), so every live
+    joint edit here goes through this."""
+    state["idx_list"] = None
+    state["articulation_controller"] = None
+
+
+def _assembly_relationship_for_docked_tool(docked_tool, gripper_control, suction_control) -> str | None:
+    """Which config.ASSEMBLY_RELATIONSHIPS entry the currently-docked tool's last-touched object maps
+    to -- shared by P (where to place) and the O/L release weld (where to weld). J/B/K and N/M are
+    themselves tool-gated, so at most one of the two branches can be live. Returns None if that tool
+    hasn't touched anything yet."""
+    if docked_tool == "gripper" and gripper_control is not None and gripper_control.last_grasped_object is not None:
+        # Looked up by part_prim_path, not a "{object_name}_on_main_holder" key -- not every object
+        # mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
+        part_prim_path = config.GRASP_TARGETS[gripper_control.last_grasped_object]["part_prim_path"]
+        return next(
+            (
+                name
+                for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
+                if relationship["part_prim_path"] == part_prim_path
+            ),
+            None,
+        )
+    if docked_tool == "suction" and suction_control is not None and suction_control.last_approached_object is not None:
+        return config.SUCTION_TARGETS[suction_control.last_approached_object]["assembly_relationship"]
+    return None
+
+
 def _snap_target_to_assembly_lift_waypoint(state: dict, target, ee_link_prim_path: str, relationship_name: str):
     """Shared by every arm's P handling: computes the final assembly pose via
     compute_assembly_grasp_target(), stages it in state["pending_final_pose"], and snaps `target`
@@ -698,31 +755,18 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
             # the in-flight plan's completion wrongly consume pending_final_pose with no hover stop.
             if state["cmd_plan"] is None:
                 docked_tool = tool_changer_control.currently_docked_tool if tool_changer_control is not None else None
-                relationship_name = None
-                # Whichever tool is currently docked determines which "last touched" object (if
-                # any) P should place -- J/B and N/M are themselves gated on the matching tool
-                # being docked (see below/above), so at most one of these two can be valid at once.
-                if docked_tool == "gripper" and gripper_control.last_grasped_object is not None and gripper_control.closed:
-                    # Same "actually holding it right now" gate as the suction branch's
-                    # is_closed() check below -- last_grasped_object is sticky (set by J/B, never
-                    # cleared by O), so without this, O then P would still fire a placement snap.
-                    object_name = gripper_control.last_grasped_object
-                    # Looked up by part_prim_path, not a "{object_name}_on_main_holder" key --
-                    # not every object mounts onto main_holder (e.g. pcb_assembly_on_backpanel_support).
-                    part_prim_path = config.GRASP_TARGETS[object_name]["part_prim_path"]
-                    relationship_name = next(
-                        name
-                        for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
-                        if relationship["part_prim_path"] == part_prim_path
-                    )
-                elif (
+                # "Actually holding it right now" gate: last_grasped_object/last_approached_object
+                # are sticky (set by J/B/K/N/M, never cleared on release), so without this an O or L
+                # followed by P would still fire a placement snap with nothing in hand.
+                holding = (docked_tool == "gripper" and gripper_control.closed) or (
                     docked_tool == "suction"
-                    and suction_control is not None
-                    and suction_control.last_approached_object is not None
                     and (surface_gripper_control is None or surface_gripper_control.is_closed())
-                ):
-                    object_name = suction_control.last_approached_object
-                    relationship_name = config.SUCTION_TARGETS[object_name]["assembly_relationship"]
+                )
+                relationship_name = (
+                    _assembly_relationship_for_docked_tool(docked_tool, gripper_control, suction_control)
+                    if holding
+                    else None
+                )
 
                 gripper_control.consume_assembly_target_request()
                 if relationship_name is not None:
@@ -743,6 +787,10 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     )
                 else:
                     grasp_target = config.GRASP_TARGETS[requested_object]
+                    # Free an already-assembled part first, or its weld joint would silently pin it
+                    # in place and the failure would look like a broken gripper.
+                    if robot.release_assembly_weld(grasp_target["part_prim_path"]):
+                        _invalidate_articulation_handles(state)
                     cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
                         grasp_target["yaml_path"],
                         grasp_target["grasp_name"],
@@ -775,8 +823,23 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 )
             else:
                 approach_relationship = config.SUCTION_TARGETS[requested_object]["approach_relationship"]
+                # Same un-weld as the grasp branch above -- see there.
+                if robot.release_assembly_weld(config.ASSEMBLY_RELATIONSHIPS[approach_relationship]["part_prim_path"]):
+                    _invalidate_articulation_handles(state)
                 cube_position, cube_orientation = compute_part_target_pose(approach_relationship)
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
+
+    # One-shot O/L release weld: snaps the released part onto its exact nominal assembly pose and
+    # joints it there, so it can't slip under gravity or sit visibly off. Both flags are consumed
+    # unconditionally so a stale one can't fire later; the proximity gate lives in robot.py.
+    released_by_gripper = gripper_control is not None and gripper_control.consume_release_request()
+    released_by_suction = surface_gripper_control is not None and surface_gripper_control.consume_release_request()
+    if released_by_gripper or released_by_suction:
+        docked_tool = tool_changer_control.currently_docked_tool if tool_changer_control is not None else None
+        if (released_by_gripper and docked_tool == "gripper") or (released_by_suction and docked_tool == "suction"):
+            relationship_name = _assembly_relationship_for_docked_tool(docked_tool, gripper_control, suction_control)
+            if relationship_name is not None and robot.weld_part_at_assembly_pose(relationship_name):
+                _invalidate_articulation_handles(state)
 
     # One-shot tool-change request (numpad 1/2/3). Gated like P: only start a new multi-leg swap
     # once the arm is fully idle -- no in-flight plan, and no waypoints left over from a previous
@@ -880,8 +943,7 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
             # binding a fresh SingleArticulation to the current (post-joint-creation) PhysX view --
             # step_index is NOT reset, so the _TELEOP_INIT_FRAMES default_config snap above is
             # correctly skipped (it's already far past that count), only the handles get refreshed.
-            state["idx_list"] = None
-            state["articulation_controller"] = None
+            _invalidate_articulation_handles(state)
         if state["motion_queue"]:
             next_position, next_orientation, _ = state["motion_queue"][0]
             target.set_world_pose(position=next_position, orientation=next_orientation)
@@ -916,7 +978,9 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
     state["past_pose"] = cube_position
     state["past_orientation"] = cube_orientation
 
-    if state["cmd_plan"] is not None:
+    # articulation_controller can be None here for exactly one frame: a live joint edit mid-plan
+    # (an O/L release weld) invalidates the handles, and the block at the top rebinds them next frame.
+    if state["cmd_plan"] is not None and state["articulation_controller"] is not None:
         # Gate on real elapsed time, not frame count.
         now = time.time()
         if state["last_cmd_time"] is None or (now - state["last_cmd_time"]) >= state["interpolation_dt"]:
@@ -986,6 +1050,8 @@ def run_teleop_loop(
     from curobo.types.math import Pose
     from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
 
+    from . import robot
+
     stage = omni.usd.get_context().get_stage()
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -1047,6 +1113,10 @@ def run_teleop_loop(
 
         for arm in arms:
             _step_arm(arm, step_index, tensor_args)
+
+        # Scene-level, not per-arm: keeps each welded part's kinematic anchor on its mount, so an
+        # assembled part rides main_holder when the conveyor below moves it.
+        robot.sync_assembly_anchors()
 
         if conveyor_control is not None:
             conveyor_control.step()

@@ -803,6 +803,155 @@ def weld_screw_into_hole(index: int, hole_index: int) -> None:
     _create_tool_fixed_joint(_screw_hole_joint_path(index), anchor_path, screw_prim_path)
 
 
+def _assembly_anchor_path(mount_prim_path: str) -> str:
+    return f"{config.ASSEMBLY_WELD_SCOPE_PRIM_PATH}/anchor_{Sdf.Path(mount_prim_path).name}"
+
+
+# Which mount each anchor tracks, stored on the anchor itself so sync_assembly_anchors() needs no
+# Python-side bookkeeping and stays correct across a Stop/Play.
+_ASSEMBLY_ANCHOR_MOUNT_ATTR = "mefron:assemblyWeldMountPath"
+
+
+# One joint path per part, never redefined in place -- docs/tool-changer.md's gotcha 5.
+def _assembly_weld_joint_path(part_prim_path: str) -> str:
+    return f"{config.ASSEMBLY_WELD_SCOPE_PRIM_PATH}/weld_{Sdf.Path(part_prim_path).name}"
+
+
+def clear_assembly_welds() -> None:
+    """Deletes the whole script-owned assembly-weld scope, so a run never inherits a previous one's
+    anchors/joints. Same reasoning as clear_screws(): the URDF importer rewrites mefron.usd on every
+    run (see CLAUDE.md), so anything spawned here can get baked in."""
+    stage = omni.usd.get_context().get_stage()
+    if stage.GetPrimAtPath(config.ASSEMBLY_WELD_SCOPE_PRIM_PATH).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[config.ASSEMBLY_WELD_SCOPE_PRIM_PATH])
+        omni.kit.app.get_app().update()
+
+
+def _set_prim_collision_enabled(prim_path: str, enabled: bool) -> None:
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        return
+    for p in Usd.PrimRange(prim):
+        if p.HasAPI(UsdPhysics.CollisionAPI):
+            UsdPhysics.CollisionAPI(p).GetCollisionEnabledAttr().Set(enabled)
+
+
+def _ensure_assembly_anchor(mount_prim_path: str) -> str:
+    """The per-mount body every welded part is jointed to, created on first use. KINEMATIC, and
+    driven from the mount's live pose by sync_assembly_anchors() rather than jointed to it: a
+    dynamic anchor is only as stiff as its own mass allows, and a light one visibly sagged and
+    rotated under a real part's weight (confirmed live). See docs/grasp-and-assembly-offsets.md."""
+    stage = omni.usd.get_context().get_stage()
+    anchor_path = _assembly_anchor_path(mount_prim_path)
+    if stage.GetPrimAtPath(anchor_path).IsValid():
+        return anchor_path
+
+    # A Scope, not an Xform -- it can't carry a transform, so an anchor's local pose is its world pose.
+    stage.DefinePrim(config.ASSEMBLY_WELD_SCOPE_PRIM_PATH, "Scope")
+    stage.DefinePrim(anchor_path, "Xform")
+    # Default reset_xform_properties=True (unlike everywhere else here): a DefinePrim'd Xform has NO
+    # xformOps at all, and only this path authors them -- sync_assembly_anchors() below just writes
+    # to them. Safe on a prim this module created, which can't carry a unitsResolve op to strip.
+    mount_trans, mount_quat = SingleXFormPrim(
+        prim_path=mount_prim_path, reset_xform_properties=False
+    ).get_world_pose()
+    SingleXFormPrim(prim_path=anchor_path).set_world_pose(position=mount_trans, orientation=mount_quat)
+
+    anchor_prim = stage.GetPrimAtPath(anchor_path)
+    # Kinematic: infinite mass to the solver, so the part's weld joint is genuinely rigid no matter
+    # what the part weighs. Explicit mass anyway -- the anchor carries no colliders to derive one from.
+    rigid_body_api = UsdPhysics.RigidBodyAPI.Apply(anchor_prim)
+    rigid_body_api.CreateKinematicEnabledAttr().Set(True)
+    mass_api = UsdPhysics.MassAPI.Apply(anchor_prim)
+    mass_api.CreateMassAttr().Set(config.ASSEMBLY_WELD_ANCHOR_MASS)
+    mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*config.ASSEMBLY_WELD_ANCHOR_DIAGONAL_INERTIA))
+    anchor_prim.CreateAttribute(_ASSEMBLY_ANCHOR_MOUNT_ATTR, Sdf.ValueTypeNames.String).Set(mount_prim_path)
+    return anchor_path
+
+
+def sync_assembly_anchors() -> None:
+    """Drives every assembly anchor onto its mount's current world pose -- called every teleop frame,
+    and what makes a welded part ride main_holder down the conveyor. get_world_pose() drops the
+    mount's 0.001 unitsResolve scale, which is the point: the anchor stays unscaled, so a weld's
+    localPos on it is unambiguous metres (docs/tool-changer.md's gotcha 8)."""
+    stage = omni.usd.get_context().get_stage()
+    scope_prim = stage.GetPrimAtPath(config.ASSEMBLY_WELD_SCOPE_PRIM_PATH)
+    if not scope_prim.IsValid():
+        return
+    for anchor_prim in scope_prim.GetChildren():
+        mount_attr = anchor_prim.GetAttribute(_ASSEMBLY_ANCHOR_MOUNT_ATTR)
+        if not mount_attr.IsValid():
+            continue
+        # reset_xform_properties=False on both -- a mount carries an xformOp:scale:unitsResolve op
+        # the default would silently strip (see grasp.py).
+        mount_trans, mount_quat = SingleXFormPrim(
+            prim_path=mount_attr.Get(), reset_xform_properties=False
+        ).get_world_pose()
+        SingleXFormPrim(prim_path=str(anchor_prim.GetPath()), reset_xform_properties=False).set_world_pose(
+            position=mount_trans, orientation=mount_quat
+        )
+
+
+def weld_part_at_assembly_pose(relationship_name: str) -> bool:
+    """Snaps a released part onto its exact nominal ASSEMBLY_RELATIONSHIPS pose and welds it to its
+    mount's anchor -- the assembly analogue of weld_screw_into_hole(), and the reason a placed part
+    no longer slips under gravity. No-ops (returns False) past config.ASSEMBLY_WELD_MAX_DISTANCE, so
+    a release far from the assembly position stays an ordinary release."""
+    from .grasp import compute_part_target_pose
+
+    relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    part_prim_path = relationship["part_prim_path"]
+    part_xform = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False)
+    live_trans, _ = part_xform.get_world_pose()
+    target_trans, target_quat = compute_part_target_pose(relationship_name)
+    distance = float(np.linalg.norm(np.array(live_trans) - np.array(target_trans)))
+    if distance > config.ASSEMBLY_WELD_MAX_DISTANCE:
+        print(
+            f"[mefron_lib] {part_prim_path} released {distance:.3f}m from its assembly pose "
+            f"(> {config.ASSEMBLY_WELD_MAX_DISTANCE}m) -- not welding.",
+            flush=True,
+        )
+        return False
+
+    anchor_path = _ensure_assembly_anchor(relationship["mount_prim_path"])
+    # Re-author the part's own USD xform too, so a Stop restores it ASSEMBLED rather than snapping it
+    # back to where it started -- same reason weld_screw_into_hole() does it.
+    part_xform.set_world_pose(position=target_trans, orientation=target_quat)
+    # Collision off while welded: an enabled collider fights the joint holding it (gotcha 2), and
+    # main_holder's own convex-decomposition collider is a known open issue that makes parts sink.
+    _set_prim_collision_enabled(part_prim_path, False)
+    # body0_local_* IS the relationship constant -- it already expresses the part's pose in the
+    # mount's frame, and the anchor is unscaled and kept coincident with that frame.
+    _create_tool_fixed_joint(
+        _assembly_weld_joint_path(part_prim_path),
+        anchor_path,
+        part_prim_path,
+        body0_local_position=tuple(relationship["local_position"]),
+        body0_local_orientation_wxyz=tuple(relationship["local_orientation_wxyz"]),
+    )
+    print(
+        f"[mefron_lib] welded {part_prim_path} at its {relationship_name} pose ({distance:.3f}m correction).",
+        flush=True,
+    )
+    return True
+
+
+def release_assembly_weld(part_prim_path: str) -> bool:
+    """Inverse of weld_part_at_assembly_pose(): deletes that part's weld joint and re-enables its
+    collision, so a welded part can be picked back up. Stateless -- the joint prim's presence on the
+    stage IS the state, so this stays correct across a Stop/Play."""
+    stage = omni.usd.get_context().get_stage()
+    joint_path = _assembly_weld_joint_path(part_prim_path)
+    if not stage.GetPrimAtPath(joint_path).IsValid():
+        return False
+    omni.kit.commands.execute("DeletePrims", paths=[joint_path])
+    omni.kit.app.get_app().update()
+    _set_prim_collision_enabled(part_prim_path, True)
+    print(f"[mefron_lib] released the assembly weld on {part_prim_path}.", flush=True)
+    return True
+
+
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
     """Authors the real isaacsim.robot.schema/surface_gripper attach mechanism on panda_hand: one
     UsdPhysics.Joint (IsaacAttachmentPointAPI) with PhysicsLimitAPI/DriveAPI compliance tuning --

@@ -173,6 +173,20 @@ ASSEMBLY_RELATIONSHIPS = {
     },
 }
 
+# --- Assembly weld (O/L release) ----------------------------------------------------------------
+# Script-owned scope holding every welded part's anchor body + joints, wiped every run
+# (robot.clear_assembly_welds()) -- same reasoning as SCREW_SCOPE_PRIM_PATH.
+ASSEMBLY_WELD_SCOPE_PRIM_PATH = "/World/assembly_welds"
+# How close (metres) a part must already be to its nominal ASSEMBLY_RELATIONSHIPS pose for a release
+# to snap+weld it there. Past this, O/L is an ordinary release -- so aborting a grasp mid-air doesn't
+# teleport the part onto the jig.
+ASSEMBLY_WELD_MAX_DISTANCE = 0.05
+# The per-mount anchor body's mass/inertia. Mostly formality -- the anchor is KINEMATIC (infinite
+# mass to the solver, see robot._ensure_assembly_anchor()) -- but it carries no colliders either, so
+# PhysX has nothing to derive them from. Same values as a screw's (SCREW_MASS, later in this file).
+ASSEMBLY_WELD_ANCHOR_MASS = 0.002
+ASSEMBLY_WELD_ANCHOR_DIAGONAL_INERTIA = [1.0e-7, 1.0e-7, 1.0e-7]
+
 # Drives ConveyorBelt_A24 via Isaac Sim's isaacsim.asset.gen.conveyor OmniGraph node
 # (CreateConveyorBelt), not a direct PhysX write -- see docs/mefron-history.md for why (two
 # confirmed failure modes on the naive route).

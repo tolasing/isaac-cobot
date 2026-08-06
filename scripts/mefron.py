@@ -69,6 +69,10 @@ def main() -> None:
         robot.park_tool_at_rack(tool_name)
     robot.enable_gripper_tool_fingers()
 
+    # Any anchor/joint a previous run's O/L release weld authored -- same "the URDF importer rewrites
+    # mefron.usd every run" reasoning as clear_screws() below.
+    robot.clear_assembly_welds()
+
     # Placeholder screw presenter, with the first screw already waiting on it -- the rest pop in one
     # at a time as each is placed. clear_screws() first so a run never inherits a previous run's
     # screws (the URDF importer rewrites mefron.usd every run; see CLAUDE.md).
@@ -116,15 +120,17 @@ def main() -> None:
         flush=True,
     )
     print(
-        "[mefron] Gripper tool (once docked): press C to close, O to open (finger drive not wired "
-        "yet -- see docs/tool-changer.md). J/B to approach a grasp, P to place.",
+        "[mefron] Gripper tool (once docked): press C to close, O to open. J/B/K to approach a "
+        f"grasp, P to place. Releasing within {config.ASSEMBLY_WELD_MAX_DISTANCE}m of the assembly "
+        "pose snaps the part there and welds it; a grasp key un-welds it again.",
         flush=True,
     )
     print(
         "[mefron] Suction tool (once docked): press "
         + ", ".join(f"{target['key']} to approach {name}" for name, target in config.SUCTION_TARGETS.items())
-        + f", {config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release, "
-        "P to place on main_holder (whichever object was last approached).",
+        + f", {config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release (welds "
+        "the part at its assembly pose, same as O), P to place on main_holder (whichever object was "
+        "last approached).",
         flush=True,
     )
     screw_control = teleop.build_screw_keyboard_control()

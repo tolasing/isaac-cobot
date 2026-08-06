@@ -162,6 +162,92 @@ that frame's logic sees the fresh pose. **Verified live** after the fix:
 deltas (`1.8159` rad for the grasp-approach move, `0.6809` rad more for
 the subsequent assembly-placement move).
 
+## The release weld: O/L pins an assembled part at its nominal pose
+
+Added 2026-08-06, and the reason the placement-accuracy problems below are no
+longer blocking. Two symptoms were being chased at once — parts slipping off
+`main_holder` under gravity once the gripper opened, and parts landing visibly
+off their assembled pose (cuRobo's ~3mm residual plus the still-open
+grasp-centering problem below). **Neither is worth fixing for this scene**: it
+exists for visual understanding of the automation pipeline, not as a source of
+VLA training data, so the accepted answer is to make the assembled result
+*look* right rather than to make the arm *place* it right.
+
+So on release — **O** with the gripper docked, **L** with the suction cup —
+`robot.weld_part_at_assembly_pose()` snaps the part onto the exact nominal pose
+`compute_part_target_pose()` derives from `ASSEMBLY_RELATIONSHIPS`, and
+joint-fixes it there. Same `UsdPhysics.FixedJoint` mechanism as the tool
+changer's dock and `weld_screw_into_hole()`'s pocket, and the same invariant:
+an assembled part is always jointed to something.
+
+Three properties worth knowing:
+
+- **Proximity-gated** (`config.ASSEMBLY_WELD_MAX_DISTANCE`, 5cm). Past that the
+  release is ordinary — so aborting a grasp mid-air with O doesn't teleport the
+  part onto the jig from across the cell. The distance is printed either way.
+- **Reversible.** Pressing a grasp/approach key (J/B/K, N/M) for an object
+  calls `release_assembly_weld()` first, deleting the joint and re-enabling its
+  collision, so an assembled part can be picked back up. State is the joint
+  prim's presence on the stage, not a Python variable, so it survives a
+  Stop/Play.
+- **The welded part's colliders are disabled** while welded, matching the
+  docked-tool precedent (`docs/tool-changer.md` gotcha 2) and sidestepping
+  `main_holder`'s untuned convex-decomposition collider, which already makes
+  parts sink.
+
+### Why a per-mount kinematic anchor, not a direct joint to `main_holder`
+
+A part must ride `main_holder` when the conveyor moves the jig — a placed
+screw's static world anchor was explicitly rejected here for that reason. But
+jointing straight to `main_holder` means handing PhysX a `localPos` on a body
+carrying a 0.001 `unitsResolve` scale, which is exactly the unresolved
+ambiguity `docs/tool-changer.md`'s gotcha 8 warns about (scaled or unscaled
+units? unconfirmed, and a wrong guess is a silent 1000x error).
+
+`_ensure_assembly_anchor()` sidesteps the question instead of answering it. Per
+mount prim, once, it creates a body at the mount's `get_world_pose()` —
+scale-free by construction, so every part then welds onto an *unscaled* anchor
+where metres mean metres. The part's offset on it needs no measurement: it is
+`ASSEMBLY_RELATIONSHIPS[name]["local_position"/"local_orientation_wxyz"]`
+verbatim, since that constant already expresses the part's pose in the mount's
+own frame. `pcb_assembly_on_backpanel_support` falls out for free —
+`backpanel_support` gets its own anchor once welded, giving the chain
+`main_holder → anchor → backpanel_support → anchor → pcb_assembly`.
+
+**That anchor is kinematic, and `sync_assembly_anchors()` drives it onto the
+mount's live pose every teleop frame.** The first version instead made it a
+dynamic 2 g body (copying `present_screw()`'s mass treatment) and joined it to
+the mount with a second `FixedJoint` at identity local frames — elegant, since
+a zero offset is scale-invariant and carries no ambiguity either. **It failed
+live**: a `FixedJoint` is only as rigid as the mass ratio across it, and a 2 g
+anchor holding a real CAD part off a ~5.7 cm lever sagged and rotated until the
+part hung through `main_holder` (which its own disabled colliders no longer
+stopped). Raising the anchor's mass would fix the ratio but put phantom
+kilograms on a jig the conveyor moves by surface friction. Kinematic is
+infinite mass to the solver with no dynamics of its own, so the weld is rigid
+regardless of what the part weighs, and it tracks the mount exactly rather than
+through a constraint that can lag.
+
+One gotcha worth remembering from building it: a `stage.DefinePrim(path,
+"Xform")` prim has **no** `xformOp`s at all, and `SingleXFormPrim(...,
+reset_xform_properties=False).set_world_pose()` only writes existing ops — on a
+freshly defined prim it raises `Empty typeName for ...xformOp:translate`
+(confirmed live, crashed the teleop loop). The ops have to be authored once by
+the default `reset_xform_properties=True` path first, which is safe on a prim
+this module created — the reason every *scene* prim here passes `False` is to
+preserve a `unitsResolve` scale op that a script-made anchor never has.
+
+### The tradeoff, stated plainly
+
+Same one the screws already carry: **a clean-looking assembly is no longer
+evidence the arm arrived accurately.** The part is snapped from wherever it was
+left, so a wrong `ASSEMBLY_RELATIONSHIPS` constant now shows up as a
+confidently-wrong assembly rather than a near-miss, and the real placement error
+is only visible in the printed correction distance.
+
+`scripts/test_mefron_assembly_weld_headless.py` covers the mechanics (weld,
+gate, gravity hold, riding a moved `main_holder`, un-weld).
+
 ## Open problem: grasp-centering (not a joint asymmetry)
 
 **Still open, not yet fixed, confirmed to NOT be a per-finger joint/drive
