@@ -156,12 +156,21 @@ ASSEMBLY_RELATIONSHIPS = {
     },
     # Suction gripper's own approach target expressed in screen's live frame, not a carried part's
     # mount pose (mount_prim_path=part_prim_path=screen on purpose). Derivation + measured values:
-    # docs/mefron-history.md.
+    # docs/mefron-history.md. Orientation re-derived 2026-08-06 by reading /World/target's transform
+    # relative to the screen: the old value carried a 135 deg yaw about Z, which put the approach
+    # visibly diagonal; identity is straight on. local_position kept from the original derivation --
+    # the screen was ATTACHED to the cup during that probe, so its measured z was contact (-0.11024),
+    # 5.3mm short of the standoff an approach pose needs.
     "suction_gripper_approach_on_screen": {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
         "local_position": [0.00028, -0.00024, -0.11558],
-        "local_orientation_wxyz": [0.382330, -0.000471, -0.000099, 0.924026],
+        "local_orientation_wxyz": [
+            0.9999999973427276,
+            2.989584746736537e-05,
+            -4.272515434410521e-05,
+            5.094452340128793e-05,
+        ],
     },
     # Suction approach target for pcb_assembly, same derivation as suction_gripper_approach_on_screen
     # above -- see docs/mefron-history.md.
