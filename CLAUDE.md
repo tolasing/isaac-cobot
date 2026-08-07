@@ -123,12 +123,17 @@ ordinary release. A grasp/approach key un-welds that object first
 (`release_assembly_weld()`), so it can be picked back up. Deliberate
 tradeoff, same as the screws': placement accuracy is now **masked**, not
 fixed — a clean-looking assembly is no longer evidence the arm arrived.
-**The weld also turns the part's collision off**, restored by
+**The weld also turns the part's collision off by default**, restored by
 `release_assembly_weld()` and by `clear_assembly_welds()` on load. A placed
 part is final here and the joint alone holds it; leaving colliders on left the
 snap's interpenetration with the mount dormant until arm motion woke the bodies,
 discharging as a violent shake. Cost: a part placed later won't rest on an
 already-welded one, it passes through until its own weld fires.
+`ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS` opts a part out of that default —
+currently `main_holder_back_cover` alone, so things can still collide with the
+assembly's top face. Confirmed live 2026-08-07 that the cover doesn't shake, but
+it *is* the exact configuration the default guards against, so re-check it after
+any change to `main_holder`'s (still untuned) convex-decomposition collider.
 Full design: `docs/grasp-and-assembly-offsets.md`.
 
 `scripts/mefron_gripper_probe.py` imports just the Franka hand (no arm, no

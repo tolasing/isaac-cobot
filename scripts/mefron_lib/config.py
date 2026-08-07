@@ -217,6 +217,10 @@ ASSEMBLY_WELD_SCOPE_PRIM_PATH = "/World/assembly_welds"
 # to snap+weld it there. Past this, O/L is an ordinary release -- so aborting a grasp mid-air doesn't
 # teleport the part onto the jig.
 ASSEMBLY_WELD_MAX_DISTANCE = 0.05
+# Parts whose colliders SURVIVE their weld, against the default of turning them off (see
+# robot.weld_part_at_assembly_pose()). Opting one back in re-exposes the interpenetration-shake risk
+# that default guards against -- worth it only where something still has to collide with the part.
+ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS = ["/World/main_holder_back_cover"]
 # The per-mount anchor body's mass/inertia. Mostly formality -- the anchor is KINEMATIC (infinite
 # mass to the solver, see robot._ensure_assembly_anchor()) -- but it carries no colliders either, so
 # PhysX has nothing to derive them from. Same values as a screw's (SCREW_MASS, later in this file).

@@ -961,10 +961,12 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
     # anchor == infinite mass). Must come AFTER the joint: the snap leaves the part interpenetrating
     # its mount, an overlap a kinematic anchor can never resolve, so it sits quiet until the arm's
     # motion wakes the bodies and then discharges as a violent shake. See docs/tool-changer.md's gotcha 2.
-    _set_prim_collision_enabled(part_prim_path, False)
+    keep_collision = part_prim_path in config.ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS
+    if not keep_collision:
+        _set_prim_collision_enabled(part_prim_path, False)
     print(
         f"[mefron_lib] welded {part_prim_path} at its {relationship_name} pose ({distance:.3f}m "
-        "correction), collision off.",
+        f"correction), collision {'KEPT (opted in, see config)' if keep_collision else 'off'}.",
         flush=True,
     )
     return True
