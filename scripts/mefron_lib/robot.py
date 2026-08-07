@@ -820,10 +820,10 @@ def _assembly_weld_joint_path(part_prim_path: str) -> str:
 def clear_assembly_welds() -> None:
     """Deletes the whole script-owned assembly-weld scope, so a run never inherits a previous one's
     anchors/joints. Same reasoning as clear_screws(): the URDF importer rewrites mefron.usd on every
-    run (see CLAUDE.md), so anything spawned here can get baked in. Also repairs collision on the
-    assembly parts: an earlier weld disabled their colliders, and that same importer rewrite could
-    persist it -- which silently breaks re-grasping (fingers pass through) and the SurfaceGripper's
-    attach (V finds nothing). Nothing else here turns those off, so re-enabling is safe."""
+    run (see CLAUDE.md), so anything spawned here can get baked in. Also re-enables collision on the
+    assembly parts, which weld_part_at_assembly_pose() turns off -- that same importer rewrite would
+    otherwise persist it into a fresh run, where nothing is welded and every part must be grippable.
+    Nothing else here turns collision off, so re-enabling unconditionally is safe."""
     stage = omni.usd.get_context().get_stage()
     if stage.GetPrimAtPath(config.ASSEMBLY_WELD_SCOPE_PRIM_PATH).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[config.ASSEMBLY_WELD_SCOPE_PRIM_PATH])
@@ -943,9 +943,6 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
     # Re-author the part's own USD xform too, so a Stop restores it ASSEMBLED rather than snapping it
     # back to where it started -- same reason weld_screw_into_hole() does it.
     part_xform.set_world_pose(position=target_trans, orientation=target_quat)
-    # Deliberately does NOT disable the part's colliders. An earlier version did (gotcha 2, contact
-    # fighting the joint) and it broke re-grasping and the SurfaceGripper's own attach -- see
-    # clear_assembly_welds(). The anchor is KINEMATIC, so contact can't move a welded part anyway.
     # body0_local_* IS the weld offset just snapped to -- it already expresses the part's pose in the
     # mount's frame, and the anchor is unscaled and kept coincident with that frame. Must come from
     # the same source as target_trans/quat above, or the joint would pull the part back off it.
@@ -957,23 +954,30 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
         body0_local_position=tuple(weld_local_position),
         body0_local_orientation_wxyz=tuple(weld_local_orientation),
     )
+    # Collision off once welded -- a placed part is final, and the joint alone holds it (kinematic
+    # anchor == infinite mass). Must come AFTER the joint: the snap leaves the part interpenetrating
+    # its mount, an overlap a kinematic anchor can never resolve, so it sits quiet until the arm's
+    # motion wakes the bodies and then discharges as a violent shake. See docs/tool-changer.md's gotcha 2.
+    _set_prim_collision_enabled(part_prim_path, False)
     print(
-        f"[mefron_lib] welded {part_prim_path} at its {relationship_name} pose ({distance:.3f}m correction).",
+        f"[mefron_lib] welded {part_prim_path} at its {relationship_name} pose ({distance:.3f}m "
+        "correction), collision off.",
         flush=True,
     )
     return True
 
 
 def release_assembly_weld(part_prim_path: str) -> bool:
-    """Inverse of weld_part_at_assembly_pose(): deletes that part's weld joint so it can be picked
-    back up. Doesn't touch collision -- the weld no longer disables it. Stateless: the joint prim's
-    presence on the stage IS the state, so this stays correct across a Stop/Play."""
+    """Inverse of weld_part_at_assembly_pose(): deletes that part's weld joint AND restores the
+    collision that weld turned off, so an un-welded part is grippable again. Stateless: the joint
+    prim's presence on the stage IS the state, so this stays correct across a Stop/Play."""
     stage = omni.usd.get_context().get_stage()
     joint_path = _assembly_weld_joint_path(part_prim_path)
     if not stage.GetPrimAtPath(joint_path).IsValid():
         return False
     omni.kit.commands.execute("DeletePrims", paths=[joint_path])
     omni.kit.app.get_app().update()
+    _set_prim_collision_enabled(part_prim_path, True)
     print(f"[mefron_lib] released the assembly weld on {part_prim_path}.", flush=True)
     return True
 

@@ -119,6 +119,12 @@ ordinary release. A grasp/approach key un-welds that object first
 (`release_assembly_weld()`), so it can be picked back up. Deliberate
 tradeoff, same as the screws': placement accuracy is now **masked**, not
 fixed — a clean-looking assembly is no longer evidence the arm arrived.
+**The weld also turns the part's collision off**, restored by
+`release_assembly_weld()` and by `clear_assembly_welds()` on load. A placed
+part is final here and the joint alone holds it; leaving colliders on left the
+snap's interpenetration with the mount dormant until arm motion woke the bodies,
+discharging as a violent shake. Cost: a part placed later won't rest on an
+already-welded one, it passes through until its own weld fires.
 Full design: `docs/grasp-and-assembly-offsets.md`.
 
 `scripts/mefron_gripper_probe.py` imports just the Franka hand (no arm, no
@@ -150,8 +156,11 @@ Current constants (`scripts/mefron_lib/config.py`):
   widths before any grasp key is pressed — each grasp key overrides them.
   `FRANKA_DRIVE_DAMPING = 210.0` is ~4x the bare-wrist value, for the rigid
   tool now bolted on (see gotchas).
-- `OBSTACLE_PRIM_PATHS`: `main_holder_jig` + `tool_rack_gripper`.
-  Deliberately excludes the conveyor/container prims — see open issues.
+- `OBSTACLE_PRIM_PATHS`: currently the **debug value** `ConveyorBelt_A06_01`
+  only, left from narrowing the `plan_single`-after-weld failure. Its normal
+  value is `main_holder_jig` + `tool_rack_gripper`, deliberately excluding the
+  conveyor/container prims — but `main_holder_jig` is exactly what made
+  `plan_single` fail (see open issues), so restoring it needs that fixed first.
 - `SCREW_HOLES`: the ten real mounting pockets, hand-measured off
   `main_holder`'s CAD, in metres in its scale-free frame. A **list**, not a
   name-keyed dict — order is the fill sequence 5/6 walks. Entries 2/3/7/8 keep
@@ -206,20 +215,19 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   progress — real conveyor CAD is far more complex than the single
   `packing_table` prop it replaced. Needs cuboid obstacle approximations
   instead of raw CAD meshes, or narrower sub-prim selection.
-- **The suction cup's release (L key) doesn't actually let go.** The real
-  `SurfaceGripperManager` processes attach/detach as queued PhysX/USD
-  actions on its own `onPhysicsStep`, so scripting the joint-enabled
-  toggle directly from Python races its internal state (three variants
-  tried, all reverted). Manual Stage-panel workaround still required.
-  **Sharpened 2026-08-06 (live):** after L, `SurfaceGripperJoint`'s `body1`
-  rel reads **empty in USD** — yet the screen still follows the wrist when
-  the arm moves away, so **PhysX keeps the constraint after the USD side is
-  cleared**. Any release check reading USD (`body1`, `jointEnabled`) or the
-  manager's Open/Closed status therefore reports "released" while the part is
-  still physically held — a deferral gated on that was tried and did not
-  work. Whatever detects a real release has to come from the PhysX side. The
-  L release weld now pins the part at its assembly pose either way, so watch
-  for the arm tugging against a part it hasn't actually let go of.
+- ~~The suction cup's release (L key) doesn't actually let go.~~ **Closed
+  2026-08-07 — it does let go, and the old diagnosis was wrong on both counts.**
+  `body1` reads empty in USD *always*: the manager's only USD writes are
+  `WriteStatus`/`WriteGrippedObjectsAndFilters`/`WriteAttachmentPointBatch`
+  (`SurfaceGripperComponent.h`), so it never writes `body1` and that emptiness
+  was never evidence of anything. Reproduced headless with our exact joint
+  authoring, then disproved: after `open_gripper()` the object hangs in mid-air,
+  but one velocity write drops it into free fall with **no intervention at all**
+  — it was a **sleeping PhysX body**, not a held one. Don't retry: authoring
+  `body1`, deleting/disabling the attachment joint, or re-authoring it mid-run
+  (that rebuilds the articulation under `panda_hand` and the arm goes haywire).
+  The same sleeping-body effect drove the "welded part follows the wrist"
+  sighting — see `docs/grasp-and-assembly-offsets.md`.
 - **The ee settles ~3mm short of `/World/target`, along the approach axis.**
   Measured live: cuRobo is exact (`FK(commanded joints)` hits the target to
   0.00mm/0.001°) — the whole error is joint tracking lag, ~0.18° on joints

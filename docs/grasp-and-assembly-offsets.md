@@ -248,10 +248,12 @@ is only visible in the printed correction distance.
 `scripts/test_mefron_assembly_weld_headless.py` covers the mechanics (weld,
 gate, gravity hold, riding a moved `main_holder`, un-weld).
 
-## WIP 2026-08-06 (end of day): release weld, split poses, two open bugs
+## 2026-08-06/07: release weld, split poses, and both bugs closed
 
-**State is deliberately mid-investigation — the commit carrying this is marked
-TEMPORARY.** What is in the tree and what is still broken:
+Started as a mid-investigation snapshot (the `d50b6ff` commit carrying it was
+marked TEMPORARY, with two open bugs). **Both are now closed** — bug 1 was
+disproved outright and bug 2 was root-caused live; see their sections below.
+What landed:
 
 ### Landed
 
@@ -268,47 +270,95 @@ TEMPORARY.** What is in the tree and what is still broken:
   has no entry — it wasn't on the jig for that measurement. Gap vs P's pose,
   i.e. how far a part visibly jumps on release: `backpanel_support` ~12mm,
   `screen` ~7mm, `pcb_assembly` ~4mm, `finger_print_scanner` ~3mm.
-- **The weld no longer disables the part's colliders**, and
-  `clear_assembly_welds()` re-enables them on load. The old disable broke
-  re-grasping (fingers pass through a part whose colliders are off) and the
-  SurfaceGripper's attach (nothing to detect), and because the URDF importer
-  rewrites `mefron.usd` every run it could persist into later sessions. Safe to
-  drop because the anchor is kinematic — contact can't move a welded part.
+- **The weld disables the part's colliders again** — dropped on 2026-08-06 for
+  breaking re-grasping (fingers pass through) and the SurfaceGripper's attach
+  (nothing to detect), then reinstated on 2026-08-07 with the symmetric
+  re-enable those failures were actually missing: `release_assembly_weld()`
+  restores collision, and `clear_assembly_welds()` still repairs it on load
+  (needed because the URDF importer rewrites `mefron.usd` every run and would
+  otherwise persist the disable into a session where nothing is welded). Why it
+  had to come back: see the sighting section below.
 
-### Open bug 1: the suction joint outlives its USD release
+### CLOSED bug 1 (2026-08-07): sleeping bodies, not a stuck suction joint
 
-The weld itself works for the screen (`welded /World/screen … 0.006m
-correction`), but **the SurfaceGripper never really lets go**: with the arm
-driven away afterwards, the screen follows the wrist. Measured at that moment,
-`/World/Franka/panda_hand/SurfaceGripperJoint` has `jointEnabled=True` and
-**`body1=[]`** — so PhysX is still holding a constraint the USD side has
-already cleared. Consequence for any fix: a release check reading `body1`,
-`jointEnabled`, or the manager's Open/Closed status will report "released"
-while the part is still held. A weld deferred on exactly that was written and
-**did not work** (reverted, not in the tree). Detection has to come from the
-PhysX side.
+The original diagnosis — "the SurfaceGripper never really lets go, PhysX keeps
+the constraint after the USD side is cleared" — is **wrong in both halves**.
 
-### Open bug 2: `plan_single` fails after a weld
+**`body1=[]` was never evidence.** `SurfaceGripperComponent.h`'s `UsdActionType`
+has exactly three members: `WriteStatus`, `WriteGrippedObjectsAndFilters`,
+`WriteAttachmentPointBatch`. The manager **never writes `physics:body1`** — it
+swaps PhysX actors directly — so that rel reads empty before, during and after
+every grip, on a healthy gripper.
 
-Immediately after the screen weld, every subsequent re-plan returns
-`success=False`, repeatedly, and the arm stops following the target. Ruled out
-by direct probe at the frozen moment: the arm is *not* mechanically pinned
-(joint velocities non-zero ~0.02–0.07 rad/s), the weld joint is correct
-(`body0=anchor_main_holder`, `body1=/World/screen`,
-`excludeFromArticulation=True`), and the anchor is kinematic as intended. So
-cuRobo is *refusing*, not being physically blocked. **The reason is not yet
-known** — the failure prints only `success`, so `status`/`valid_query`
-instrumentation was added and then reverted before it was ever read. That's the
-first thing to do next: print `result.status` and `result.valid_query` on
-failure, which separates an unreachable goal from a start state cuRobo thinks
-is invalid or in collision.
+**The release works.** A minimal headless 1-DOF-gantry scene reusing
+`attach_surface_gripper_physics()`'s exact authoring (same limits, drives,
+`IsaacAttachmentPointAPI`, `excludeFromArticulation`) reproduces the symptom:
+after `open_gripper()` the gripped box hangs in mid-air with `status=Open` and
+`gripped=[]`. But with the joint untouched and still enabled, one velocity write
+through the tensors API sends it into free fall (`box_z` +0.0557 → −21.73,
+`vz` −20.62) and it never snaps back. Nothing was holding it — the body was
+**asleep**, and neither enabling gravity nor cutting a joint wakes a sleeping
+PhysX actor. A free control box falling to −207m in the same run is what keeps
+that harness honest; an earlier version unsupported the box by toggling the
+ground's `collisionEnabled`, which doesn't propagate at runtime, and every
+conclusion drawn from it was void.
 
-### Also in this commit, not a finding
+Ruled out — don't retry:
 
-`config.OBSTACLE_PRIM_PATHS` is currently a **debug value**
-(`["/World/ConveyorBelt_A06_01"]`) from narrowing down bug 2 — `main_holder_jig`
-and `tool_rack_gripper` are no longer in cuRobo's collision world. Restore
-those before treating any planning behaviour as meaningful.
+- **Authoring `physics:body1`** to a parking body the way the shipped
+  `SurfaceGripper_gantry.usda` does. No effect on release.
+- **Deleting the attachment joint prim, or `jointEnabled=False`,** after the
+  open. Neither drops the object — the sleeping body is why, not a constraint.
+- **Re-authoring the attachment joint mid-run** to force a release. Actively
+  harmful: it re-creates prims under `panda_hand`, a live articulation link,
+  rebuilding the articulation and making the arm go haywire (confirmed live).
+
+### What the "welded part follows the wrist" sighting was
+
+The same sleeping-body mechanism on the assembly side.
+`weld_part_at_assembly_pose()` snaps the part onto its nominal pose — a real
+correction, ~6mm for the screen — which leaves it **interpenetrating its mount**,
+and pins it to a **kinematic** anchor, i.e. infinite mass to the solver. That
+overlap has no way to resolve gently. It sits dormant while the scene is
+quiescent, then arm motion (numpad 1's traverse to the tool rack is the one that
+does it) wakes the bodies and the stored penetration discharges at once as a
+violent shake, which reads as the assembly being dragged along.
+
+Two wrong turns on the way there, both from stating inference as measurement:
+that the arm was colliding with the jig, and that `main_holder` was being
+"shoved". Neither was measured; both were rejected from live observation. What
+did settle it was the user's own reading — the shake only appears once the arm
+moves, i.e. once the sleeping bodies wake.
+
+**Fix, and why this shape.** The weld now disables the part's collision
+(`_set_prim_collision_enabled(part_prim_path, False)`, after the joint is
+created), restored by `release_assembly_weld()` and by `clear_assembly_welds()`
+on load. A placed part is final in this workflow and the joint alone holds it —
+collision contributes nothing to holding a body welded to a kinematic anchor.
+`d50b6ff` had tried the same disable and reverted it for breaking re-grasping and
+the SurfaceGripper's attach; what makes it correct now is the **symmetric
+re-enable** on un-weld, which teleop already triggers before every grasp
+(J/B/K) and every suction approach (N/M). Known cost: a part placed later won't
+rest on an already-welded one — it passes through until its own weld fires.
+
+`UsdPhysics.FilteredPairsAPI` between part and mount was the alternative, and
+would have kept colliders live; dropped as unnecessary once "placed is final"
+was confirmed.
+
+### CLOSED bug 2: `plan_single` failed because of `main_holder_jig`
+
+Found live by the user: cuRobo's refusal came from **`main_holder_jig` being in
+`config.OBSTACLE_PRIM_PATHS`**, not from the weld. Everything the earlier probe
+ruled out stays ruled out — the arm was never mechanically pinned, and the weld
+joint and kinematic anchor were both correct. cuRobo was refusing because of
+that obstacle, so no `status`/`valid_query` instrumentation was needed after all.
+
+**Still open as a consequence:** `config.OBSTACLE_PRIM_PATHS` remains the debug
+value `["/World/ConveyorBelt_A06_01"]`, so `main_holder_jig` and
+`tool_rack_gripper` are out of cuRobo's collision world and the arm will plan
+straight through them. Restoring `main_holder_jig` naively re-breaks planning;
+it needs the cuboid-approximation treatment `docs/mefron-history.md` already
+prescribes for the conveyor CAD.
 
 ## Open problem: grasp-centering (not a joint asymmetry)
 
