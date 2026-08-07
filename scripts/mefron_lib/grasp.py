@@ -190,23 +190,30 @@ def compute_screw_presenter_pose():
     )
 
 
-def compute_screw_hole_pose(hole_index: int):
-    """The world pose a screw's own frame should end up at for config.SCREW_HOLES[hole_index]:
-    main_holder's LIVE pose composed with that hole's local pose, then pushed
-    SCREW_HOLE_INSERTION_DEPTH along the hole's OWN +Z (not world -Z) so a re-oriented hole entry
-    still seats inward. Same live-relative principle as compute_part_target_pose()."""
+def screw_hole_local_pose(hole_index: int):
+    """Where a seated screw sits in the MOUNT's own frame: config.SCREW_HOLES[hole_index]'s entry
+    pose pushed SCREW_HOLE_INSERTION_DEPTH along the hole's OWN +Z (not world -Z), so a re-oriented
+    hole still seats inward. Shared by the world pose below and weld_screw_into_hole()'s joint frame
+    -- one source of truth, or the joint would pull the screw off the pose it was just snapped to."""
     hole = config.SCREW_HOLES[hole_index]
-    # reset_xform_properties=False -- main_holder carries an xformOp:scale:unitsResolve op; see
+    return compute_dependent_world_pose(
+        hole["local_position"],
+        hole["local_orientation_wxyz"],
+        [0.0, 0.0, config.SCREW_HOLE_INSERTION_DEPTH],
+        [1.0, 0.0, 0.0, 0.0],
+    )
+
+
+def compute_screw_hole_pose(hole_index: int):
+    """The world pose a screw's own frame should end up at for config.SCREW_HOLES[hole_index]: the
+    mount's (the back cover's) LIVE pose composed with the local pose above. Same live-relative
+    principle as compute_part_target_pose()."""
+    # reset_xform_properties=False -- the cover carries an xformOp:scale:unitsResolve op; see
     # compute_part_target_pose() above.
     mount_trans, mount_quat = SingleXFormPrim(
         prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
     ).get_world_pose()
-    entry_trans, entry_quat = compute_dependent_world_pose(
-        mount_trans, mount_quat, hole["local_position"], hole["local_orientation_wxyz"]
-    )
-    return compute_dependent_world_pose(
-        entry_trans, entry_quat, [0.0, 0.0, config.SCREW_HOLE_INSERTION_DEPTH], [1.0, 0.0, 0.0, 0.0]
-    )
+    return compute_dependent_world_pose(mount_trans, mount_quat, *screw_hole_local_pose(hole_index))
 
 
 def compute_ee_target_for_screw_pose(ee_link_prim_path: str, screw_trans, screw_quat):

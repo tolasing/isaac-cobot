@@ -342,38 +342,28 @@ SCREW_PRESENTER_SEAT_LOCAL_POSITION = [0.00666, -0.086, 0.072]
 # from above can reach it. Identity presented it head-down. Same rotation the old fallback used.
 SCREW_PRESENTER_SEAT_LOCAL_ORIENTATION_WXYZ = [0.0, 1.0, 0.0, 0.0]
 
-SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder"
-# The ten REAL mounting pockets, hand-measured off main_holder's CAD. A list, not a name-keyed dict
-# like ASSEMBLY_RELATIONSHIPS -- order is the fill sequence, matching that sheet's own numbering.
-# Metres in main_holder's scale-free frame, same convention as that dict. Entries 2/3/7/8 keep the
-# tighter values from its tn__CutExtrude51..54 colliders (6.65mm square, 20mm deep, mouth at z=0).
+# The back cover, NOT main_holder: a fastener goes through the cover into the holder, so the cover
+# owns the holes a screw is seen entering. Its mouths sit 15mm above main_holder's own in world.
+SCREW_HOLE_MOUNT_PRIM_PATH = "/World/main_holder_back_cover"
+# The nine real clearance holes, read off the cover's own mesh (r=2.000mm rings at its local z=0
+# face, 12mm deep) rather than a measurement sheet -- derivation in docs/tool-changer.md. Metres in
+# the mount's scale-free frame, same convention as ASSEMBLY_RELATIONSHIPS. A list, not a name-keyed
+# dict: order is the fill sequence, a perimeter walk up the +x edge, down the -x edge, then centre.
 SCREW_HOLES = [
-    # Identity orientation throughout: main_holder's own world rotation is already 180 deg about X,
-    # so the screw's local +Z (tip) comes out pointing down into the pocket with no extra twist.
-    # 1 -- CHECK: y's last digit read as 8, and this sits 1.0mm from entry 4, so one of the two is
-    # misread (they can't both be pockets).
-    {"local_position": [0.08228, 0.11028, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 2 -- sheet says dz=6mm; left at the CAD's z=0 (pocket mouth), which is what works today.
-    {"local_position": [0.08568, -0.05605, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 3 -- sheet says dz=6mm; same call as entry 2.
-    {"local_position": [0.08568, 0.05795, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 4 -- CHECK: x read as 81.38 while entry 6's mirror reads 81.83; see also entry 1's overlap.
-    {"local_position": [0.08138, 0.10983, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 5
-    {"local_position": [0.0, 0.1055, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 6 -- CHECK: x read as 81.83, mirroring entry 4's 81.38. Should be one magnitude, +/-.
-    {"local_position": [-0.08183, 0.10983, 0.0], "local_orientation_wxyz": [1.0,  0.0, 0.0, 0.0]},
-    # 7 -- sheet says dz=6mm; same call as entry 2.
-    {"local_position": [-0.08567, 0.05795, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 8
-    {"local_position": [-0.08567, -0.05605, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 9
-    {"local_position": [-0.08228, -0.11028, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
-    # 10
-    {"local_position": [0.0, -0.11287, 0.004], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    # Identity orientation throughout: the cover's own world rotation is already 180 deg about X, so
+    # the screw's local +Z (tip) comes out pointing down into the hole with no extra twist.
+    {"local_position": [0.082276, -0.110276, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [0.085675, -0.056047, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [0.085675, 0.057953, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [0.081834, 0.109834, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.081834, 0.109834, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.085675, 0.057953, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.085675, -0.056047, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [-0.082276, -0.110276, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
+    {"local_position": [0.0, -0.112875, 0.0], "local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0]},
 ]
-# How far down the hole's own +Z the screw's tip ends up -- 10mm into a 20mm pocket leaves the head
-# just above the face, so a placed screw reads as seated rather than balanced on the surface.
+# How far down the hole's own +Z the screw's tip ends up. 0.00 = tip at the mouth, body standing
+# proud -- a dropped-in screw, matching the no-driving-rotation scope. The knob for seating deeper.
 SCREW_HOLE_INSERTION_DEPTH = 0.00
 # Relative to each pick/place pose, never a world-Z constant (see ASSEMBLY_LIFT_HEIGHT in CLAUDE.md
 # for that exact mistake). Smaller than TOOL_RACK_APPROACH_CLEARANCE for a computed reason: the tool

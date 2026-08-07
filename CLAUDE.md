@@ -85,15 +85,19 @@ screwdriver; P places whichever was last grasped/approached either way.
 Opens `mefron.usd` directly via `open_stage()`.
 
 **Screws (screwdriver tool):** 5 picks the screw waiting on the presenter
-(`/World/screw_presenter`), 6 carries it to the next of
-`config.SCREW_HOLES`' ten pockets on `main_holder` and leaves it there, then
+(`/World/screw_presenter`), 6 carries it to the next of `config.SCREW_HOLES`'
+nine clearance holes in **`main_holder_back_cover`** and leaves it there, then
 pops the next screw in at the presenter. **No screw-driving rotation** —
 deliberately out of scope. A screw is always joint-fixed to something
 (presenter → wrist → hole), never free-falling, mirroring
-`park_tool_at_rack()`'s invariant for tools. The bit-tip offset and all ten
+`park_tool_at_rack()`'s invariant for tools. The bit-tip offset and all nine
 hole poses are CAD-derived, not hand-jogged — see `docs/tool-changer.md`.
 Both welds use the *nominal* pose, not where the arm settled: a picked screw
 goes on the bit axis, a placed screw into `compute_screw_hole_pose(hole)`.
+The mount is the **cover**, not the holder — a fastener goes through the cover
+into the holder, and the cover's hole mouths sit 15mm above `main_holder`'s own.
+Placement reads the cover's *live* pose, so doing it before the cover is
+assembled seats screws wherever it's still parked (warned, not refused).
 Deliberate tradeoff — a screw ends up where a real pocket would constrain
 it, so a clean-looking placement is **no longer evidence the arm arrived**
 (the bit visibly separates from the screw by cuRobo's residual on release).
@@ -161,13 +165,13 @@ Current constants (`scripts/mefron_lib/config.py`):
   value is `main_holder_jig` + `tool_rack_gripper`, deliberately excluding the
   conveyor/container prims — but `main_holder_jig` is exactly what made
   `plan_single` fail (see open issues), so restoring it needs that fixed first.
-- `SCREW_HOLES`: the ten real mounting pockets, hand-measured off
-  `main_holder`'s CAD, in metres in its scale-free frame. A **list**, not a
-  name-keyed dict — order is the fill sequence 5/6 walks. Entries 2/3/7/8 keep
-  the tighter values from its `tn__CutExtrude51..54` colliders; entries 1 and 4
-  are marked `CHECK` in place (they land 1.0mm apart, so one is a misread).
-  `SCREW_HOLE_INSERTION_DEPTH` is currently `0.00` — a placed screw sits at the
-  pocket mouth, not down it. `SCREWDRIVER_TIP_LOCAL_POSITION` is likewise
+- `SCREW_HOLES`: the nine real clearance holes, read off
+  `main_holder_back_cover`'s own mesh (exact r=2.000mm rings at its local z=0
+  face), in metres in its scale-free frame. A **list**, not a name-keyed dict —
+  order is the fill sequence 5/6 walks, a perimeter walk. `main_holder` carries
+  the identical pattern, the cross-check that the two parts are drilled to mate.
+  `SCREW_HOLE_INSERTION_DEPTH` is `0.00` — a placed screw sits at the hole
+  mouth, not down it. `SCREWDRIVER_TIP_LOCAL_POSITION` is likewise
   mesh-derived (274.854mm along the docked tool's local +Z).
   `/World/screw_presenter` is a real CAD asset baked into `mefron.usd`, so its
   live pose wins and `SCREW_PRESENTER_FALLBACK_*` is unused on this scene;
@@ -242,17 +246,22 @@ Full investigation detail for all of these: `docs/mefron-history.md`.
   The docked **gripper** tool also carries zero collision at all by
   construction (`vendor_gripper_tool_visual_only.py` strips it), so it can't
   collide with the part it grips either.
-- **Screws: reach is tight and placed screws don't follow the jig.** The
-  27.5cm screwdriver puts the worst hole 0.771m from the mount against the
-  Panda's ~0.855m envelope, so `SCREW_APPROACH_CLEARANCE` is 0.02 (not the
-  rack's 0.15) and an unreachable hole is a scene-layout fix, not a code one.
-  A placed screw is welded to a static world anchor, so it stays behind if the
-  conveyor moves `main_holder` afterward — same limitation
-  `park_tool_at_rack()` has. Both in `docs/tool-changer.md`.
-- **Screws: `SCREW_HOLES` entries 1 and 4 land 1.0mm apart**, and their x reads
-  disagree across the mirror pair 4/6 (81.38 vs 81.83mm), so one of the two is
-  a misread of the measurement sheet. Both are marked `CHECK` in `config.py`;
-  every other pocket is 52mm+ from its nearest neighbour.
+- **Screws: reach is tight.** The 27.5cm screwdriver puts the worst hover
+  0.809m from the mount against the Panda's ~0.855m envelope (computed for all
+  nine holes with the cover assembled), so `SCREW_APPROACH_CLEARANCE` is 0.02
+  (not the rack's 0.15) and an unreachable hole is a scene-layout fix, not a
+  code one. See `docs/tool-changer.md`.
+- ~~Screws: placed screws don't follow the jig.~~ **Closed 2026-08-07** — a
+  placed screw welds to `_ensure_assembly_anchor()`'s mount-tracking kinematic
+  anchor, the same one assembled parts ride, so it follows the cover and
+  `main_holder` under it. Confirmed live in
+  `test_mefron_screw_headless.py`: nudged cover moved 0.289m, screw followed to
+  0.0027m. `park_tool_at_rack()` still has the original limitation for tools.
+- ~~Screws: `SCREW_HOLES` entries 1 and 4 land 1.0mm apart.~~ **Closed
+  2026-08-07** — settled by reading the CAD mesh instead of the measurement
+  sheet, which turned out to carry three errors: a flipped y sign on entry 1,
+  an x of 81.38 where the mesh says 81.834 on entry 4, and an entry 5 at
+  `(0, 105.5)` that is no hole on either part.
 
 ## Must-know gotchas
 

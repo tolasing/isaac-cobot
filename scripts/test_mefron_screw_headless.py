@@ -1,7 +1,7 @@
 """Headless regression test for the screw pick-and-place mechanics (robot.present_screw()/
 attach_screw_to_wrist()/weld_screw_into_hole() and grasp.compute_ee_target_for_screw_pose()).
 Drives no cuRobo plan -- it moves the arm's joints directly and asserts the screw actually rides the
-wrist while carried, and actually stays put in world space once welded into a hole.
+wrist while carried, stays put once welded into a hole, and then rides the back cover when THAT moves.
 Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_screw_headless.py --headless"""
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ preload_real_packaging()
 import carb.settings  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from isaacsim.core.prims import SingleArticulation, SingleXFormPrim  # noqa: E402
+from isaacsim.core.prims import SingleArticulation, SingleRigidPrim, SingleXFormPrim  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
 from mefron_lib import config, grasp, robot  # noqa: E402
 
@@ -70,8 +70,12 @@ def _hand_pose() -> tuple:
 
 
 _ARM_POSES = [(-1.30, -2.50), (-0.90, -2.00)]
-# Below this, an arm "move" didn't really move and the ride/stay checks would pass vacuously.
+# Below these, a "move" didn't really move and the ride/stay checks would pass vacuously.
 _MIN_ARM_MOVEMENT = 0.05
+_MIN_MOUNT_MOVEMENT = 0.05
+# How far the back cover is nudged for the ride check -- well past _WELD_TOLERANCE, so a screw that
+# stayed behind reads as an unmistakable failure rather than settling noise.
+_MOUNT_NUDGE = 0.25
 
 
 def _move_arm(simulation_app, pose_index: int) -> float:
@@ -148,6 +152,9 @@ def main() -> None:
         robot.spawn_dockable_tool(tool_name)
         robot.park_tool_at_rack(tool_name)
 
+    # clear_assembly_welds() first, same order as mefron.py: a placed screw's anchor now lives in the
+    # assembly-weld scope, so a stale one baked into mefron.usd by an earlier run has to go too.
+    robot.clear_assembly_welds()
     robot.clear_screws()
     robot.ensure_screw_presenter()
     robot.present_screw(0)
@@ -234,8 +241,7 @@ def main() -> None:
     ride_error = float(np.linalg.norm(np.array(carried_before[0]) - np.array(carried_after[0])))
     _check(f"screw 0 rides the wrist through an arm move (offset drift={ride_error:.4f}m)", ride_error < _WELD_TOLERANCE)
 
-    # Place: the screw leaves the wrist for a static anchor at its own current pose.
-    placed_trans_before, _ = _screw_pose(0)
+    # Place: the screw leaves the wrist for the back cover's own kinematic anchor.
     robot.weld_screw_into_hole(0, 0)
     _settle(simulation_app)
     _check("screw 0 jointed into hole 0 after placing", stage.GetPrimAtPath(robot._screw_hole_joint_path(0)).IsValid())
@@ -245,21 +251,22 @@ def main() -> None:
     )
 
     # Regression, the place-side twin of the carry check above: welding the arm's settled pose left
-    # screws ~2-3mm out in x/y and ~5mm too deep in main_holder's own frame. Adding the insertion
-    # depth straight onto local_position is exact only while every hole's orientation is identity.
+    # screws ~2-3mm out in x/y and ~5mm too deep in the mount's own frame. Compared against
+    # screw_hole_local_pose(), the same helper the weld joint's own body0 frame comes from.
     mount_trans, mount_quat = SingleXFormPrim(
         prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
     ).get_world_pose()
     placed_local_trans, _ = grasp.compute_relative_pose(mount_trans, mount_quat, *_screw_pose(0))
-    want_local = np.array(config.SCREW_HOLES[0]["local_position"]) + np.array(
-        [0.0, 0.0, config.SCREW_HOLE_INSERTION_DEPTH]
-    )
-    hole_error = float(np.linalg.norm(placed_local_trans - want_local))
+    want_local, _ = grasp.screw_hole_local_pose(0)
+    hole_error = float(np.linalg.norm(placed_local_trans - np.array(want_local)))
     _check(
-        f"placed screw 0 seats at hole 0's nominal pose in main_holder's frame (err={hole_error:.5f}m)",
+        f"placed screw 0 seats at hole 0's nominal pose in the mount's frame (err={hole_error:.5f}m)",
         hole_error < _CARRY_TOLERANCE,
     )
 
+    # Read AFTER the weld, not before it: the weld snaps the screw off the bit onto the hole, so a
+    # pre-weld baseline measures that (intended, ~0.5m) teleport instead of the drift being checked.
+    placed_trans_before, _ = _screw_pose(0)
     moved = _move_arm(simulation_app, 1)
     _check(f"the arm actually moved away before the stay check (hand moved {moved:.4f}m)", moved > _MIN_ARM_MOVEMENT)
     placed_trans_after, _ = _screw_pose(0)
@@ -267,6 +274,44 @@ def main() -> None:
     _check(
         f"placed screw 0 stays put in world space while the arm moves away (drift={stay_error:.4f}m)",
         stay_error < _WELD_TOLERANCE,
+    )
+
+    # The load-bearing check for welding to the cover rather than a static world anchor: does a placed
+    # screw RIDE it? The anchor tracks the mount through sync_assembly_anchors(), which
+    # run_teleop_loop() calls every frame -- stood in for here, since this test drives no teleop loop.
+    mount_prim = stage.GetPrimAtPath(config.SCREW_HOLE_MOUNT_PRIM_PATH)
+    # SingleRigidPrim for a simulated body -- teleporting one needs the PhysX-side write, since a
+    # plain USD xform write gets overwritten by the body's own pose on the next step.
+    mount_mover = (
+        SingleRigidPrim(prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, name="mefron_screw_test_mount")
+        if mount_prim.HasAPI(UsdPhysics.RigidBodyAPI)
+        else SingleXFormPrim(prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False)
+    )
+    mount_trans_before, mount_quat_before = mount_mover.get_world_pose()
+    mount_mover.set_world_pose(
+        position=np.array(mount_trans_before) + np.array([0.0, _MOUNT_NUDGE, 0.0]),
+        orientation=mount_quat_before,
+    )
+    # Every frame, not once: the cover is a real dynamic body, so it keeps settling after the nudge
+    # and a single sync would leave the anchor (and the screw) behind wherever it was at frame 0.
+    for _ in range(_SETTLE_FRAMES):
+        robot.sync_assembly_anchors()
+        simulation_app.update()
+    mount_trans_after, _ = mount_mover.get_world_pose()
+    mount_moved = float(np.linalg.norm(np.array(mount_trans_after) - np.array(mount_trans_before)))
+    _check(
+        f"the back cover actually moved before the ride check (moved {mount_moved:.4f}m)",
+        mount_moved > _MIN_MOUNT_MOVEMENT,
+    )
+
+    # Recomputed off the cover's NEW live pose -- compute_screw_hole_pose() reads it live, so this is
+    # where the screw should have been carried to.
+    moved_hole_trans, _ = grasp.compute_screw_hole_pose(0)
+    rode_trans, _ = _screw_pose(0)
+    ride_error = float(np.linalg.norm(np.array(moved_hole_trans) - rode_trans))
+    _check(
+        f"placed screw 0 rides the back cover to its new pose (err={ride_error:.4f}m)",
+        ride_error < _WELD_TOLERANCE,
     )
 
     # And the next screw pops in, so the presenter is never empty mid-sequence.

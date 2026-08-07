@@ -309,19 +309,22 @@ convex-decomposition tuning is still an open issue):
 |---|---|---|---|
 | presented | `screw_<i>/presenter_joint` | `presenter_anchor_<i>` (non-physics anchor) | screw |
 | carried | `screw_<i>/tip_joint` | `panda_hand` | screw |
-| placed | `screw_<i>/hole_joint` | `hole_anchor_<i>` (non-physics anchor) | screw |
+| placed | `screw_<i>/hole_joint` | `assembly_welds/anchor_main_holder_back_cover` (kinematic, mount-tracking) | screw |
 
 Three rules, each inherited from a gotcha above:
 
 - **A distinct joint path per stage**, never redefined in place (gotcha 5).
 - **Zero-snap welds.** `_create_tool_fixed_joint()` defaults both local frames
   to the bodies' own origins, so a joint only welds cleanly when the two
-  frames already coincide. The presenter and hole anchors are therefore
-  *placed at the screw's own live pose* — the same trick
-  `park_tool_at_rack()` uses. The tip joint can't use an anchor (a joint
+  frames already coincide. The presenter anchor is therefore *placed at the
+  screw's own live pose* — the same trick `park_tool_at_rack()` uses. The
+  other two stages can't: the tip joint can't use an anchor at all (a joint
   whose body0 isn't a rigid body anchors to the **world**, frozen, so it
-  wouldn't follow the arm), so it instead passes a live-measured
-  `body0_local_*` from `compute_relative_pose(panda_hand, screw)`.
+  wouldn't follow the arm) and the hole joint deliberately reuses the assembly
+  weld's shared per-mount anchor (below), which sits on the mount's frame
+  rather than the screw's. Both pass an explicit `body0_local_*` instead — a
+  live-measured `compute_relative_pose(panda_hand, screw)` for the tip, and
+  `grasp.screw_hole_local_pose(hole_index)` for the hole.
 - **body0 for the tip joint is `panda_hand`, not the docked tool prim.** The
   tool prim carries a 0.001 `unitsResolve` scale, and whether PhysX reads a
   joint's `localPos` in scaled or unscaled units is exactly the ambiguity
@@ -345,16 +348,45 @@ joint-driven.
   female coupler head occupies local z 0→10 mm, confirming +Z runs
   coupler→tip. Supersedes the `assembly` branch's guessed 265 mm
   `panda_hand`-frame value.
-- **`SCREW_HOLES` = the four real mounting pockets.** `main_holder`'s
-  `tn__CutExtrude51..54` collider sub-meshes are 6.65 mm square, 20 mm deep,
-  entering at its top face (local z=0): centres `(±85.675, +57.955)` and
-  `(±85.675, −56.045)` mm. Identity `local_orientation_wxyz` on all four,
-  because `main_holder`'s own world rotation is already 180° about X, so a
-  screw's local +Z (its tip) comes out pointing down into the pocket.
+- **`SCREW_HOLES` = the nine clearance holes in `main_holder_back_cover`,
+  read off its own mesh.** Clustering the cover's `tn__ExtrudeThin3` points at
+  its local z=0 face finds nine exact r=2.000 mm rings (Ø4 clearance, 12 mm
+  deep): `(±81.834, +109.834)`, `(±85.675, +57.953)`, `(±85.675, −56.047)`,
+  `(±82.276, −110.276)` and `(0.000, −112.875)` mm. `main_holder`'s own body
+  mesh carries the identical pattern — the cover's four `±85.675` holes line
+  up exactly with its `tn__CutExtrude51..54` pockets — which is the
+  cross-check that the two parts really are drilled to mate. Identity
+  `local_orientation_wxyz` throughout, because the cover's own world rotation
+  is already 180° about X, so a screw's local +Z (its tip) comes out pointing
+  down into the hole.
 
 Both are stored in **metres**, matching `ASSEMBLY_RELATIONSHIPS`: these
 offsets are composed against `SingleXFormPrim.get_world_pose()`, which drops
-`main_holder`'s 0.001 scale (gotcha 8 again).
+the mount's 0.001 scale (gotcha 8 again).
+
+### The mount is the back cover, not the holder
+
+`SCREW_HOLE_MOUNT_PRIM_PATH` is `/World/main_holder_back_cover`. A fastener
+goes *through* the cover into the holder, so the cover owns the holes a screw
+is seen entering. Because the cover assembles at main_holder-local
+`(0, 0, −0.015)` with identity relative rotation, its hole mouths sit **15 mm
+above** `main_holder`'s own in world — re-pointing the mount frame *is* the z
+shift, with the x/y values unchanged. Reach cost is small: the worst hover
+waypoint goes 0.799 m → 0.809 m from `MOUNT_POSITION`, still inside the
+~0.855 m envelope, so `SCREW_APPROACH_CLEARANCE` stays 0.02.
+
+Consequence worth knowing: hole poses are read off the cover's **live** pose,
+so placing screws before the cover has been assembled seats them at wherever
+it's still parked. `teleop._warn_if_screw_mount_unassembled()` prints a warning
+past `ASSEMBLY_WELD_MAX_DISTANCE` but deliberately does not refuse.
+
+This supersedes the original four-pocket derivation, which read
+`main_holder`'s `tn__CutExtrude51..54` colliders (6.65 mm square, 20 mm deep)
+and a hand-measurement sheet for the rest. The sheet turned out to carry three
+errors the mesh settles outright: a flipped y sign on entry 1, an x of 81.38
+where the CAD says 81.834 on entry 4 (both previously marked `CHECK` in
+`config.py`), and an entry 5 at `(0, 105.5)` that is no hole on either part —
+the only feature there is a Ø10 boss at z 21–23 on the cover's far face.
 
 `SCREW_CARRY_LOCAL_POSITION` is one screw-length past the tip with **identity**
 orientation — the placeholder screw asset's origin is its tip with the body
@@ -363,11 +395,13 @@ head's outer face lands exactly on the bit tip with no twist.
 
 ### Reach is the binding constraint
 
-The tool hangs 275 mm below the wrist, so a hole at world z≈0.99 needs the
-wrist at z≈1.277 — about 0.78 m from `MOUNT_POSITION` for the far pair
+The tool hangs 275 mm below the wrist, so a hole at world z≈1.01 needs the
+wrist at z≈1.297 — about 0.80 m from `MOUNT_POSITION` for the far pair
 (x≈3.229) against the Panda's ~0.855 m envelope. A 0.15 m hover (what the
-tool rack uses) would push those hover waypoints to ~0.874 m, **past reach**;
-hence `SCREW_APPROACH_CLEARANCE = 0.05` (worst hover ≈0.807 m).
+tool rack uses) would push those hover waypoints past reach; hence
+`SCREW_APPROACH_CLEARANCE = 0.02`, which puts the worst hover at 0.809 m
+(computed for all nine holes with the cover assembled — it was 0.799 m when
+the holes came off `main_holder`, so moving the mount up cost ~10 mm).
 `test_mefron_screw_headless.py` prints each leg's distance from the mount and
 warns past the envelope. If `plan_single success=False` still appears for the
 far holes, the fix is scene layout — move `main_holder`/the jig closer via the
@@ -402,12 +436,15 @@ envelope, ~0.80 m once `SCREW_APPROACH_CLEARANCE` hovers above it.
 
 ### Open issues specific to screws
 
-- **A placed screw is welded to a static world anchor, so it does not follow
-  `main_holder` if the jig moves afterward.** Accepted for now, and exactly
-  what `park_tool_at_rack()` already does for tools. Jointing directly to
-  `main_holder` (a real rigid body) would fix it but reintroduces the
-  scaled-body `localPos` ambiguity above — worth doing once that convention
-  is confirmed live.
+- ~~A placed screw is welded to a static world anchor, so it does not follow
+  `main_holder` if the jig moves afterward.~~ **Closed** — a placed screw now
+  welds to `_ensure_assembly_anchor(SCREW_HOLE_MOUNT_PRIM_PATH)`, the same
+  kinematic, mount-tracking anchor an assembled part rides, so it follows the
+  back cover (and `main_holder` under it) down the conveyor. This sidesteps
+  the scaled-body `localPos` ambiguity rather than accepting it: the anchor is
+  a script-created, unscaled prim driven onto the mount's `get_world_pose()`,
+  never the scaled CAD body itself. `park_tool_at_rack()` still has the
+  original limitation for **tools**.
 - **cuRobo has no collision awareness of the carried screw or the
   presenter**, consistent with the tool-collision and
   `attach_objects_to_robot()` open issues.

@@ -602,15 +602,45 @@ def _build_screw_pick_queue(screw_control: ScrewControl, ee_link_prim_path: str)
     return queue
 
 
+def _warn_if_screw_mount_unassembled() -> None:
+    """Screw holes are read off the back cover's LIVE pose, so placing before it's been assembled
+    seats screws at wherever it's still parked. Warns rather than refuses -- same call as
+    weld_part_at_assembly_pose()'s far-release message, and nothing here is unrecoverable."""
+    from .grasp import compute_part_weld_pose
+
+    relationship_name = next(
+        (
+            name
+            for name, relationship in config.ASSEMBLY_RELATIONSHIPS.items()
+            if relationship["part_prim_path"] == config.SCREW_HOLE_MOUNT_PRIM_PATH
+        ),
+        None,
+    )
+    if relationship_name is None:
+        return
+    live_trans, _ = SingleXFormPrim(
+        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
+    ).get_world_pose()
+    assembled_trans, _ = compute_part_weld_pose(relationship_name)
+    distance = float(np.linalg.norm(np.array(live_trans) - np.array(assembled_trans)))
+    if distance > config.ASSEMBLY_WELD_MAX_DISTANCE:
+        print(
+            f"[mefron] {config.SCREW_HOLE_MOUNT_PRIM_PATH} is {distance:.3f}m from its assembled "
+            "pose -- screws will be placed wherever it currently sits.",
+            flush=True,
+        )
+
+
 def _build_screw_place_queue(screw_control: ScrewControl, ee_link_prim_path: str) -> list:
     """One hover -> descend -> release-into-hole -> retract leg onto config.SCREW_HOLES[hole_index],
-    computed off main_holder's live pose. On arrival the screw is welded in and the NEXT one is
+    computed off the back cover's live pose. On arrival the screw is welded in and the NEXT one is
     presented, so there's always one waiting on the presenter."""
     from . import robot
     from .grasp import compute_ee_target_for_screw_pose, compute_screw_hole_pose
 
     hole_index = screw_control.hole_index
     screw_index = screw_control.carried_screw_index
+    _warn_if_screw_mount_unassembled()
     hole_trans, hole_quat = compute_screw_hole_pose(hole_index)
     place_position, place_orientation = compute_ee_target_for_screw_pose(ee_link_prim_path, hole_trans, hole_quat)
 
