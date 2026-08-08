@@ -1,6 +1,5 @@
-"""Headless regression test for mefron_lib's J/P one-shot grasp-approach and assembly-target snap
-requests, driven via run_teleop_loop() like test_mefron_teleop_headless.py. Run standalone:
-${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_headless.py --headless"""
+"""Headless regression test for the J/P grasp-approach and assembly-target snaps, driven via
+run_teleop_loop(). Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_headless.py --headless"""
 
 from __future__ import annotations
 
@@ -12,9 +11,8 @@ from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
 if __name__ == "__main__":
-    # Unlike mefron.py's own headless path (which never touches J), this test exercises
-    # grasp.compute_grasp_approach_pose_from_file() unconditionally -- that needs the
-    # isaacsim.robot_setup.grasp_editor extension, which only the full experience loads.
+    # J needs grasp.compute_grasp_approach_pose_from_file(), hence the grasp_editor extension,
+    # which only the full experience loads. mefron.py's own headless path never touches J.
     simulation_app = SimulationApp(
         {"headless": _headless}, experience=f'{os.environ["EXP_PATH"]}/isaacsim.exp.full.kit'
     )
@@ -29,12 +27,10 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleArticulation, SingleXFormPrim  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
-from mefron_lib import config, grasp, robot, teleop  # noqa: E402
+from mefron_lib import config, grasp, keyboard, motion, robot, teleop  # noqa: E402
 
-# 900, not 300: phase 1's discrete MotionGen trajectory needs more real time than 300 frames provides
-# to actually finish (time-dilated playback + headless frames ticking faster than real time) -- the
-# post-phase-1 assembly-target sanity check below needs phase 1 to have truly completed, not just
-# started, or it measures a still-in-transit gripper pose.
+# 900, not 300: phase 1's time-dilated trajectory needs the extra real time to actually finish, or
+# the post-phase-1 check measures a still-in-transit gripper pose.
 _MAX_ITERATIONS_PER_PHASE = 900
 
 
@@ -58,9 +54,9 @@ def main() -> None:
     robot.stiffen_gripper_drive()
 
     print("[test_mefron_assembly_headless] warming up cuRobo motion_gen...", flush=True)
-    motion_gen, robot_cfg = teleop.setup_motion_gen()
-    target = teleop.build_teleop_target(robot_cfg)
-    gripper_control = teleop.GripperKeyboardControl()
+    motion_gen, robot_cfg = motion.setup_motion_gen()
+    target = motion.build_teleop_target(robot_cfg)
+    gripper_control = keyboard.GripperKeyboardControl()
     # Arm 1 only, mirroring mefron.py's own arm-1 dict -- see teleop.run_teleop_loop()'s docstring
     # for the required per-arm dict shape.
     arms = [
@@ -104,9 +100,8 @@ def main() -> None:
     print(f"[test_mefron_assembly_headless] approach pose is {approach_distance:.4f} m from the scanner", flush=True)
     assert approach_distance < 0.2, "grasp-approach pose is implausibly far from the scanner"
 
-    # compute_assembly_grasp_target() now needs a real live gripper-to-part relationship (it composes
-    # main_holder's target pose with the CURRENT measured offset) -- meaningless before phase 1 has
-    # actually moved the gripper near the part, so that check moves to after phase 1 below.
+    # compute_assembly_grasp_target() composes main_holder's target with the CURRENT measured
+    # offset, so it's meaningless until phase 1 has moved the gripper near the part.
     ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/{robot_cfg['kinematics']['ee_link']}"
 
     j_names = robot_cfg["kinematics"]["cspace"]["joint_names"]
@@ -120,9 +115,8 @@ def main() -> None:
     phase1_delta = float(np.max(np.abs(phase1_positions - start_positions)))
     print(f"[test_mefron_assembly_headless] phase 1 (J: grasp approach) max joint delta: {phase1_delta:.4f} rad", flush=True)
 
-    # Sanity-check compute_assembly_grasp_target() against the post-phase-1 live gripper pose, not
-    # retract config -- it now composes main_holder's target with the CURRENT measured gripper-to-part
-    # offset, so it only makes sense once phase 1 has actually moved the gripper near the part.
+    # Checked against the post-phase-1 live gripper pose, not retract config -- see the note above
+    # about the CURRENT measured offset.
     holder_trans, holder_quat = SingleXFormPrim(prim_path="/World/main_holder").get_world_pose()
     assembly_trans, assembly_quat = grasp.compute_assembly_grasp_target(ee_link_prim_path)
     print(
@@ -146,10 +140,8 @@ def main() -> None:
     phase2_delta = float(np.max(np.abs(phase2_positions - phase1_positions)))
     print(f"[test_mefron_assembly_headless] phase 2 (P: assembly target) max joint delta vs phase 1: {phase2_delta:.4f} rad", flush=True)
 
-    # Phase 3 (K: grasp-approach for pcb_assembly) removed 2026-07-22 -- K was retired from
-    # config.GRASP_TARGETS in favor of arm 2's suction cup (see config.SUCTION_TARGETS), so
-    # config.GRASP_TARGETS["pcb_assembly"] no longer exists. This test only wires up arm 1, so
-    # there's no equivalent suction-approach phase to substitute here.
+    # Phase 3 (K for pcb_assembly) removed 2026-07-22 -- that key retired in favor of the suction
+    # cup, and this test wires up no suction control to substitute.
     if phase1_delta < 0.05 or phase2_delta < 0.05:
         print("[test_mefron_assembly_headless] FAIL: robot did not move meaningfully for one or more phases.", flush=True)
     else:

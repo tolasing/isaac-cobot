@@ -1,6 +1,5 @@
-"""Headless regression test for mefron_lib.teleop's run_teleop_loop(): fakes a mouse drag by
-monkeypatching target.get_world_pose(), then asserts the robot moved.
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_teleop_headless.py --headless"""
+"""Headless regression test for run_teleop_loop(): fakes a mouse drag by monkeypatching
+target.get_world_pose(), then asserts the robot moved. Run with --headless."""
 
 from __future__ import annotations
 
@@ -23,7 +22,7 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleArticulation  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
-from mefron_lib import config, robot, teleop  # noqa: E402
+from mefron_lib import config, motion, robot, teleop  # noqa: E402
 
 # Small offset from the target's reachable starting pose.
 _DRAG_OFFSET = np.array([0.0, 0.05, 0.05])
@@ -46,9 +45,9 @@ def main() -> None:
     robot.stiffen_gripper_drive()
 
     print("[test_mefron_teleop_headless] warming up cuRobo motion_gen...", flush=True)
-    motion_gen, robot_cfg = teleop.setup_motion_gen()
+    motion_gen, robot_cfg = motion.setup_motion_gen()
 
-    target = teleop.build_teleop_target(robot_cfg)
+    target = motion.build_teleop_target(robot_cfg)
 
     # Must exist before timeline.play(); run_teleop_loop() only defines it later.
     stage = omni.usd.get_context().get_stage()
@@ -78,7 +77,20 @@ def main() -> None:
 
     target.get_world_pose = fake_get_world_pose
 
-    teleop.run_teleop_loop(simulation_app, motion_gen, robot_cfg, target, max_iterations=_MAX_ITERATIONS)
+    # One-arm list, mirroring mefron.py's own dict minus every optional control.
+    arms = [
+        {
+            "motion_gen": motion_gen,
+            "robot_cfg": robot_cfg,
+            "target": target,
+            "robot_prim_path": config.ROBOT_PRIM_PATH,
+            "target_prim_path": config.TARGET_PRIM_PATH,
+            "mount_position": config.MOUNT_POSITION,
+            "mount_orientation_wxyz": config.MOUNT_ORIENTATION_WXYZ,
+            "name": "arm1",
+        },
+    ]
+    teleop.run_teleop_loop(simulation_app, arms, max_iterations=_MAX_ITERATIONS)
 
     # Constructed only after run_teleop_loop's own SingleArticulation goes out of scope.
     verify_robot = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name="verify_robot")

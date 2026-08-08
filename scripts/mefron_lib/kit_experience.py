@@ -1,7 +1,5 @@
-"""Deferred-enabling of the full experience's extra extensions, after the Franka is mounted -- see
-robot.mount_franka()'s docstring for why this order matters. Needs omni.kit.app, so unlike
-kit_bootstrap.py this can only be imported once a SimulationApp already exists. See
-docs/mefron-history.md for the viewport-blanking regression this works around."""
+"""Enables the full experience's extra extensions AFTER the Franka is mounted -- see
+robot.mount_franka(). Needs a live SimulationApp, unlike kit_bootstrap.py."""
 
 from __future__ import annotations
 

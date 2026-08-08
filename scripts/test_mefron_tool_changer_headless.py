@@ -1,9 +1,5 @@
-"""Headless regression test for the ATC's dock/undock mechanics
-(robot.spawn_dockable_tool()/park_tool_at_rack()/dock_tool_to_wrist()/undock_tool_to_rack()):
-swaps between all 3 tools across two full cycles and asserts, after each step, that the right
-FixedJoint exists and the tool's world pose actually tracks the wrist (or the rack) once PhysX
-settles -- not just that the USD authoring calls didn't raise.
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_tool_changer_headless.py --headless"""
+"""Headless regression test for the ATC's dock/undock mechanics: swaps all 3 tools across two
+cycles and asserts the joint exists AND the tool's pose really tracks it. Run with --headless."""
 
 from __future__ import annotations
 
@@ -26,16 +22,14 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleXFormPrim  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
-from mefron_lib import config, robot  # noqa: E402
+from mefron_lib import config, robot, toolchanger  # noqa: E402
 
 _SETTLE_FRAMES = 90
-# TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION's magnitude is ~0.02m -- 0.05m gives headroom for the
-# rotational contribution without masking a real convergence failure (see docs/tool-changer.md for
-# why these particular offsets are still placeholders pending hand-jog derivation).
+# The docked offset's magnitude is ~0.02m -- 0.05m leaves headroom for the rotational contribution
+# without masking a real convergence failure. Those offsets are still placeholders.
 _DOCKED_DISTANCE_TOLERANCE = 0.05
-# 1cm was occasionally tripped by ordinary PhysX settling jitter on re-parking (observed ~1.07cm on
-# an otherwise-clean run) -- these positions are placeholders anyway, so 2cm is plenty to still
-# catch a real "didn't return to the rack" failure without flaking on normal noise.
+# 1cm was occasionally tripped by PhysX settling jitter on re-parking (~1.07cm observed) -- 2cm
+# still catches a real "didn't return to the rack" failure without flaking.
 _PARKED_POSITION_TOLERANCE = 0.02
 
 _failures: list[str] = []
@@ -53,19 +47,18 @@ def _settle(simulation_app) -> None:
 
 
 def _assert_docked(stage, tool_name: str) -> None:
-    _check(f"{tool_name}: wrist joint exists after docking", stage.GetPrimAtPath(robot._wrist_joint_path(tool_name)).IsValid())
+    _check(f"{tool_name}: wrist joint exists after docking", stage.GetPrimAtPath(toolchanger._wrist_joint_path(tool_name)).IsValid())
     _check(
         f"{tool_name}: rack joint removed after docking",
-        not stage.GetPrimAtPath(robot._rack_joint_path(tool_name)).IsValid(),
+        not stage.GetPrimAtPath(toolchanger._rack_joint_path(tool_name)).IsValid(),
     )
     hand_trans, _ = SingleXFormPrim(
         prim_path=f"{config.ROBOT_PRIM_PATH}/panda_hand", reset_xform_properties=False
     ).get_world_pose()
-    # female_coupler, not tool_prim_path -- for the gripper tool, tool_prim_path is just an
-    # organizing Xform over its real rigid links (base_link/panda_hand/...) and never itself
-    # moves; female_coupler is one of the joint's own two endpoints, correct for all 3 tool types.
+    # female_coupler, not tool_prim_path -- the latter can be an organizing Xform that never moves.
+    # female_coupler is one of the joint's own endpoints, correct for all 3 tool types.
     tool_trans, _ = SingleXFormPrim(
-        prim_path=robot._female_coupler_prim_path(tool_name), reset_xform_properties=False
+        prim_path=toolchanger._female_coupler_prim_path(tool_name), reset_xform_properties=False
     ).get_world_pose()
     distance = float(np.linalg.norm(hand_trans - tool_trans))
     _check(f"{tool_name}: tool tracks the wrist after docking (distance={distance:.4f}m)", distance < _DOCKED_DISTANCE_TOLERANCE)
@@ -74,13 +67,12 @@ def _assert_docked(stage, tool_name: str) -> None:
 def _assert_parked(stage, tool_name: str) -> None:
     _check(
         f"{tool_name}: rack joint restored after undocking",
-        stage.GetPrimAtPath(robot._rack_joint_path(tool_name)).IsValid(),
+        stage.GetPrimAtPath(toolchanger._rack_joint_path(tool_name)).IsValid(),
     )
-    # female_coupler, not tool_prim_path -- for the gripper tool, tool_prim_path is just an
-    # organizing Xform over its real rigid links (base_link/panda_hand/...) and never itself
-    # moves; female_coupler is one of the joint's own two endpoints, correct for all 3 tool types.
+    # female_coupler, not tool_prim_path -- the latter can be an organizing Xform that never moves.
+    # female_coupler is one of the joint's own endpoints, correct for all 3 tool types.
     tool_trans, _ = SingleXFormPrim(
-        prim_path=robot._female_coupler_prim_path(tool_name), reset_xform_properties=False
+        prim_path=toolchanger._female_coupler_prim_path(tool_name), reset_xform_properties=False
     ).get_world_pose()
     expected_position = np.array(config.TOOL_CHANGE_TARGETS[tool_name]["dock_position"])
     distance = float(np.linalg.norm(expected_position - tool_trans))
@@ -92,9 +84,8 @@ def _assert_parked(stage, tool_name: str) -> None:
 
 def main() -> None:
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
-    # Decouples physics stepping from real wall-clock time -- with 3 tools' worth of physics per
-    # frame instead of 1, without this a fixed frame-count settle can correspond to noticeably less
-    # simulated time and end mid-convergence. See CLAUDE.md's mefron.py note on the same setting.
+    # Decouples physics stepping from wall-clock time -- without it a fixed frame-count settle can
+    # cover noticeably less simulated time and end mid-convergence.
     carb.settings.get_settings().set_bool("/app/player/useFixedTimeStepping", True)
 
     clear_stale_robot_configuration(config.MEFRON_CONFIGURATION_DIR)
@@ -107,20 +98,15 @@ def main() -> None:
     robot.mount_franka()
     robot.remove_parallel_jaw_gripper()
     robot.hide_hand_housing()
-    robot.attach_tool_changer_male_coupler()
+    toolchanger.attach_tool_changer_male_coupler()
 
     for tool_name in config.TOOL_CHANGE_TARGETS:
-        robot.spawn_dockable_tool(tool_name)
-        robot.park_tool_at_rack(tool_name)
+        toolchanger.spawn_dockable_tool(tool_name)
+        toolchanger.park_tool_at_rack(tool_name)
 
     stage = stage_context.get_stage()
-    # Confirmed live regression (docs/tool-changer.md's gotcha 6): live-importing the gripper tool
-    # via the URDF importer into mefron.usd's own stage silently corrupted the main arm's own link
-    # structure through a shared "Robot Description" cache -- panda_link0-8 disappeared from
-    # /World/Franka entirely, replaced by the tool's own link names, even though both imports used
-    # fully distinct prim paths. Neither the joint/pose checks below nor a naive "does the tool land
-    # at the right path" check would have caught this (the tool WAS also at its own correct path;
-    # the main arm was the corrupted one) -- checking the main arm's own structure directly instead.
+    # Confirmed live regression (docs/tool-changer.md's gotcha 6): a second URDF import silently
+    # erased panda_link0-8 from the MAIN arm. Only checking its own structure catches that.
     expected_franka_children = {f"panda_link{i}" for i in range(8)} | {"panda_hand", "ee_link"}
     actual_franka_children = {c.GetName() for c in stage.GetPrimAtPath(config.ROBOT_PRIM_PATH).GetChildren()}
     _check(
@@ -129,7 +115,7 @@ def main() -> None:
     )
     _check(
         "gripper tool's base_link lands at its own tool_prim_path",
-        stage.GetPrimAtPath(robot._female_coupler_parent_prim_path("gripper")).IsValid(),
+        stage.GetPrimAtPath(toolchanger._female_coupler_parent_prim_path("gripper")).IsValid(),
     )
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -141,32 +127,31 @@ def main() -> None:
     for tool_name in config.TOOL_CHANGE_TARGETS:
         _check(
             f"{tool_name}: starts parked at its own rack, nothing on the wrist",
-            stage.GetPrimAtPath(robot._rack_joint_path(tool_name)).IsValid()
-            and not stage.GetPrimAtPath(robot._wrist_joint_path(tool_name)).IsValid(),
+            stage.GetPrimAtPath(toolchanger._rack_joint_path(tool_name)).IsValid()
+            and not stage.GetPrimAtPath(toolchanger._wrist_joint_path(tool_name)).IsValid(),
         )
 
-    # Cycle 1: dock suction, then swap directly to screwdriver (undock before dock, same ordering
-    # teleop._build_tool_change_queue() enforces -- see dock_tool_to_wrist()'s own docstring for
-    # why skipping the undock leaves the previous tool jointless).
-    robot.dock_tool_to_wrist("suction")
+    # Cycle 1: dock suction, then swap to screwdriver -- undock before dock, the same ordering
+    # motion.build_tool_change_queue() enforces.
+    toolchanger.dock_tool_to_wrist("suction")
     _settle(simulation_app)
     _assert_docked(stage, "suction")
 
-    robot.undock_tool_to_rack("suction")
-    robot.dock_tool_to_wrist("screwdriver")
+    toolchanger.undock_tool_to_rack("suction")
+    toolchanger.dock_tool_to_wrist("screwdriver")
     _settle(simulation_app)
     _assert_parked(stage, "suction")
     _assert_docked(stage, "screwdriver")
 
     # Cycle 2: swap to gripper, then back to a fully bare wrist -- confirms this isn't a one-shot
     # mechanism and that undocking with nothing queued next leaves a clean parked state.
-    robot.undock_tool_to_rack("screwdriver")
-    robot.dock_tool_to_wrist("gripper")
+    toolchanger.undock_tool_to_rack("screwdriver")
+    toolchanger.dock_tool_to_wrist("gripper")
     _settle(simulation_app)
     _assert_parked(stage, "screwdriver")
     _assert_docked(stage, "gripper")
 
-    robot.undock_tool_to_rack("gripper")
+    toolchanger.undock_tool_to_rack("gripper")
     _settle(simulation_app)
     _assert_parked(stage, "gripper")
 

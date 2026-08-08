@@ -1,5 +1,24 @@
 # mefron scene — full history
 
+> **2026-08-08 cleanup.** `scripts/` was reduced to `mefron.py` plus the five
+> `test_mefron_*_headless.py` harnesses. Deleted: `build_scene.py`,
+> `build_scene_mefron.py`, `mefron2.py`, `import_cr5.py`, `setup_curobo.py`,
+> `fix_cad_import_colors.py`, the three `*_grasp_editor_scene.py` files,
+> `mefron_gripper_probe.py`, `mefron_screen_approach_probe.py`, the three
+> `vendor_*.py` bakers, `teach_waypoint.py`, `playback_waypoints.py`,
+> `waypoints.py`, `test_teleop_headless.py`, and `tests/`. `import_cr5()` moved
+> into `mefron_lib/usd_util.py` as `import_urdf()`.
+>
+> `mefron_lib` was also split: `robot.py` now holds only the arm, with the ATC
+> in `toolchanger.py`, the release weld in `assembly.py`, screws in `screws.py`,
+> shared USD/PhysX helpers in `usd_util.py`; `teleop.py` split into
+> `keyboard.py` (control objects), `motion.py` (cuRobo setup + waypoint queues)
+> and the per-frame loop. **References below to `robot.py`/`teleop.py` functions
+> resolve to those modules now** — the code is unchanged, only relocated. Dead
+> code removed at the same time: `mount_franka_hand_only()`,
+> `write_hand_only_urdf()`, `attach_suction_gripper()`,
+> `attach_screwdriver_gripper()` and their config constants.
+
 Chronological bug/fix log for the mefron scanner-assembly scene and its
 scripts. `CLAUDE.md` keeps only current state and the gotchas most likely
 to bite immediately; this file has the full forensic detail — root causes,

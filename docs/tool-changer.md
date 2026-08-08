@@ -450,3 +450,141 @@ envelope, ~0.80 m once `SCREW_APPROACH_CLEARANCE` hovers above it.
   `attach_objects_to_robot()` open issues.
 - **`screw_m3.usd` is not real CAD** — two plain cylinders at M3 nominal
   dimensions, standing in until a real fastener drawing exists.
+
+## 2026-08-08: rationale migrated out of code comments
+
+The 2026-08-08 cleanup capped every comment and docstring in
+`scripts/mefron_lib/` at two lines. Rationale that lived inline and had no
+home in `docs/` yet was moved here rather than dropped.
+
+### `FRANKA_DRIVE_DAMPING` = 210.0, ~4x the bare-wrist value
+
+The original 52.35988 was tuned for a Franka with nothing bolted to its
+wrist. Confirmed live that the ATC's rigid tool-changer `FixedJoint`
+*underdamps* once a real tool is attached: joint velocity pins at the Panda
+wrist joints' own hardware limit (2.61 rad/s) instead of decaying after
+`dock_tool_to_wrist()`.
+
+That only became visible once `_set_tool_collision_enabled()` actually
+disabled the docked tool's collision. Before that it was silently no-op'ing,
+and the resulting contact friction was accidentally providing damping that
+partly masked the problem. 210.0 is an empirical first attempt and has not
+been confirmed sufficient live.
+
+### `_wrist_joint_path()` is per-tool, not one shared `wrist_joint` name
+
+Confirmed live that redefining a `Joint` prim at the same path with a
+different `body1` target leaves PhysX solving against the **stale** target
+(the previously docked tool's `female_coupler`), even though `body0`,
+`localPos` and `localRot` all read correct from the USD side. A fresh joint
+path per tool sidesteps the redefinition entirely. Same family as gotcha 5.
+
+### `spawn_dockable_tool()` un-instances the tool's whole subtree
+
+Confirmed live that the gripper tool disappears the moment the main Franka
+arm appears — the same "shared instanceable prototype" gotcha
+`hide_hand_housing()` works around for the arm's own `panda_hand/visuals`,
+just hitting a different pairing: the tool's geometry derives from the
+identical `panda_hand` URDF mesh source, so it risks sharing one prototype
+with the live-imported arm.
+
+`SetInstanceable(False)` is called on **every** instance prim in the
+subtree, not by walking up from one leaf — there may be several independent
+instance roots. The list is materialized before the loop because
+un-instancing an ancestor re-composes the stage, which would invalidate an
+in-progress `PrimRange` iterator.
+
+### `spawn_dockable_tool()`'s two asset shapes
+
+- **Multi-link articulation** (currently only the gripper tool): the URDF
+  importer synthesizes a `root_joint` `PhysicsFixedJoint` welding its
+  free-floating `base_link` to the world. That must be removed or the
+  rack/wrist `FixedJoint` isn't the only thing constraining the tool.
+  `DeletePrims` silently no-ops on it (same gotcha as
+  `remove_parallel_jaw_gripper()`'s finger joints); `SetActive(False)` is
+  what actually removes the constraint.
+- **Flat single-prim asset** (suction/screwdriver): confirmed
+  `electric_screwdriver.usd` carries no baked-in `RigidBodyAPI` at all,
+  unlike the suction gripper asset, so a `FixedJoint` targeting a child of
+  `tool_prim_path` can't resolve any rigid body to pull. `RigidBodyAPI` is
+  applied explicitly rather than trusting the source asset.
+
+For a baked tool, `rack_prim_path` is a lightweight non-physics anchor: a
+real rigid body can't be jointed to its own descendant, and `female_coupler`
+lives under the baked tool itself. It is re-synced to the baked tool's
+**current live world pose** every run, so it always matches wherever the
+tool was hand-placed in the GUI.
+
+### `enable_gripper_tool_fingers()`: three hand-authoring fixups
+
+The gripper tool's fingers and their `RigidBodyAPI` are hand-authored
+directly in `mefron.usd`. Three things PhysX needs are easy to get wrong by
+hand, so they are restored in code every run instead:
+
+1. Each finger needs `UsdGeom.Xformable.SetResetXformStack(True)`, since
+   it's a `RigidBodyAPI`'d child of another enabled rigid body. Without it
+   PhysX logs *"missing xformstack reset when child of another enabled rigid
+   body"* and the finger can fly off on the first physics step (confirmed
+   live). `ClearXformOpOrder()`/`AddTransformOp()` must run **before**
+   `SetResetXformStack()` — they author the same `xformOpOrder` attribute.
+2. The two `panda_finger_joint1/2` prismatic joints ship deactivated from
+   the vendor bake and must be explicitly reactivated for their `DriveAPI`
+   to have anything to act on.
+3. That same bake left their drive at the URDF importer's whole-robot
+   default (stiffness 625 / damping 10). `stiffen_gripper_drive()` raises
+   it, exactly as it did for the pre-ATC arm-mounted gripper, just pointed
+   at the tool's own path.
+
+### `dock_tool_to_wrist()`'s gripper special case
+
+The gripper tool uses the same stock `panda_hand` mesh as the arm's own, so
+it mates `panda_link8` directly to it via the real URDF offset
+(`TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ`) instead of
+approximating through the male/female coupler geometry.
+
+For every other tool, `UsdGeom.Cylinder` is centered on its own prim origin
+and `TOOL_CHANGER_MALE_LOCAL_POSITION` places that origin at the cylinder's
+middle, so `body0` mates at the **inner face** (`-HEIGHT/2`), not the
+center. Confirmed live for the gripper before it moved to the `panda_link8`
+scheme.
+
+### Screw welds use nominal poses, never the arm's settled pose
+
+- `attach_screw_to_wrist()` welds at the docked tool's live pose plus
+  `SCREW_CARRY_LOCAL_*`. Welding the *live* hand→screw offset instead froze
+  cuRobo's ~2 mm residual approach error into the joint, leaving the screw
+  permanently off the bit axis for the rest of the cycle. The screw is moved
+  onto that pose before jointing so the correction isn't a visible snap —
+  safe because a screw carries no colliders.
+- `attach_screw_to_wrist()`'s `body0` is `panda_hand` itself: a real rigid
+  body at unit scale, so `localPos0` is unambiguous. The docked tool prim's
+  0.001 scale would make a joint's own frame exactly the guess gotcha 8
+  warns about.
+- `weld_screw_into_hole()` seats at the cover's **live** pose plus
+  `SCREW_HOLES[hole_index]` plus insertion depth. Welding the live arm pose
+  left placed screws 2–3 mm out in x/y and ~5 mm too deep, measured by
+  reparenting them under the mount. A real screw is constrained by the hole,
+  not by the arm's accuracy.
+- Both re-author the screw's own USD xform, so a Stop restores it *at* the
+  hole rather than snapping back to where it spawned.
+
+### `present_screw()`'s anchor
+
+The presenter joint's `body0` is a script-created anchor Xform at the seat
+pose, not the presenter prim itself: identity local frames on both sides
+weld with zero snap, and `body0` stays clear of the presenter's `0.001`
+`unitsResolve` scale (gotcha 8). Either way `body0` isn't a rigid body, so
+the screw is anchored to the world.
+
+### `mount_franka_hand_only()` was deleted, not lost
+
+The 2026-08-08 cleanup removed `mount_franka_hand_only()`,
+`write_hand_only_urdf()` and `_HAND_ONLY_URDF_TEMPLATE` from
+`mefron_lib/robot.py` along with their only callers (the probe scenes and
+the vendor bakers). Its warning is already covered by gotcha 6 above and is
+restated here so it survives the deletion: that template's `base_link` and
+`ee_link` collide with the main arm's own identically-named links if both
+are imported into the same session, because the URDF importer's
+disk-persisted "Robot Description" cache keys visuals by bare link name.
+Confirmed live — it broke the main arm's rendering. The ATC gripper tool is
+a pre-vendored standalone asset for exactly this reason.

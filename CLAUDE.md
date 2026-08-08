@@ -1,346 +1,206 @@
 # CLAUDE.md
 
-Project-specific context for **isaac-cobot**. Kept to the essentials for
-working in the sim day-to-day — full history, forensic detail, and "why"
-narratives live in `docs/` (linked below) rather than here.
+Project-specific context for **isaac-cobot**. Current state and the traps
+that bite immediately; full history and "why" narratives live in `docs/`.
 
 ## Code style
 
-- Comments/docstrings: 2 lines normal, **4 lines hard max**. Longer
-  rationale belongs in `docs/` (usually `docs/mefron-history.md`), linked
-  with a short pointer instead of inlined.
+- Comments and docstrings: **2 lines hard max.** Longer rationale belongs in
+  `docs/` (usually `docs/mefron-history.md`), with a short pointer in its place.
 
 ## What this repo is
 
-An NVIDIA Isaac Sim project using cuRobo for collision-aware motion
-planning. **There is no physical robot hardware** — everything targets
-Isaac Sim only; treat all sim behavior as illustrative, not validated
-against real hardware.
+An NVIDIA Isaac Sim project using cuRobo for collision-aware motion planning.
+**There is no physical robot hardware** — everything targets Isaac Sim only;
+treat all sim behavior as illustrative, not validated against real hardware.
 
 The active work is a scanner-assembly pick-and-place task built on
-`assets/mefron/` — a hand-authored scene (`mefron.usd`: factory floor,
-packing tables, and a scanner-assembly CAD mockup — `finger_print_scanner`,
+`assets/mefron/` — a hand-authored scene (`mefron.usd`: factory floor, packing
+tables, and a scanner-assembly CAD mockup — `finger_print_scanner`,
 `main_holder`, `screen`, `backpanel_support`). A Franka Panda (cuRobo's own
-bundled config) is mounted into this scene and driven by an interactive
-cuRobo drag-teleop loop (`motion_gen.plan_single()`); grasp and
-assembly-placement poses are derived by manually jogging the robot to a
-good pose in the GUI and reading back the relative transform, not measured
-on real hardware.
+bundled config) is mounted into it and driven by an interactive cuRobo
+drag-teleop loop (`motion_gen.plan_single()`). Grasp and assembly poses are
+derived by jogging the robot to a good pose in the GUI and reading back the
+relative transform, not measured on real hardware.
 
-**This branch (`atc`)** replaces the old 3-separate-Frankas cell (one
-arm each for gripper/suction/screwdriver) with **one Franka fitted with
-an automatic tool changer**: a permanent male coupler on the wrist, and
-the three tools as detachable modules parked in their own rack until a
-numpad key docks one. See `docs/tool-changer.md` for the full design,
-alternatives considered, and open issues.
+**This branch (`atc`)** replaces the old 3-separate-Frankas cell with **one
+Franka fitted with an automatic tool changer**: a permanent male coupler on the
+wrist, and gripper/suction/screwdriver as detachable modules parked in their own
+rack until a tool-change key docks one. Full design: `docs/tool-changer.md`.
+
+**This branch (`atc-laptop`)** is `atc` plus the 2026-08-08 cleanup, with the
+tool-changer keys moved off the numpad to **Y/U/I** so it can be driven from a
+laptop keyboard. That key remap is the only behavioral difference from `atc`.
 
 ## Where things live
 
-- **This file** — current state, and gotchas that will immediately break
-  something if you don't know them.
-- `docs/mefron-history.md` — full chronological bug/fix log for every
-  mefron script, plus the cuRobo/PhysX/URDF-importer Conventions this file
-  only summarizes, plus full detail on the open issues below.
-- `docs/grasp-and-assembly-offsets.md` — how the grasp/assembly relative-
-  pose constants were derived, plus the open grasp-centering problem.
-- `docs/tool-changer.md` — the ATC's design, alternatives considered
-  (Robot Assembler, USD variants, `SurfaceGripper`), and open issues.
-- `docs/ee-arrival-accuracy.md` — why the ee settles ~3mm short of the target
-  (measured, cuRobo ruled out), the live Script Editor probes that measured it,
-  and the candidate fixes. Also holds the verified offline FK chain.
-- `docs/docker-and-devcontainer.md` — Docker/devcontainer environment setup
-  (generic infra, not scene-specific).
-- `examples/curobo_reference/` — pristine, unmodified copy of cuRobo's own
-  interactive teleop demo. **Do not modify these two files**; write a
-  separate script instead (`scripts/mefron.py` is exactly that).
+- **This file** — current state, and gotchas that break something if unknown.
+- `docs/mefron-history.md` — full chronological bug/fix log, plus the
+  cuRobo/PhysX/URDF-importer conventions this file only summarizes.
+- `docs/grasp-and-assembly-offsets.md` — how the grasp/assembly constants were
+  derived, the release weld, and the open grasp-centering problem.
+- `docs/tool-changer.md` — the ATC's design, alternatives considered, screws,
+  and open issues.
+- `docs/ee-arrival-accuracy.md` — why the ee settles ~3mm short (measured,
+  cuRobo ruled out), the live probes, and the verified offline FK chain.
+- `docs/docker-and-devcontainer.md` — environment setup (generic infra).
+- `examples/curobo_reference/` — pristine copy of cuRobo's own teleop demo.
+  **Do not modify those two files**; write a separate script instead.
 - `robots/accessories/` — the dockable tools' CAD. Only the
-  `*_with_tool_female.usd` pair is referenced (female coupler modeled onto
-  the body); the plain `suction gripper.usd`/`electric_screwdriver.usd` and
-  the newer `Delta inline screwdriver`/`delta_screwdriver_with_female_tool_head`
-  are on disk but unreferenced.
-- `scripts/mefron_lib/` — shared package backing every mefron entry-point
-  script: `kit_bootstrap.py` (packaging preload + stale-config cleanup),
-  `config.py` (all constants), `grasp.py` (pose math), `robot.py`
-  (mount/friction/drive), `teleop.py` (keyboard control +
-  `run_teleop_loop()`), `conveyor.py` (conveyor belt control). `mefron2.py`
-  (dormant/superseded) keeps its own diverged copies of everything except
-  the packaging-preload block.
+  `*_with_tool_female.usd` pair is referenced; the rest are unreferenced.
+- `scripts/` — `mefron.py` (the only entry point) plus five
+  `test_mefron_*_headless.py` regression harnesses. Everything else was deleted
+  2026-08-08; see `docs/mefron-history.md` for what and why.
+- `scripts/mefron_lib/` — `config.py` (all constants), `kit_bootstrap.py` /
+  `kit_experience.py` (Kit startup order), `usd_util.py` (URDF import,
+  references, fixed joints, collision toggles), `grasp.py` (pose math),
+  `robot.py` (the arm itself), `toolchanger.py` (the ATC), `assembly.py` (the
+  O/L release weld), `screws.py` (screw pick/place), `keyboard.py` (the five
+  control objects), `motion.py` (cuRobo setup + waypoint queues), `teleop.py`
+  (the per-frame loop), `conveyor.py`.
 
 ## Active script + current state
 
-`scripts/mefron.py` is the live script, a thin entry point over
-`scripts/mefron_lib/`: mounts cuRobo's bundled Franka Panda onto
-`assets/mefron/`'s `ur10_mount` pedestal, strips that arm's *own* hand
-(`remove_parallel_jaw_gripper()` + `hide_hand_housing()`, so `panda_hand`
-terminates the wrist cleanly), fits it with the ATC's male coupler
-(`robot.attach_tool_changer_male_coupler()`), spawns and parks the 3
-dockable tools (`enable_gripper_tool_fingers()` right after), and runs a
-drag-follow teleop loop. Numpad 1/2/3 (see `config.TOOL_CHANGE_TARGETS`)
-sends the arm to dock/undock the gripper/suction/screwdriver tool at its own
-rack (`docs/tool-changer.md`).
-Once the matching tool is docked: J/B/K (via `config.GRASP_TARGETS`, NVIDIA
-Grasp Editor-exported poses) and C/O for the gripper, N/M (via
-`config.SUCTION_TARGETS`) and V/L for the suction cup, 5/6 for the
-screwdriver; P places whichever was last grasped/approached either way.
-Opens `mefron.usd` directly via `open_stage()`.
+`scripts/mefron.py` opens `mefron.usd` directly via `open_stage()`, mounts
+cuRobo's bundled Franka on the `ur10_mount` pedestal, strips that arm's *own*
+hand (`remove_parallel_jaw_gripper()` + `hide_hand_housing()`, so `panda_hand`
+terminates the wrist cleanly), fits the ATC's male coupler, spawns and parks the
+three dockable tools, and runs the drag-follow teleop loop.
 
-**Screws (screwdriver tool):** 5 picks the screw waiting on the presenter
-(`/World/screw_presenter`), 6 carries it to the next of `config.SCREW_HOLES`'
-nine clearance holes in **`main_holder_back_cover`** and leaves it there, then
-pops the next screw in at the presenter. **No screw-driving rotation** —
-deliberately out of scope. A screw is always joint-fixed to something
-(presenter → wrist → hole), never free-falling, mirroring
-`park_tool_at_rack()`'s invariant for tools. The bit-tip offset and all nine
-hole poses are CAD-derived, not hand-jogged — see `docs/tool-changer.md`.
-Both welds use the *nominal* pose, not where the arm settled: a picked screw
-goes on the bit axis, a placed screw into `compute_screw_hole_pose(hole)`.
-The mount is the **cover**, not the holder — a fastener goes through the cover
-into the holder, and the cover's hole mouths sit 15mm above `main_holder`'s own.
-Placement reads the cover's *live* pose, so doing it before the cover is
-assembled seats screws wherever it's still parked (warned, not refused).
-Deliberate tradeoff — a screw ends up where a real pocket would constrain
-it, so a clean-looking placement is **no longer evidence the arm arrived**
-(the bit visibly separates from the screw by cuRobo's residual on release).
+| Key | Action |
+|---|---|
+| `Y` / `U` / `I` | dock gripper / suction / screwdriver (`TOOL_CHANGE_TARGETS`) |
+| J / B / K | gripper: approach a grasp (`GRASP_TARGETS`) |
+| C / O | gripper: close / open — **O welds** (see below) |
+| N / M | suction: approach (`SUCTION_TARGETS`) |
+| V / L | suction: attach / release — **L welds** |
+| 5 / 6 | screwdriver: pick the presented screw / place it in the next hole |
+| P | place whatever was last grasped or approached |
+| 1 (number row) | conveyor forward, press again for back |
 
-Pressing a grasp key also stages that object's yaml-specified finger widths
-onto `GripperKeyboardControl` and opens the gripper to pregrasp width — C/O
-ramp toward whichever object was grasped last, not a fixed global width.
-C/O drives the **docked gripper tool's own** `panda_finger_joint1/2`
-DriveAPI directly (`robot.set_gripper_tool_finger_target()`), every frame,
-no `SingleArticulation` involved — those joints aren't part of the arm's
-articulation at all.
-P's placement pose is computed by measuring the CURRENT live
-gripper-to-part offset (not a fixed constant) and applying it to the live
-target pose on `main_holder`.
+- **Screws.** 5 picks the screw on `/World/screw_presenter`; 6 carries it to the
+  next of `SCREW_HOLES`' nine clearance holes in **`main_holder_back_cover`**
+  and pops the next screw in. **No driving rotation** — deliberately out of
+  scope. A screw is always joint-fixed to something (presenter → wrist → hole),
+  never free-falling. Both welds use the *nominal* pose, not where the arm
+  settled, so a clean placement is **not** evidence the arm arrived. Placement
+  reads the cover's *live* pose, so doing it before the cover is assembled seats
+  screws wherever it's parked (warned, not refused). See `docs/tool-changer.md`.
+- **Gripper widths.** A grasp key stages that object's yaml-specified widths and
+  opens to pregrasp width, so C/O ramp toward whichever object was last grasped.
+  C/O writes the **docked tool's own** `panda_finger_joint1/2` DriveAPI every
+  frame — those joints aren't in the arm's articulation at all.
+- **Releasing welds the part.** Within `ASSEMBLY_WELD_MAX_DISTANCE` of its
+  nominal pose, O/L snaps the part exactly onto that pose and joint-fixes it
+  there; past that it's an ordinary release. A grasp key un-welds it first. The
+  weld also turns the part's collision **off** by default, or the snap's
+  interpenetration wakes later as a violent shake — cost: a part placed later
+  passes through an already-welded one until its own weld fires.
+  `ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS` opts a part out; currently
+  `main_holder_back_cover` alone. Confirmed non-shaking live 2026-08-07, but it
+  *is* the configuration the default guards against — **re-check it after any
+  change to `main_holder`'s (still untuned) collider.** Full design:
+  `docs/grasp-and-assembly-offsets.md`.
 
-**Releasing welds the part (O for the gripper, L for the suction cup).**
-Release within `ASSEMBLY_WELD_MAX_DISTANCE` of the part's nominal
-`ASSEMBLY_RELATIONSHIPS` pose and it snaps exactly onto that pose and gets
-joint-fixed there (`robot.weld_part_at_assembly_pose()`) — the same
-FixedJoint mechanism the tool changer and screws use, so an assembled part
-can't slip under gravity or sit visibly off. Past that distance, O/L is an
-ordinary release. A grasp/approach key un-welds that object first
-(`release_assembly_weld()`), so it can be picked back up. Deliberate
-tradeoff, same as the screws': placement accuracy is now **masked**, not
-fixed — a clean-looking assembly is no longer evidence the arm arrived.
-**The weld also turns the part's collision off by default**, restored by
-`release_assembly_weld()` and by `clear_assembly_welds()` on load. A placed
-part is final here and the joint alone holds it; leaving colliders on left the
-snap's interpenetration with the mount dormant until arm motion woke the bodies,
-discharging as a violent shake. Cost: a part placed later won't rest on an
-already-welded one, it passes through until its own weld fires.
-`ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS` opts a part out of that default —
-currently `main_holder_back_cover` alone, so things can still collide with the
-assembly's top face. Confirmed live 2026-08-07 that the cover doesn't shake, but
-it *is* the exact configuration the default guards against, so re-check it after
-any change to `main_holder`'s (still untuned) convex-decomposition collider.
-Full design: `docs/grasp-and-assembly-offsets.md`.
-
-`scripts/mefron_gripper_probe.py` imports just the Franka hand (no arm, no
-motion_gen) onto its own free-floating `base_link`, for dragging into place
-against a part mesh in Stop mode to measure a grasp pose directly.
-
-`scripts/build_scene_mefron.py` (+ `configs/scene/mefron_layout.yaml`) is
-architecturally preferred — a fresh anonymous stage with `mefron.usd`
-referenced in, avoiding most of `mefron.py`'s bugs by construction — but is
-currently **dormant**: deriving grasp/assembly offsets requires temporarily
-reparenting prims, which only works when `mefron.usd` is opened directly.
-See `docs/mefron-history.md` for both files' full histories.
-
-Current constants (`scripts/mefron_lib/config.py`):
-- `GRASP_TARGETS`: dict keyed by object name, each entry holding the
-  keyboard `key`, `yaml_path`, `grasp_name`, `part_prim_path`. Finger
-  widths aren't stored here — `grasp.compute_grasp_finger_widths_from_file()`
-  reads them from the yaml live.
-- `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`: the
-  part's pose in `main_holder`'s local frame. P measures the live grasp
-  offset rather than using a fixed constant; the O/L release weld uses this
-  same entry twice — as the pose to snap to, and (unchanged) as the weld
-  joint's own `body0_local_*`.
-- `ASSEMBLY_WELD_MAX_DISTANCE = 0.05`, `ASSEMBLY_WELD_SCOPE_PRIM_PATH`
-  (`/World/assembly_welds`, wiped every run like the screw scope).
-- `_TELEOP_VELOCITY_SCALE = 0.6`, `_TELEOP_ACCELERATION_SCALE = 0.1`,
-  `GRIPPER_CLOSE_SPEED = 0.02` m/s, `GRIPPER_DRIVE_STIFFNESS = 10000.0`.
-  `GRIPPER_OPEN_POSITION`/`GRIPPER_CLOSED_POSITION` are only the *default*
-  widths before any grasp key is pressed — each grasp key overrides them.
-  `FRANKA_DRIVE_DAMPING = 210.0` is ~4x the bare-wrist value, for the rigid
-  tool now bolted on (see gotchas).
-- `OBSTACLE_PRIM_PATHS`: currently the **debug value** `ConveyorBelt_A06_01`
-  only, left from narrowing the `plan_single`-after-weld failure. Its normal
-  value is `main_holder_jig` + `tool_rack_gripper`, deliberately excluding the
-  conveyor/container prims — but `main_holder_jig` is exactly what made
-  `plan_single` fail (see open issues), so restoring it needs that fixed first.
-- `SCREW_HOLES`: the nine real clearance holes, read off
-  `main_holder_back_cover`'s own mesh (exact r=2.000mm rings at its local z=0
-  face), in metres in its scale-free frame. A **list**, not a name-keyed dict —
-  order is the fill sequence 5/6 walks, a perimeter walk. `main_holder` carries
-  the identical pattern, the cross-check that the two parts are drilled to mate.
-  `SCREW_HOLE_INSERTION_DEPTH` is `0.00` — a placed screw sits at the hole
-  mouth, not down it. `SCREWDRIVER_TIP_LOCAL_POSITION` is likewise
-  mesh-derived (274.854mm along the docked tool's local +Z).
-  `/World/screw_presenter` is a real CAD asset baked into `mefron.usd`, so its
-  live pose wins and `SCREW_PRESENTER_FALLBACK_*` is unused on this scene;
-  `SCREW_PRESENTER_SEAT_LOCAL_POSITION` = `(6.66, -86.00, 72.00)`mm is where that
-  presenter holds the screw, since the prim origin is its base plate, with a
-  180°-about-X seat orientation so the head faces up.
-- `TOOL_CHANGE_TARGETS`: dict keyed by tool name (`gripper`/`suction`/
-  `screwdriver`), each holding its numpad `key`, `baked_tool_prim_path`,
-  `rack_prim_path`, and `female_coupler_local_*`. **All 3 tools are now
-  hand-placed and baked into `mefron.usd`** (the gripper switched over last,
-  after a live-referenced `GRIPPER_TOOL_VISUAL_ONLY_USD` kept landing a gapped
-  dock) — so there are no `dock_position` constants any more: dock poses are
-  read back off the baked prims' live poses each run, and `rack_prim_path` is
-  a lightweight non-physics anchor Xform re-synced to wherever the baked tool
-  currently sits. Move a tool in the GUI, no code changes. Only
-  `female_coupler_local_*` are still unmeasured placeholders.
-  `TOOL_RACK_PRIM_PATH` (`/World/tool_rack`) is likewise the real baked rack.
+Constants all live in `scripts/mefron_lib/config.py`. The ones that surprise:
+`OBSTACLE_PRIM_PATHS` is still on its **debug value** (`ConveyorBelt_A06_01`
+only — normally `main_holder_jig` + `tool_rack_gripper`, see open issues);
+`SCREW_HOLE_INSERTION_DEPTH` is `0.00`, so a placed screw sits at the hole
+mouth; `GRIPPER_OPEN_POSITION`/`CLOSED_POSITION` are only pre-grasp defaults;
+`female_coupler_local_*` and `SURFACE_GRIPPER_LOCAL_POSITION` are unmeasured
+placeholders. All three tools are hand-placed and baked into `mefron.usd`, so
+dock poses are read off their live poses each run — move a tool in the GUI, no
+code change needed.
 
 ## Currently open issues
 
-Full investigation detail for all of these: `docs/mefron-history.md`.
+Full investigation detail: `docs/mefron-history.md`.
 
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
-  fingertips at grasp time, so one finger contacts first and shifts the
-  part sideways. Not a joint/drive asymmetry (ruled out) — see
-  `docs/grasp-and-assembly-offsets.md`.
-- **Assembly placement (P) still doesn't land cleanly — now deliberately
-  masked rather than fixed.** The O/L release weld snaps the part onto its
-  nominal pose regardless of where the arm actually left it, which is the
-  accepted answer for this scene (visual pipeline, no VLA training). The
-  underlying inaccuracy is untouched: a lift/rotate/descend redesign was
-  tried and reverted after finding `ASSEMBLY_LIFT_HEIGHT` is a fixed world-Z
-  constant with no relationship to where things actually are, unlike every
-  other pose in this system. If it's ever revisited: make lift clearance
-  relative, not absolute.
+  fingertips at grasp time, so one finger contacts first and shifts the part
+  sideways. Not a joint/drive asymmetry (ruled out).
+- **Assembly placement (P) doesn't land cleanly — deliberately masked, not
+  fixed.** The release weld snaps the part onto its nominal pose regardless of
+  where the arm left it; accepted for this scene (visual pipeline, no VLA
+  training). A lift/rotate/descend redesign was tried and reverted after finding
+  `ASSEMBLY_LIFT_HEIGHT` is a fixed world-Z constant unrelated to where things
+  actually are. If revisited: make lift clearance relative, not absolute.
+- **The ee settles ~3mm short of `/World/target`,** along the approach axis.
+  cuRobo is exact (`FK(commanded joints)` hits to 0.00mm/0.001°) — it's all
+  joint tracking lag. `_STATIC_JOINT_VELOCITY_THRESHOLD` (0.5 rad/s) is 5x
+  looser than the residual velocity at "arrival", so every `on_arrival` side
+  effect fires early. See `docs/ee-arrival-accuracy.md`.
+- **Conveyor line has no collision awareness.** Adding the
+  `ConveyorBelt_*`/`container_h20*` prims to `OBSTACLE_PRIM_PATHS` hung cuRobo's
+  mesh-collision-world construction for over an hour. Needs cuboid
+  approximations or narrower sub-prim selection, not raw CAD meshes.
+- **ATC: cuRobo sees neither the docked tool nor a carried screw.** The docked
+  gripper tool carries no collision at all by construction, so it can't collide
+  with the part it grips either. See `docs/tool-changer.md`'s open issues.
+- **Screws: reach is tight.** The 27.5cm screwdriver puts the worst hover 0.809m
+  from the mount against the Panda's ~0.855m envelope, so
+  `SCREW_APPROACH_CLEARANCE` is 0.02 (not the rack's 0.15). An unreachable hole
+  is a scene-layout fix, not a code one.
 - `attach_objects_to_robot()`/`detach_object_from_robot()` (carried-object
-  collision awareness) isn't wired to the C/O keys yet — `franka.yml`
-  already has a spare `attached_object` link ready for it.
-- `main_holder`'s convex-decomposition collision tuning (fixes sinking +
-  lost mounting studs) is researched but not yet applied/saved to
-  `mefron.usd`.
-- **Conveyor line has no collision awareness yet.** Adding the
-  `ConveyorBelt_*`/`container_h20*` prims to `OBSTACLE_PRIM_PATHS` hung
-  cuRobo's mesh-collision-world construction for over an hour with zero
-  progress — real conveyor CAD is far more complex than the single
-  `packing_table` prop it replaced. Needs cuboid obstacle approximations
-  instead of raw CAD meshes, or narrower sub-prim selection.
-- ~~The suction cup's release (L key) doesn't actually let go.~~ **Closed
-  2026-08-07 — it does let go, and the old diagnosis was wrong on both counts.**
-  `body1` reads empty in USD *always*: the manager's only USD writes are
-  `WriteStatus`/`WriteGrippedObjectsAndFilters`/`WriteAttachmentPointBatch`
-  (`SurfaceGripperComponent.h`), so it never writes `body1` and that emptiness
-  was never evidence of anything. Reproduced headless with our exact joint
-  authoring, then disproved: after `open_gripper()` the object hangs in mid-air,
-  but one velocity write drops it into free fall with **no intervention at all**
-  — it was a **sleeping PhysX body**, not a held one. Don't retry: authoring
-  `body1`, deleting/disabling the attachment joint, or re-authoring it mid-run
-  (that rebuilds the articulation under `panda_hand` and the arm goes haywire).
-  The same sleeping-body effect drove the "welded part follows the wrist"
-  sighting — see `docs/grasp-and-assembly-offsets.md`.
-- **The ee settles ~3mm short of `/World/target`, along the approach axis.**
-  Measured live: cuRobo is exact (`FK(commanded joints)` hits the target to
-  0.00mm/0.001°) — the whole error is joint tracking lag, ~0.18° on joints
-  2/3/6. `_STATIC_JOINT_VELOCITY_THRESHOLD` (0.5 rad/s) is 5x looser than the
-  residual velocity still present at "arrival", so every `on_arrival` side
-  effect (dock, undock, screw weld) fires early. Full numbers, the live probe
-  script, and the fix options: `docs/ee-arrival-accuracy.md`.
-- **ATC: cuRobo has no collision awareness of whichever tool is currently
-  docked** (nor of a carried screw), and `female_coupler_local_*` plus
-  `SURFACE_GRIPPER_LOCAL_POSITION` are still placeholders pending hand-jog
-  derivation — see `docs/tool-changer.md`'s open issues for the full list.
-  The docked **gripper** tool also carries zero collision at all by
-  construction (`vendor_gripper_tool_visual_only.py` strips it), so it can't
-  collide with the part it grips either.
-- **Screws: reach is tight.** The 27.5cm screwdriver puts the worst hover
-  0.809m from the mount against the Panda's ~0.855m envelope (computed for all
-  nine holes with the cover assembled), so `SCREW_APPROACH_CLEARANCE` is 0.02
-  (not the rack's 0.15) and an unreachable hole is a scene-layout fix, not a
-  code one. See `docs/tool-changer.md`.
-- ~~Screws: placed screws don't follow the jig.~~ **Closed 2026-08-07** — a
-  placed screw welds to `_ensure_assembly_anchor()`'s mount-tracking kinematic
-  anchor, the same one assembled parts ride, so it follows the cover and
-  `main_holder` under it. Confirmed live in
-  `test_mefron_screw_headless.py`: nudged cover moved 0.289m, screw followed to
-  0.0027m. `park_tool_at_rack()` still has the original limitation for tools.
-- ~~Screws: `SCREW_HOLES` entries 1 and 4 land 1.0mm apart.~~ **Closed
-  2026-08-07** — settled by reading the CAD mesh instead of the measurement
-  sheet, which turned out to carry three errors: a flipped y sign on entry 1,
-  an x of 81.38 where the mesh says 81.834 on entry 4, and an entry 5 at
-  `(0, 105.5)` that is no hole on either part.
+  collision awareness) isn't wired to C/O yet — `franka.yml` already has a spare
+  `attached_object` link ready.
+- `main_holder`'s convex-decomposition collision tuning (fixes sinking + lost
+  mounting studs) is researched but not applied/saved to `mefron.usd`.
 
 ## Must-know gotchas
 
-Full root-cause detail for all of these: `docs/mefron-history.md`
-(Conventions section) unless noted otherwise.
+Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
 
-- **`PhysicsScene` required.** `SingleArticulation.initialize()` silently
-  breaks without a real `PhysicsScene` prim — define one explicitly:
-  `UsdPhysics.Scene.Define(stage, "/physicsScene")`.
-- **`timeline.play()` timing.** Calling it before `/physicsScene` exists,
-  or before `motion_gen.warmup()` finishes, corrupts PhysX's tensor
-  simulationView (`AttributeError: 'NoneType' object has no attribute
-  'link_names'` on the next `SingleArticulation(...)`). Only drive
-  `timeline.play()` yourself after both are done.
-- **Stop/Play rebuild.** A `SingleArticulation` is only valid for the PhysX
-  view that existed when built — Stop tears that view down. Any
-  interactive loop must track not-playing→playing transitions and rebuild
-  `robot`/`idx_list`/`articulation_controller` on every fresh Play (see
-  `run_teleop_loop()`).
-- **cuRobo plans in the robot's base-link frame, never world space.** Any
-  USD world pose must go through `robot_base_pose.compute_local_pose(...)`
-  first.
-- **URDF importer + file-backed stages.** Importing into a stage opened
-  directly from a `.usd` file (`open_stage()`, what `mefron.py` does)
-  makes the importer write a disk-persisted "Robot Description" as a side
-  effect, breaking `CopyPrim`-based duplication (use
-  `prim.GetReferences().AddInternalReference()` instead).
-- **This importer side effect also silently rewrites `mefron.usd` itself on
-  every run**, growing it by whatever was just imported — confirmed
-  unconditional, not preventable via `stage.GetSessionLayer()`. Treat any
-  diff on `mefron.usd`/`configuration/*.usd` after a run as expected noise;
-  never blindly `git checkout` this file (it may carry real hand-placed
-  scene edits too); prefer a scratch copy for headless testing.
-- **Accumulated stray robot prims break rendering, not physics.** A stray
-  Save mid-run can bake in orphaned robot prims that visibly desync the
-  viewport from a correct physics/motion-planning state. Fixed by
-  `robot.clear_stray_robot_prims()`, called right after `open_stage()` on
-  every run (in-memory only, so it must keep running every time).
+- **`PhysicsScene` required.** `SingleArticulation.initialize()` silently breaks
+  without one — `UsdPhysics.Scene.Define(stage, "/physicsScene")`.
+- **`timeline.play()` timing.** Calling it before `/physicsScene` exists or
+  before `motion_gen.warmup()` finishes corrupts PhysX's tensor simulationView.
+  Only drive it yourself after both are done.
+- **Stop/Play rebuild.** A `SingleArticulation` is only valid for the PhysX view
+  that existed when built. Any interactive loop must rebuild
+  `robot`/`idx_list`/`articulation_controller` on every fresh Play.
+- **Authoring a joint prim live mid-Play stales those same handles** —
+  `apply_action()` keeps succeeding while the arm stops responding. Every live
+  joint edit goes through `teleop._invalidate_articulation_handles()`.
+- **cuRobo plans in the robot's base-link frame, never world space.** Any USD
+  world pose must go through `robot_base_pose.compute_local_pose(...)` first.
+- **URDF importer + file-backed stages.** Importing into a stage opened from a
+  `.usd` file makes the importer write a disk-persisted "Robot Description",
+  breaking `CopyPrim` duplication (use `AddInternalReference()` instead).
+- **That side effect also rewrites `mefron.usd` itself on every run**, growing it
+  — unconditional, not preventable via `stage.GetSessionLayer()`. Treat a diff
+  on `mefron.usd`/`configuration/*.usd` after a run as expected noise; never
+  blindly `git checkout` it (it may carry real hand-placed edits); prefer a
+  scratch copy for headless testing.
+- **Accumulated stray robot prims break rendering, not physics.** Fixed by
+  `robot.clear_stray_robot_prims()`, called right after `open_stage()` every run
+  (in-memory only, so it must keep running).
 - **`SimulationApp` full experience breaks cuRobo's `packaging` import.**
-  Pre-load `packaging`/`packaging.version` from real `site-packages`
-  before anything imports cuRobo — see
-  `kit_bootstrap.py`'s `preload_real_packaging()`.
-- **`ninja`/`pip` are broken in this environment.** Fixed via `apt-get
-  install ninja-build` — see `docs/docker-and-devcontainer.md`.
-- **`DeletePrims` silently no-ops on an articulation-internal joint
-  prim.** Confirmed for both the Franka's own finger joints
-  (`remove_parallel_jaw_gripper()` uses `SetActive(False)` instead) and a
-  URDF-importer-synthesized `root_joint` fixing a free-floating
-  `base_link` to the world (`robot.spawn_dockable_tool()`'s hand-only
-  branch) — `SetActive(False)` is what actually removes the constraint.
-- **A `UsdPhysics.FixedJoint`'s target must resolve to a real
-  `RigidBodyAPI` prim**, not just any descendant — a plain organizing
-  Xform over an articulation's real links (or a CAD asset with no
-  baked-in `RigidBodyAPI` at all, confirmed for `electric_screwdriver.usd`)
-  silently fails to be pulled by the joint. See `docs/tool-changer.md`'s
-  gotchas 3–4.
-- **A jointed body's own enabled collision can fight the joint.** If both
-  ends of a `FixedJoint` have real colliders that overlap once pulled
-  together, contact-separation force reaches an equilibrium short of the
-  joint's target instead of converging — disable collision on whichever
-  side doesn't need it once joined. See `docs/tool-changer.md`'s gotcha 2.
-- **Live-importing two robots via the URDF importer into the same
-  file-backed stage isn't safe, no matter how they're named.** Its
-  disk-persisted "Robot Description" cache is shared across every robot
-  imported into that stage — confirmed to corrupt not just visual
-  references but the *link structure itself* (a second import made
-  `panda_link0`–`8` vanish from the first robot's own children). The only
-  real fix is to not share the import: pre-bake the second robot as a
-  standalone asset in its own anonymous stage and reference it instead
-  (`scripts/vendor_gripper_tool.py`). See `docs/tool-changer.md`'s
-  gotcha 6.
+  Pre-load it from real `site-packages` first — `kit_bootstrap.py`.
+- **`ninja`/`pip` are broken here.** Fixed via `apt-get install ninja-build` —
+  see `docs/docker-and-devcontainer.md`.
+- **`DeletePrims` silently no-ops on an articulation-internal joint prim.**
+  Confirmed for the Franka's finger joints and for a URDF-synthesized
+  `root_joint` — `SetActive(False)` is what actually removes the constraint.
+- **A `UsdPhysics.FixedJoint`'s target must resolve to a real `RigidBodyAPI`
+  prim**, not just any descendant — an organizing Xform over an articulation's
+  links, or a CAD asset with no baked-in body, silently fails to be pulled. See
+  `docs/tool-changer.md`'s gotchas 3–4.
+- **A jointed body's own enabled collision can fight the joint.** Overlapping
+  colliders at both ends reach a contact-separation equilibrium short of the
+  joint's target instead of converging. `docs/tool-changer.md`'s gotcha 2.
+- **Redefining a `Joint` prim in place leaves PhysX solving against the stale
+  `body1`,** even though USD reads correct. Use a fresh path per target.
+- **Live-importing two robots into the same file-backed stage isn't safe,** no
+  matter how they're named — the shared "Robot Description" cache corrupted the
+  first robot's *link structure*. Pre-bake the second as a standalone asset and
+  reference it. `docs/tool-changer.md`'s gotcha 6.
+- **A "held" object that hangs in mid-air may just be a sleeping PhysX body.**
+  One velocity write drops it. This misdiagnosed both the suction-release and
+  "welded part follows the wrist" bugs — check for it before theorizing.
 
 ## Pinned versions
 
 Isaac Sim `5.1.0`, cuRobo commit `ebb71702f3f70e767f40fd8e050674af0288abe8`,
-torch `2.11.0+cu128` (CUDA 12.8). Dev GPU: RTX PRO 4000 Blackwell (sm_120)
-— `TORCH_CUDA_ARCH_LIST` must be `12.0+PTX` for this GPU.
+torch `2.11.0+cu128` (CUDA 12.8). Dev GPU: RTX PRO 4000 Blackwell (sm_120) —
+`TORCH_CUDA_ARCH_LIST` must be `12.0+PTX` for this GPU.

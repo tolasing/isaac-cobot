@@ -1,10 +1,5 @@
-"""Interactive cuRobo teleop + pick-and-place for the mefron scanner-assembly scene, on a single
-Franka fitted with an automatic tool changer (ATC): numpad 1/2/3 sends the arm to dock/undock the
-gripper/suction/screwdriver tool at its own rack. Thin entry point -- the actual logic lives in
-mefron_lib/ (config, robot, grasp, teleop). See docs/mefron-history.md for bug history,
-docs/grasp-and-assembly-offsets.md for how the grasp/assembly poses were derived, and
-docs/tool-changer.md for the ATC design and open issues.
-"""
+"""Interactive cuRobo teleop + pick-and-place on one Franka with an automatic tool changer.
+Thin entry point -- the logic lives in mefron_lib/. See CLAUDE.md and docs/."""
 
 from __future__ import annotations
 
@@ -24,61 +19,62 @@ preload_real_packaging()
 import carb.settings  # noqa: E402
 import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
-from mefron_lib import config, conveyor, kit_experience, robot, teleop  # noqa: E402
+from mefron_lib import (  # noqa: E402
+    assembly,
+    config,
+    conveyor,
+    keyboard,
+    kit_experience,
+    motion,
+    robot,
+    screws,
+    teleop,
+    toolchanger,
+)
 
 
 def main() -> None:
-    # Ensures Play actually creates a PhysX simulation view -- otherwise this is a GUI toggle that's
-    # easy to have off, in which case is_playing() lies and SingleArticulation.initialize() never gets a real view.
+    # Ensures Play actually creates a PhysX simulation view -- otherwise is_playing() lies and
+    # SingleArticulation.initialize() never gets a real view.
     carb.settings.get_settings().set_bool("/app/player/playSimulations", True)
-    # Decouples physics stepping from real wall-clock time -- without it, heavier per-frame Python
-    # cost destabilizes friction-coupled mechanisms like the conveyor. See docs/mefron-history.md.
+    # Decouples physics stepping from wall-clock time -- without it, heavier per-frame Python cost
+    # destabilizes friction-coupled mechanisms like the conveyor. See docs/mefron-history.md.
     carb.settings.get_settings().set_bool("/app/player/useFixedTimeStepping", True)
 
     # Must run BEFORE open_stage(): mefron.usd has a persisted, broken /panda prim reference, and
-    # resolving it against stale files caches an Sdf.Layer that later crashes mount_franka()'s import ("a layer already exists").
+    # resolving it caches an Sdf.Layer that later crashes mount_franka()'s import.
     clear_stale_robot_configuration(config.MEFRON_CONFIGURATION_DIR)
 
     omni.usd.get_context().open_stage(str(config.MEFRON_USD))
     # Must run before the settle pump below -- see robot.clear_stray_robot_prims()'s own docstring.
     robot.clear_stray_robot_prims()
 
-    # mefron.usd's own content resolves asynchronously, same reasoning as
-    # build_scene.py's own post-build_factory() frame pump.
+    # mefron.usd's own content resolves asynchronously.
     for _ in range(120):
         simulation_app.update()
 
     robot.mount_franka()
-    # The ATC replaces this arm's own built-in parallel-jaw hand with a swappable tool -- same
-    # deactivate-fingers-then-hide-housing pattern the old arm2/arm3 used, now applied here too, so
-    # panda_hand terminates the wrist cleanly for the male coupler. See both functions' docstrings.
+    # The ATC replaces this arm's own hand with a swappable tool, so panda_hand terminates the wrist
+    # cleanly for the male coupler.
     robot.remove_parallel_jaw_gripper()
     robot.hide_hand_housing()
-    robot.attach_tool_changer_male_coupler()
-    # Real isaacsim.robot.schema/surface_gripper attach mechanism, permanently on panda_hand
-    # regardless of which tool is currently docked -- harmless unless the suction tool is docked
-    # and V/L is pressed (see teleop.build_surface_gripper_keyboard_control()'s tool-gating).
-    # SURFACE_GRIPPER_LOCAL_POSITION needs re-deriving now the coupler adds a standoff -- see
-    # docs/tool-changer.md.
+    toolchanger.attach_tool_changer_male_coupler()
+    # Rides panda_hand permanently, whichever tool is docked -- V/L is gated on the suction tool.
+    # SURFACE_GRIPPER_LOCAL_POSITION needs re-deriving now the coupler adds a standoff.
     surface_gripper_path = robot.attach_surface_gripper_physics()
 
-    # Three dockable tools, parked at their own rack until a numpad key docks one -- see
-    # docs/tool-changer.md.
+    # Three dockable tools, parked at their own rack until a tool-change key docks one.
     for tool_name in config.TOOL_CHANGE_TARGETS:
-        robot.spawn_dockable_tool(tool_name)
-        robot.park_tool_at_rack(tool_name)
-    robot.enable_gripper_tool_fingers()
+        toolchanger.spawn_dockable_tool(tool_name)
+        toolchanger.park_tool_at_rack(tool_name)
+    toolchanger.enable_gripper_tool_fingers()
 
-    # Any anchor/joint a previous run's O/L release weld authored -- same "the URDF importer rewrites
-    # mefron.usd every run" reasoning as clear_screws() below.
-    robot.clear_assembly_welds()
-
-    # Placeholder screw presenter, with the first screw already waiting on it -- the rest pop in one
-    # at a time as each is placed. clear_screws() first so a run never inherits a previous run's
-    # screws (the URDF importer rewrites mefron.usd every run; see CLAUDE.md).
-    robot.clear_screws()
-    robot.ensure_screw_presenter()
-    robot.present_screw(0)
+    # Anything a previous run's O/L release weld or screw cycle authored -- the URDF importer
+    # rewrites mefron.usd every run, so a run must never inherit either.
+    assembly.clear_assembly_welds()
+    screws.clear_screws()
+    screws.ensure_screw_presenter()
+    screws.present_screw(0)
 
     if not _headless:
         kit_experience.enable_full_experience_extensions()
@@ -90,16 +86,19 @@ def main() -> None:
 
     print("[mefron] warming up cuRobo motion_gen (viewport will look frozen/black until this finishes)...", flush=True)
     # has_parallel_jaw_gripper=False -- panda_finger_joint1/2 are deactivated on this arm's own
-    # articulation now (the gripper is a separate dockable tool module), same reason arm2/arm3 used
-    # to need this before the ATC existed.
-    motion_gen, robot_cfg = teleop.setup_motion_gen(config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, has_parallel_jaw_gripper=False)
+    # articulation now; the gripper is a separate dockable tool module.
+    motion_gen, robot_cfg = motion.setup_motion_gen(
+        config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, has_parallel_jaw_gripper=False
+    )
     print("[mefron] curobo motion_gen: READY", flush=True)
 
-    # Force a stop unconditionally: if physics was left playing across warmup()'s ~30s unpumped gap,
-    # PhysX's simulation view gets corrupted; the loop rebuilds cleanly on the next fresh Play regardless.
+    # Force a stop unconditionally: physics left playing across warmup()'s ~30s unpumped gap corrupts
+    # PhysX's simulation view. The loop rebuilds cleanly on the next fresh Play regardless.
     omni.timeline.get_timeline_interface().stop()
 
-    target = teleop.build_teleop_target(robot_cfg, config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, config.MOUNT_POSITION, config.MOUNT_ORIENTATION_WXYZ)
+    target = motion.build_teleop_target(
+        robot_cfg, config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, config.MOUNT_POSITION, config.MOUNT_ORIENTATION_WXYZ
+    )
     target_prim = stage.GetPrimAtPath(config.TARGET_PRIM_PATH)
     print(f"[mefron] {config.TARGET_PRIM_PATH}: {'OK' if target_prim.IsValid() else 'MISSING'}", flush=True)
 
@@ -107,15 +106,15 @@ def main() -> None:
         simulation_app.close()
         return
 
-    gripper_control = teleop.build_gripper_keyboard_control()
-    suction_approach_control = teleop.build_suction_approach_keyboard_control()
-    tool_changer_control = teleop.build_tool_changer_keyboard_control()
-    surface_gripper_control = teleop.build_surface_gripper_keyboard_control(
+    gripper_control = keyboard.build_gripper_keyboard_control()
+    suction_approach_control = keyboard.build_suction_approach_keyboard_control()
+    tool_changer_control = keyboard.build_tool_changer_keyboard_control()
+    surface_gripper_control = keyboard.build_surface_gripper_keyboard_control(
         surface_gripper_path, tool_changer_control=tool_changer_control
     )
     print(
         "[mefron] Tool changer: press "
-        + ", ".join(f"{target['key']} to dock {name}" for name, target in config.TOOL_CHANGE_TARGETS.items())
+        + ", ".join(f"{target_cfg['key']} to dock {name}" for name, target_cfg in config.TOOL_CHANGE_TARGETS.items())
         + ".",
         flush=True,
     )
@@ -127,13 +126,13 @@ def main() -> None:
     )
     print(
         "[mefron] Suction tool (once docked): press "
-        + ", ".join(f"{target['key']} to approach {name}" for name, target in config.SUCTION_TARGETS.items())
+        + ", ".join(f"{target_cfg['key']} to approach {name}" for name, target_cfg in config.SUCTION_TARGETS.items())
         + f", {config.SUCTION_ATTACH_KEY} to attach, {config.SUCTION_DETACH_KEY} to release (welds "
         "the part at its assembly pose, same as O), P to place on main_holder (whichever object was "
         "last approached).",
         flush=True,
     )
-    screw_control = teleop.build_screw_keyboard_control()
+    screw_control = keyboard.build_screw_keyboard_control()
     print(
         f"[mefron] Screwdriver tool (once docked): press {config.SCREW_PICK_KEY} to pick the presented "
         f"screw, {config.SCREW_PLACE_KEY} to place it in the next of "

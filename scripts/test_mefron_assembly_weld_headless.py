@@ -1,8 +1,5 @@
-"""Headless regression test for the O/L release weld (robot.weld_part_at_assembly_pose() /
-release_assembly_weld()). Drives no arm and no cuRobo -- it places the part directly and asserts the
-weld snaps it onto its nominal ASSEMBLY_RELATIONSHIPS pose, holds it there under gravity, carries it
-when main_holder moves, and lets go again.
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_assembly_weld_headless.py --headless"""
+"""Headless regression test for the O/L release weld: places the part directly (no arm, no cuRobo)
+and asserts it snaps, holds, rides main_holder, and lets go. Run with --headless."""
 
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim  # noqa: E402
 from pxr import Usd, UsdPhysics  # noqa: E402
-from mefron_lib import config, grasp, robot  # noqa: E402
+from mefron_lib import assembly, config, grasp  # noqa: E402
 
 _RELATIONSHIP = "finger_print_scanner_on_main_holder"
 _SETTLE_FRAMES = 90
@@ -84,20 +81,20 @@ def main() -> None:
     stage = stage_context.get_stage()
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
-    robot.clear_assembly_welds()
+    assembly.clear_assembly_welds()
 
     relationship = config.ASSEMBLY_RELATIONSHIPS[_RELATIONSHIP]
     part_prim_path = relationship["part_prim_path"]
     mount_prim_path = relationship["mount_prim_path"]
-    joint_path = robot._assembly_weld_joint_path(part_prim_path)
-    anchor_path = robot._assembly_anchor_path(mount_prim_path)
+    joint_path = assembly._assembly_weld_joint_path(part_prim_path)
+    anchor_path = assembly._assembly_anchor_path(mount_prim_path)
     part_xform = _part_xform()
 
     # Far case: a release nowhere near the assembly pose must stay an ordinary release.
     nominal_trans, nominal_quat = grasp.compute_part_target_pose(_RELATIONSHIP)
     far_trans = np.array(nominal_trans) + np.array([_FAR_OFFSET, 0.0, 0.0])
     part_xform.set_world_pose(position=far_trans, orientation=nominal_quat)
-    _check("a release far from the assembly pose does not weld", not robot.weld_part_at_assembly_pose(_RELATIONSHIP))
+    _check("a release far from the assembly pose does not weld", not assembly.weld_part_at_assembly_pose(_RELATIONSHIP))
     _check("no weld joint authored for the far release", not stage.GetPrimAtPath(joint_path).IsValid())
     parked_trans, _ = part_xform.get_world_pose()
     _check(
@@ -110,7 +107,7 @@ def main() -> None:
         position=np.array(nominal_trans) + np.array([_NEAR_OFFSET, 0.0, 0.0]), orientation=nominal_quat
     )
     collisions_before = _collision_enabled_flags(part_prim_path)
-    _check("a release near the assembly pose welds", robot.weld_part_at_assembly_pose(_RELATIONSHIP))
+    _check("a release near the assembly pose welds", assembly.weld_part_at_assembly_pose(_RELATIONSHIP))
     _check("weld joint authored", stage.GetPrimAtPath(joint_path).IsValid())
 
     anchor_prim = stage.GetPrimAtPath(anchor_path)
@@ -147,9 +144,8 @@ def main() -> None:
         drift < _WELD_TOLERANCE,
     )
 
-    # The load-bearing check: does an assembled part ride main_holder down the conveyor? The anchor
-    # follows the mount through sync_assembly_anchors(), which run_teleop_loop() calls every frame --
-    # stood in for here, since this test drives no teleop loop.
+    # The load-bearing check: does an assembled part ride main_holder? sync_assembly_anchors() is
+    # called by hand here, since this test drives no teleop loop.
     mount_prim = stage.GetPrimAtPath(mount_prim_path)
     # SingleRigidPrim for a simulated body -- teleporting one needs the PhysX-side write, since a
     # plain USD xform write gets overwritten by the body's own pose on the next step.
@@ -163,7 +159,7 @@ def main() -> None:
         position=np.array(mount_trans_before) + np.array([0.0, _MOUNT_NUDGE, 0.0]),
         orientation=mount_quat_before,
     )
-    robot.sync_assembly_anchors()
+    assembly.sync_assembly_anchors()
     _settle(simulation_app)
     mount_trans_after, _ = mount_mover.get_world_pose()
     mount_moved = float(np.linalg.norm(np.array(mount_trans_after) - np.array(mount_trans_before)))
@@ -182,14 +178,14 @@ def main() -> None:
         ride_error < _WELD_TOLERANCE,
     )
 
-    _check("release_assembly_weld() removes the weld", robot.release_assembly_weld(part_prim_path))
+    _check("release_assembly_weld() removes the weld", assembly.release_assembly_weld(part_prim_path))
     _check("weld joint gone after release", not stage.GetPrimAtPath(joint_path).IsValid())
     if collisions_before:
         _check(
             "the part's colliders are re-enabled after release",
             _collision_enabled_flags(part_prim_path) == collisions_before,
         )
-    _check("releasing an unwelded part is a no-op", not robot.release_assembly_weld(part_prim_path))
+    _check("releasing an unwelded part is a no-op", not assembly.release_assembly_weld(part_prim_path))
 
     if _failures:
         print(f"[test_mefron_assembly_weld_headless] {len(_failures)} CHECK(S) FAILED: {_failures}", flush=True)

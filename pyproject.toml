@@ -1,12 +1,12 @@
 [project]
 name = "isaac-cobot"
 version = "0.1.0"
-description = "Isaac Sim factory cell with a Dobot CR5 cobot, driven via cuRobo."
+description = "Isaac Sim scanner-assembly cell with a cuRobo-driven Franka Panda."
 requires-python = ">=3.11"
 dependencies = ["pyyaml"]
 
 [project.optional-dependencies]
-dev = ["ruff", "pytest"]
+dev = ["ruff"]
 
 [tool.ruff]
 line-length = 120
@@ -28,6 +28,3 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["scripts"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

@@ -1,5 +1,13 @@
 # Deriving grasp and assembly offsets
 
+> **2026-08-08 cleanup.** The grasp-editor and probe scripts this document
+> refers to (`mefron_grasp_editor_scene.py`, `franka_grasp_editor_scene.py`,
+> `panda_hand_grasp_editor_scene.py`, `mefron_gripper_probe.py`,
+> `mefron_screen_approach_probe.py`) were deleted; the derivations they produced
+> are what this document records, and are still in `config.py`. The release-weld
+> code moved from `robot.py` to `mefron_lib/assembly.py`, unchanged. See
+> `docs/mefron-history.md`'s header for the full list.
+
 How the fixed relative transforms used by `scripts/mefron.py`'s **G**/**P**
 snap-to-pose keys were derived: `ASSEMBLY_RELATIONSHIPS["finger_print_scanner_on_main_holder"]`
 (nicknamed **T_H_S** — `finger_print_scanner`'s pose relative to
@@ -395,3 +403,60 @@ transform (`T_part_target`) at the CAD-authoring stage, instead of deriving
 it live in Isaac Sim. **Superseded in practice** by the live
 `compute_relative_pose()` approach documented above — kept as a reference
 for a CAD-side alternative, not part of the executed pipeline.
+
+## 2026-08-08: rationale migrated out of code comments
+
+The 2026-08-08 cleanup capped every comment and docstring in
+`scripts/mefron_lib/` at two lines. Assembly-weld rationale that lived
+inline and had no home here yet was moved into this section rather than
+dropped. The tool-changer and screw equivalents are in
+`docs/tool-changer.md`'s section of the same name.
+
+### `ASSEMBLY_WELD_POSES`' provenance
+
+Measured together on 2026-08-06 from **one** hand-placed assembly — every
+part sitting on the jig at once, then read back — so the entries are
+mutually consistent rather than each measured in its own session. Float
+noise below 1e-16 was cleaned to exact zeros/identity.
+
+A relationship with no entry here welds at its `ASSEMBLY_RELATIONSHIPS`
+pose instead; `main_holder_back_cover` is the only such case, because it
+wasn't on the jig for that measurement.
+
+The two dicts differing **is** the point — `P` drives to the
+motion-validated `ASSEMBLY_RELATIONSHIPS` pose while the release weld seats
+at `ASSEMBLY_WELD_POSES` — but they must stay within
+`ASSEMBLY_WELD_MAX_DISTANCE` of each other: the gap is exactly how far the
+part visibly jumps on release. Worst case here is `backpanel_support` at
+12 mm.
+
+### `weld_part_at_assembly_pose()`: collision must go off *after* the joint
+
+The snap leaves the part interpenetrating its mount, an overlap a kinematic
+anchor can never resolve. It sits quiet until the arm's motion wakes the
+bodies, then discharges as a violent shake — the same sleeping-body effect
+documented in the closed suction-release bug above. Disabling collision
+before authoring the joint doesn't help; the ordering is what matters. See
+`docs/tool-changer.md`'s gotcha 2 for the general form.
+
+`body0_local_*` on the weld joint **is** the offset just snapped to: it
+already expresses the part's pose in the mount's frame, and the anchor is
+unscaled and kept coincident with that frame. It must come from the same
+source as the snap target, or the joint pulls the part straight back off it.
+
+### `clear_assembly_welds()` re-enables collision unconditionally
+
+The URDF importer rewrites `mefron.usd` on every run, so a disabled
+`collisionEnabled` left behind by a release weld would persist into a fresh
+run — where nothing is welded and every part must be grippable. Nothing
+else in the codebase turns part collision off, so re-enabling
+unconditionally on load is safe.
+
+### `_ensure_assembly_anchor()`'s xform-op handling
+
+This is the one place in `mefron_lib` that uses `SingleXFormPrim`'s default
+`reset_xform_properties=True`. A `DefinePrim`'d Xform has no `xformOps` at
+all and only this path authors them — `sync_assembly_anchors()` merely
+writes to them afterward. Safe on a prim this module created, which can't
+carry a `unitsResolve` op to strip. Everywhere else must pass
+`reset_xform_properties=False`, since the CAD prims do carry one.

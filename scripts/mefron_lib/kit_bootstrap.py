@@ -21,10 +21,8 @@ def _preload_real_submodule(pkg_module, name: str) -> None:
 
 
 def preload_real_packaging() -> None:
-    """Pre-loads real `packaging`/`packaging.version` from site-packages before cuRobo imports them --
-    the full SimulationApp experience (isaacsim.exp.full.kit) shadows packaging.version with a broken
-    bundle (see docs/mefron-history.md). Call this before importing anything that transitively imports
-    cuRobo. Safe to call more than once; a no-op once `packaging` is already in sys.modules."""
+    """Pre-loads real `packaging`/`packaging.version` before cuRobo imports them -- the full
+    SimulationApp experience shadows it with a broken bundle. Idempotent. docs/mefron-history.md."""
     if "packaging" in sys.modules or not os.path.isdir(_REAL_PACKAGING_DIR):
         return
     spec = importlib.util.spec_from_file_location(
@@ -37,9 +35,8 @@ def preload_real_packaging() -> None:
 
 
 def clear_stale_robot_configuration(configuration_dir: Path) -> None:
-    """Deletes any pre-existing files under configuration_dir before the URDF importer writes fresh
-    ones. Must run BEFORE open_stage(): mefron.usd has a persisted, broken /panda prim reference, and
-    resolving it against stale files caches an Sdf.Layer that later crashes the next URDF import."""
+    """Deletes stale files under configuration_dir before the URDF importer writes fresh ones. Must
+    run BEFORE open_stage(), or a cached Sdf.Layer crashes the next URDF import."""
     if not configuration_dir.is_dir():
         return
     for stale_file in configuration_dir.glob("*.usd"):

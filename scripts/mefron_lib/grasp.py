@@ -1,7 +1,5 @@
-"""Pose math for deriving and applying the grasp/assembly relative-pose constants. See
-docs/grasp-and-assembly-offsets.md for how compute_relative_pose() was used to derive
-config.ASSEMBLY_RELATIONSHIPS.
-"""
+"""Pose math for deriving and applying the grasp/assembly/screw relative-pose constants.
+See docs/grasp-and-assembly-offsets.md for how these were derived."""
 
 from __future__ import annotations
 
@@ -34,10 +32,8 @@ def compute_dependent_world_pose(reference_trans, reference_quat, relative_trans
 
 
 def compute_reference_world_pose(dependent_trans, dependent_quat, relative_trans, relative_quat_wxyz):
-    """True inverse of compute_dependent_world_pose(): given the world pose a rigidly-offset CHILD
-    frame should end up at, plus that fixed offset, returns the pose the reference frame itself must
-    reach. Needed because a screw's presented/hole pose is the ground truth, while the tool holding
-    it is what actually gets driven there."""
+    """True inverse of compute_dependent_world_pose(): given where a rigidly-offset CHILD frame must
+    end up, returns the pose the reference frame must reach. A screw's hole pose is the ground truth."""
     from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices, rot_matrices_to_quats
 
     dep_rot, rel_rot = quats_to_rot_matrices(np.array([dependent_quat, relative_quat_wxyz]))
@@ -51,15 +47,13 @@ def compute_grasp_approach_pose_from_file(
     grasp_name: str,
     part_prim_path: str = config.HIGH_FRICTION_PRIM_PATHS[0],
 ):
-    """Loads a Grasp-Editor-exported isaac_grasp yaml via Isaac Sim's own grasp_editor API,
-    recomputed from the part's live pose on every call. The exported grasp is relative to
-    panda_hand -- no further conversion needed, since franka.yml's ee_link already is panda_hand
-    (not the URDF's separate, unused ee_link link 0.1m further out)."""
+    """Loads a Grasp-Editor-exported yaml, recomputed from the part's live pose every call. The
+    grasp is relative to panda_hand, which franka.yml's ee_link already is -- no conversion needed."""
     from isaacsim.robot_setup.grasp_editor import import_grasps_from_file
 
     grasp_spec = import_grasps_from_file(str(yaml_path))
-    # reset_xform_properties=False -- several parts carry an xformOp:scale:unitsResolve op the
-    # default would silently strip. See docs/mefron-history.md (conveyor.py section).
+    # reset_xform_properties=False -- parts carry an xformOp:scale:unitsResolve op the default
+    # would silently strip. See docs/mefron-history.md.
     part_trans, part_quat = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False).get_world_pose()
     return grasp_spec.compute_gripper_pose_from_rigid_body_pose(grasp_name, part_trans, part_quat)
 
@@ -69,9 +63,8 @@ def compute_grasp_finger_widths_from_file(
     grasp_name: str,
     finger_joint_name: str = "panda_finger_joint1",
 ):
-    """Reads the yaml's pregrasp_cspace_position (approach/open width) and cspace_position
-    (grasp/closed width) for finger_joint_name -- the object-specific widths Grasp Editor authored,
-    to replace the single global GRIPPER_OPEN_POSITION/GRIPPER_CLOSED_POSITION once a grasp is selected."""
+    """Reads the yaml's pregrasp_cspace_position (open) and cspace_position (closed) widths --
+    the object-specific values that override config's global defaults once a grasp is selected."""
     from isaacsim.robot_setup.grasp_editor import import_grasps_from_file
 
     grasp_spec = import_grasps_from_file(str(yaml_path))
@@ -100,10 +93,8 @@ def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_m
 
 
 def assembly_weld_local_pose(relationship_name: str):
-    """The local offset the O/L release weld seats a part at: config.ASSEMBLY_WELD_POSES' own
-    freshly-measured value when it has one, else the same ASSEMBLY_RELATIONSHIPS offset P drives to.
-    Split on purpose -- P's target is the motion-validated pose, the weld's is the measured assembled
-    one; see ASSEMBLY_WELD_POSES' comment."""
+    """Where the O/L release weld seats a part: ASSEMBLY_WELD_POSES when it has an entry, else the
+    ASSEMBLY_RELATIONSHIPS offset P drives to. Split on purpose -- see that dict's own comment."""
     weld = config.ASSEMBLY_WELD_POSES.get(relationship_name) or config.ASSEMBLY_RELATIONSHIPS[relationship_name]
     return weld["local_position"], weld["local_orientation_wxyz"]
 
@@ -124,8 +115,7 @@ def compute_assembly_grasp_target_from_offset(
     relationship_name: str = "finger_print_scanner_on_main_holder",
 ):
     """Same composition as compute_assembly_grasp_target(), but takes the grasp offset as a
-    parameter instead of measuring it -- lets compute_assembly_grasp_target() supply the CURRENT
-    live-measured offset instead of a fixed constant."""
+    parameter instead of measuring it."""
     part_target_trans, part_target_quat = compute_part_target_pose(relationship_name)
     return compute_dependent_world_pose(
         part_target_trans, part_target_quat, grasp_offset_position, grasp_offset_orientation_wxyz
@@ -133,14 +123,11 @@ def compute_assembly_grasp_target_from_offset(
 
 
 def compute_tool_dock_target(tool_name: str):
-    """ee_link's target world pose for docking/undocking config.TOOL_CHANGE_TARGETS[tool_name]:
-    composes the tool's LIVE female-coupler world pose with the fixed
-    TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_* mate offset -- same composition direction as
-    compute_assembly_grasp_target_from_offset(), just with a fixed offset instead of a measured one
-    (a standardized coupler mates the same way every time, nothing to measure per-tool)."""
-    from . import robot
+    """ee_link's target pose for docking a tool: its LIVE female-coupler pose composed with the
+    fixed mate offset -- a standardized coupler mates the same way every time, nothing per-tool."""
+    from . import toolchanger
 
-    female_coupler_path = robot._female_coupler_prim_path(tool_name)
+    female_coupler_path = toolchanger._female_coupler_prim_path(tool_name)
     coupler_trans, coupler_quat = SingleXFormPrim(
         prim_path=female_coupler_path, reset_xform_properties=False
     ).get_world_pose()
@@ -153,11 +140,8 @@ def compute_tool_dock_target(tool_name: str):
 
 
 def compute_tool_rack_return_target(tool_name: str):
-    """ee_link's target world pose for RETURNING a currently-docked tool to its own rack. Unlike
-    compute_tool_dock_target(), this can't read the tool's live female-coupler pose -- it's riding
-    on the wrist right now, not sitting statically at the rack, so its live pose reflects the
-    wrist's current position, not the rack's. Uses the rack's fixed dock_position/orientation from
-    config instead, composed the same way spawn_dockable_tool() placed the tool there originally."""
+    """ee_link's target pose for RETURNING a docked tool to its rack. Can't read the tool's live
+    coupler pose -- it's riding the wrist -- so it uses the rack's own recorded dock pose instead."""
     target = config.TOOL_CHANGE_TARGETS[tool_name]
     female_coupler_trans, female_coupler_quat = compute_dependent_world_pose(
         np.array(target["dock_position"]),
@@ -174,9 +158,8 @@ def compute_tool_rack_return_target(tool_name: str):
 
 
 def compute_screw_presenter_pose():
-    """The presented screw's own world pose: the live presenter prim's pose composed with
-    SCREW_PRESENTER_SEAT_LOCAL_*, since the prim origin is the CAD base plate, not the seat. Read
-    live so a hand-placed presenter in mefron.usd is honored without touching config."""
+    """The presented screw's world pose: the live presenter prim composed with the seat offset,
+    since the prim origin is the CAD base plate. Read live, so a hand-placed presenter wins."""
     # reset_xform_properties=False -- a hand-placed/CAD-referenced presenter can carry the same
     # xformOp:scale:unitsResolve op the default would silently strip.
     presenter_trans, presenter_quat = SingleXFormPrim(
@@ -191,10 +174,8 @@ def compute_screw_presenter_pose():
 
 
 def screw_hole_local_pose(hole_index: int):
-    """Where a seated screw sits in the MOUNT's own frame: config.SCREW_HOLES[hole_index]'s entry
-    pose pushed SCREW_HOLE_INSERTION_DEPTH along the hole's OWN +Z (not world -Z), so a re-oriented
-    hole still seats inward. Shared by the world pose below and weld_screw_into_hole()'s joint frame
-    -- one source of truth, or the joint would pull the screw off the pose it was just snapped to."""
+    """Where a seated screw sits in the MOUNT's frame: the hole entry pose pushed along the hole's
+    OWN +Z. Shared with weld_screw_into_hole()'s joint frame -- one source of truth, or it fights."""
     hole = config.SCREW_HOLES[hole_index]
     return compute_dependent_world_pose(
         hole["local_position"],
@@ -205,9 +186,8 @@ def screw_hole_local_pose(hole_index: int):
 
 
 def compute_screw_hole_pose(hole_index: int):
-    """The world pose a screw's own frame should end up at for config.SCREW_HOLES[hole_index]: the
-    mount's (the back cover's) LIVE pose composed with the local pose above. Same live-relative
-    principle as compute_part_target_pose()."""
+    """The world pose a screw should end up at for config.SCREW_HOLES[hole_index]: the back cover's
+    LIVE pose composed with the local pose above."""
     # reset_xform_properties=False -- the cover carries an xformOp:scale:unitsResolve op; see
     # compute_part_target_pose() above.
     mount_trans, mount_quat = SingleXFormPrim(
@@ -217,15 +197,13 @@ def compute_screw_hole_pose(hole_index: int):
 
 
 def compute_ee_target_for_screw_pose(ee_link_prim_path: str, screw_trans, screw_quat):
-    """ee_link's target world pose for putting a screw carried on the bit at screw_trans/quat.
-    Two steps: SCREW_CARRY_LOCAL_* inverts to the docked tool root's required pose, then the LIVE
-    tool-root-to-ee_link offset (measured, not a constant -- so this stays right even though
-    TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_* is still a placeholder) converts that to ee_link's."""
-    from . import robot
+    """ee_link's target pose for putting a carried screw at screw_trans/quat. SCREW_CARRY_LOCAL_*
+    inverts to the tool root's pose, then the LIVE (not constant) tool-to-ee offset converts it."""
+    from . import toolchanger
 
     # reset_xform_properties=False on the tool -- it carries an xformOp:scale:unitsResolve op.
     tool_trans, tool_quat = SingleXFormPrim(
-        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+        prim_path=toolchanger._tool_prim_path("screwdriver"), reset_xform_properties=False
     ).get_world_pose()
     ee_trans, ee_quat = SingleXFormPrim(prim_path=ee_link_prim_path, reset_xform_properties=False).get_world_pose()
     ee_wrt_tool_trans, ee_wrt_tool_quat = compute_relative_pose(tool_trans, tool_quat, ee_trans, ee_quat)
@@ -239,10 +217,8 @@ def compute_ee_target_for_screw_pose(ee_link_prim_path: str, screw_trans, screw_
 
 
 def compute_assembly_grasp_target(ee_link_prim_path: str, relationship_name: str = "finger_print_scanner_on_main_holder"):
-    """Returns the world pose /World/target should be set to for P: main_holder's live pose composed
-    with ASSEMBLY_RELATIONSHIPS gives the part's target pose; the CURRENT live gripper-to-part offset
-    (not a fixed constant -- J, not G, does the grasp, so there's no separate grasp constant to fall
-    back on) is applied on top to get the gripper's target. Computed once, on the P keypress."""
+    """The world pose /World/target takes for P: the part's target pose from ASSEMBLY_RELATIONSHIPS,
+    with the CURRENT live gripper-to-part offset applied on top. Computed once, on the keypress."""
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
     # reset_xform_properties=False on both -- ee_link_prim_path has no unitsResolve op to lose
     # either way, but relationship["part_prim_path"] can carry one (see above).

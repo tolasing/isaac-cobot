@@ -1,8 +1,5 @@
-"""Headless regression test for the screw pick-and-place mechanics (robot.present_screw()/
-attach_screw_to_wrist()/weld_screw_into_hole() and grasp.compute_ee_target_for_screw_pose()).
-Drives no cuRobo plan -- it moves the arm's joints directly and asserts the screw actually rides the
-wrist while carried, stays put once welded into a hole, and then rides the back cover when THAT moves.
-Run: ${ISAACSIM_ROOT_PATH}/python.sh scripts/test_mefron_screw_headless.py --headless"""
+"""Headless regression test for the screw pick-and-place mechanics: moves the arm's joints directly
+(no cuRobo) and asserts a screw rides the wrist, then the hole, then the cover. Run with --headless."""
 
 from __future__ import annotations
 
@@ -13,9 +10,8 @@ from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
 if __name__ == "__main__":
-    # Base experience, like test_mefron_tool_changer_headless.py and unlike the full-kit rule for
-    # headless runs: nothing here needs a full-experience extension (core prims + UsdPhysics + pure
-    # pose math, no grasp_editor/conveyor), and the full kit's startup dominates the runtime.
+    # Base experience: nothing here needs a full-experience extension (core prims + UsdPhysics +
+    # pose math only), and the full kit's startup would dominate the runtime.
     simulation_app = SimulationApp({"headless": _headless})
 
 # Must run before any omni/curobo import -- see mefron_lib/kit_bootstrap.py's docstring.
@@ -28,7 +24,7 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleArticulation, SingleRigidPrim, SingleXFormPrim  # noqa: E402
 from pxr import UsdPhysics  # noqa: E402
-from mefron_lib import config, grasp, robot  # noqa: E402
+from mefron_lib import assembly, config, grasp, robot, screws, toolchanger  # noqa: E402
 
 _SETTLE_FRAMES = 90
 # Zero-snap welds (anchor placed at the body's own pose), so these should converge tightly -- 5mm
@@ -59,7 +55,7 @@ def _settle(simulation_app) -> None:
 
 def _screw_pose(index: int):
     return SingleXFormPrim(
-        prim_path=robot._screw_prim_path(index), reset_xform_properties=False
+        prim_path=screws._screw_prim_path(index), reset_xform_properties=False
     ).get_world_pose()
 
 
@@ -79,10 +75,8 @@ _MOUNT_NUDGE = 0.25
 
 
 def _move_arm(simulation_app, pose_index: int) -> float:
-    """Drives panda_joint2/4 to one of two absolute in-limit configurations (absolute, not a delta --
-    a delta off an unknown start can land outside a joint's limit and get silently clamped to no
-    motion). Rebuilds the articulation handle first: authoring a joint prim live stales whatever
-    handle existed before, same gotcha CLAUDE.md documents for Stop. Returns how far the hand moved."""
+    """Drives panda_joint2/4 to one of two ABSOLUTE in-limit configurations (a delta off an unknown
+    start can get silently clamped). Rebuilds the articulation handle first; returns hand travel."""
     before_trans, _ = _hand_pose()
     articulation = SingleArticulation(prim_path=config.ROBOT_PRIM_PATH, name=f"mefron_screw_test_robot_{pose_index}")
     articulation.initialize()
@@ -95,13 +89,12 @@ def _move_arm(simulation_app, pose_index: int) -> float:
 
 
 def _check_ee_target_round_trip(label: str, ee_link_prim_path: str, want_trans, want_quat) -> None:
-    """compute_ee_target_for_screw_pose() inverts SCREW_CARRY_LOCAL_* and the live tool->ee offset;
-    this re-derives the screw pose from its answer using the OPPOSITE (ee->tool) direction, so a
-    dropped inverse or a flipped frame shows up as a real mismatch rather than a plausible number."""
+    """Re-derives the screw pose from compute_ee_target_for_screw_pose()'s answer in the OPPOSITE
+    direction, so a dropped inverse or flipped frame shows up as a mismatch, not a plausible number."""
     ee_trans, ee_quat = grasp.compute_ee_target_for_screw_pose(ee_link_prim_path, want_trans, want_quat)
 
     tool_trans, tool_quat = SingleXFormPrim(
-        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+        prim_path=toolchanger._tool_prim_path("screwdriver"), reset_xform_properties=False
     ).get_world_pose()
     live_ee_trans, live_ee_quat = SingleXFormPrim(
         prim_path=ee_link_prim_path, reset_xform_properties=False
@@ -146,31 +139,31 @@ def main() -> None:
     robot.mount_franka()
     robot.remove_parallel_jaw_gripper()
     robot.hide_hand_housing()
-    robot.attach_tool_changer_male_coupler()
+    toolchanger.attach_tool_changer_male_coupler()
 
     for tool_name in config.TOOL_CHANGE_TARGETS:
-        robot.spawn_dockable_tool(tool_name)
-        robot.park_tool_at_rack(tool_name)
+        toolchanger.spawn_dockable_tool(tool_name)
+        toolchanger.park_tool_at_rack(tool_name)
 
     # clear_assembly_welds() first, same order as mefron.py: a placed screw's anchor now lives in the
     # assembly-weld scope, so a stale one baked into mefron.usd by an earlier run has to go too.
-    robot.clear_assembly_welds()
-    robot.clear_screws()
-    robot.ensure_screw_presenter()
-    robot.present_screw(0)
+    assembly.clear_assembly_welds()
+    screws.clear_screws()
+    screws.ensure_screw_presenter()
+    screws.present_screw(0)
 
     stage = stage_context.get_stage()
     ee_link_prim_path = f"{config.ROBOT_PRIM_PATH}/panda_hand"
     if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-    screw_prim = stage.GetPrimAtPath(robot._screw_prim_path(0))
+    screw_prim = stage.GetPrimAtPath(screws._screw_prim_path(0))
     _check("screw 0 spawned as a real rigid body", screw_prim.IsValid() and screw_prim.HasAPI(UsdPhysics.RigidBodyAPI))
     _check(
         "screw 0 has an explicit mass (it has no colliders for PhysX to derive one from)",
         screw_prim.HasAPI(UsdPhysics.MassAPI),
     )
-    _check("screw 0 starts jointed to the presenter", stage.GetPrimAtPath(robot._screw_presenter_joint_path(0)).IsValid())
+    _check("screw 0 starts jointed to the presenter", stage.GetPrimAtPath(screws._screw_presenter_joint_path(0)).IsValid())
 
     timeline = omni.timeline.get_timeline_interface()
     timeline.play()
@@ -183,16 +176,16 @@ def main() -> None:
     drift = float(np.linalg.norm(presenter_trans - parked_trans))
     _check(f"screw 0 stays at the presenter under gravity (drift={drift:.4f}m)", drift < _WELD_TOLERANCE)
 
-    robot.dock_tool_to_wrist("screwdriver")
+    toolchanger.dock_tool_to_wrist("screwdriver")
     _settle(simulation_app)
     _check(
         "screwdriver docked for the screw legs",
-        stage.GetPrimAtPath(robot._wrist_joint_path("screwdriver")).IsValid(),
+        stage.GetPrimAtPath(toolchanger._wrist_joint_path("screwdriver")).IsValid(),
     )
 
     # The CAD-derived bit tip should sit one tool-length out from the wrist once docked.
     tool_trans, tool_quat = SingleXFormPrim(
-        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+        prim_path=toolchanger._tool_prim_path("screwdriver"), reset_xform_properties=False
     ).get_world_pose()
     tip_trans, _ = grasp.compute_dependent_world_pose(
         tool_trans, tool_quat, config.SCREWDRIVER_TIP_LOCAL_POSITION, [1.0, 0.0, 0.0, 0.0]
@@ -209,22 +202,20 @@ def main() -> None:
     for hole_index in range(len(config.SCREW_HOLES)):
         _check_ee_target_round_trip(f"hole {hole_index}", ee_link_prim_path, *grasp.compute_screw_hole_pose(hole_index))
 
-    # Pick: the screw leaves the presenter for the wrist. Not driven to the pick pose first (no cuRobo
-    # here), so the weld's own correction to the nominal carry pose is the whole distance -- which is
-    # exactly what's asserted next.
-    robot.attach_screw_to_wrist(0)
+    # Pick: the screw leaves the presenter for the wrist. Not driven to the pick pose first, so the
+    # weld's correction to the nominal carry pose is the whole distance -- asserted next.
+    screws.attach_screw_to_wrist(0)
     _settle(simulation_app)
-    _check("screw 0 jointed to the wrist after picking", stage.GetPrimAtPath(robot._screw_tip_joint_path(0)).IsValid())
+    _check("screw 0 jointed to the wrist after picking", stage.GetPrimAtPath(screws._screw_tip_joint_path(0)).IsValid())
     _check(
         "screw 0's presenter joint removed after picking",
-        not stage.GetPrimAtPath(robot._screw_presenter_joint_path(0)).IsValid(),
+        not stage.GetPrimAtPath(screws._screw_presenter_joint_path(0)).IsValid(),
     )
 
-    # Regression: the weld used to freeze the arm's live settled pose into the joint, so cuRobo's
-    # ~2mm residual approach error left the screw permanently off the bit axis (localPos0 x/y ~1mm
-    # instead of 0). Tighter than _WELD_TOLERANCE on purpose -- 5mm wouldn't have caught it.
+    # Regression: the weld used to freeze the arm's settled pose, leaving the screw ~1mm off the bit
+    # axis. Tighter than _WELD_TOLERANCE on purpose -- 5mm wouldn't have caught it.
     tool_trans, tool_quat = SingleXFormPrim(
-        prim_path=robot._tool_prim_path("screwdriver"), reset_xform_properties=False
+        prim_path=toolchanger._tool_prim_path("screwdriver"), reset_xform_properties=False
     ).get_world_pose()
     carried_local_trans, _ = grasp.compute_relative_pose(tool_trans, tool_quat, *_screw_pose(0))
     carry_error = float(np.linalg.norm(carried_local_trans - np.array(config.SCREW_CARRY_LOCAL_POSITION)))
@@ -242,17 +233,16 @@ def main() -> None:
     _check(f"screw 0 rides the wrist through an arm move (offset drift={ride_error:.4f}m)", ride_error < _WELD_TOLERANCE)
 
     # Place: the screw leaves the wrist for the back cover's own kinematic anchor.
-    robot.weld_screw_into_hole(0, 0)
+    screws.weld_screw_into_hole(0, 0)
     _settle(simulation_app)
-    _check("screw 0 jointed into hole 0 after placing", stage.GetPrimAtPath(robot._screw_hole_joint_path(0)).IsValid())
+    _check("screw 0 jointed into hole 0 after placing", stage.GetPrimAtPath(screws._screw_hole_joint_path(0)).IsValid())
     _check(
         "screw 0's tip joint removed after placing",
-        not stage.GetPrimAtPath(robot._screw_tip_joint_path(0)).IsValid(),
+        not stage.GetPrimAtPath(screws._screw_tip_joint_path(0)).IsValid(),
     )
 
-    # Regression, the place-side twin of the carry check above: welding the arm's settled pose left
-    # screws ~2-3mm out in x/y and ~5mm too deep in the mount's own frame. Compared against
-    # screw_hole_local_pose(), the same helper the weld joint's own body0 frame comes from.
+    # Place-side twin of the carry check above. Compared against screw_hole_local_pose(), the same
+    # helper the weld joint's own body0 frame comes from.
     mount_trans, mount_quat = SingleXFormPrim(
         prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
     ).get_world_pose()
@@ -276,9 +266,8 @@ def main() -> None:
         stay_error < _WELD_TOLERANCE,
     )
 
-    # The load-bearing check for welding to the cover rather than a static world anchor: does a placed
-    # screw RIDE it? The anchor tracks the mount through sync_assembly_anchors(), which
-    # run_teleop_loop() calls every frame -- stood in for here, since this test drives no teleop loop.
+    # The load-bearing check for welding to the cover rather than a static world anchor: does a
+    # placed screw RIDE it? sync_assembly_anchors() is called by hand, as there's no teleop loop.
     mount_prim = stage.GetPrimAtPath(config.SCREW_HOLE_MOUNT_PRIM_PATH)
     # SingleRigidPrim for a simulated body -- teleporting one needs the PhysX-side write, since a
     # plain USD xform write gets overwritten by the body's own pose on the next step.
@@ -295,7 +284,7 @@ def main() -> None:
     # Every frame, not once: the cover is a real dynamic body, so it keeps settling after the nudge
     # and a single sync would leave the anchor (and the screw) behind wherever it was at frame 0.
     for _ in range(_SETTLE_FRAMES):
-        robot.sync_assembly_anchors()
+        assembly.sync_assembly_anchors()
         simulation_app.update()
     mount_trans_after, _ = mount_mover.get_world_pose()
     mount_moved = float(np.linalg.norm(np.array(mount_trans_after) - np.array(mount_trans_before)))
@@ -315,7 +304,7 @@ def main() -> None:
     )
 
     # And the next screw pops in, so the presenter is never empty mid-sequence.
-    robot.present_screw(1)
+    screws.present_screw(1)
     _settle(simulation_app)
     presenter_trans, _ = grasp.compute_screw_presenter_pose()
     next_trans, _ = _screw_pose(1)

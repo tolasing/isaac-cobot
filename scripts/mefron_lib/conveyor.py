@@ -1,7 +1,5 @@
-"""ConveyorBelt_A24 setup + keyboard control, driven through Isaac Sim's own
-isaacsim.asset.gen.conveyor OmniGraph node rather than a hand-authored PhysX attribute write --
-see docs/mefron-history.md for why. setup_conveyor_belt_graph() is one-time-per-script-run setup
-(after kit_experience.enable_full_experience_extensions()); ConveyorControl is the per-frame piece."""
+"""ConveyorBelt_A24 setup + keyboard control, driven through the isaacsim.asset.gen.conveyor
+OmniGraph node rather than a hand-authored PhysX write. Why: docs/mefron-history.md."""
 
 from __future__ import annotations
 
@@ -12,10 +10,8 @@ from . import config
 
 
 def setup_conveyor_belt_graph() -> None:
-    """Builds config.CONVEYOR_ACTION_GRAPH_PATH via the CreateConveyorBelt kit command -- the
-    supported entry point, not a hand-authored graph. Must run after
-    kit_experience.enable_full_experience_extensions(). Deletes any stray prior graph, re-zeros
-    surfaceVelocity, and forces+reads back inputs:enabled -- see docs/mefron-history.md for why."""
+    """Builds config.CONVEYOR_ACTION_GRAPH_PATH via the CreateConveyorBelt kit command. Must run
+    AFTER kit_experience.enable_full_experience_extensions(); rationale: docs/mefron-history.md."""
     import omni.kit.app
     import omni.kit.commands
     from pxr import Gf, PhysxSchema
@@ -25,9 +21,8 @@ def setup_conveyor_belt_graph() -> None:
     stray_graph_prim = stage.GetPrimAtPath(config.CONVEYOR_ACTION_GRAPH_PATH)
     if stray_graph_prim.IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[config.CONVEYOR_ACTION_GRAPH_PATH])
-        # Same reasoning as mount_franka()'s own post-DeletePrims pump: without this, CreateConveyorBelt
-        # below can see the deletion as still in-flight and uniquify to *_01 instead of reusing this
-        # exact path, breaking the deterministic-path assumption ConveyorControl relies on.
+        # Same post-DeletePrims pump as mount_franka()'s: without it CreateConveyorBelt can see the
+        # delete as in-flight and uniquify to *_01, breaking the deterministic path.
         omni.kit.app.get_app().update()
 
     belt_prim = stage.GetPrimAtPath(config.CONVEYOR_BELT_PRIM_PATH)
@@ -41,10 +36,8 @@ def setup_conveyor_belt_graph() -> None:
     if belt_prim.HasAPI(PhysxSchema.PhysxSurfaceVelocityAPI):
         PhysxSchema.PhysxSurfaceVelocityAPI(belt_prim).GetSurfaceVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
-    # Must be the Usd.Prim itself, not its path string -- the command's own do() calls
-    # self._conveyor_prim.GetPath(), which raises AttributeError on a str and makes the whole
-    # command fail (logged, not raised -- confirmed live via a throwaway headless repro against an
-    # empty stage/scratch prim before finding this).
+    # Must be the Usd.Prim itself, not its path string -- the command's do() calls .GetPath() on it,
+    # which raises on a str and makes the whole command fail silently (logged, not raised).
     success, _ = omni.kit.commands.execute(
         "CreateConveyorBelt",
         prim_name=config.CONVEYOR_ACTION_GRAPH_PRIM_NAME,
@@ -69,8 +62,7 @@ def setup_conveyor_belt_graph() -> None:
         return
 
     # Keyed off inputs:direction, not inputs:conveyorPrim -- the latter is a "target"-typed input,
-    # which USD represents as a relationship, not an attribute, so GetAttribute() on it is always
-    # invalid regardless of which child this is.
+    # which USD stores as a relationship, so GetAttribute() on it is always invalid.
     node_prim = None
     for child in graph_prim.GetChildren():
         if child.GetAttribute("inputs:direction").IsValid():
@@ -113,10 +105,8 @@ def setup_conveyor_belt_graph() -> None:
 
 
 class ConveyorControl:
-    """Toggled by config.CONVEYOR_TOGGLE_KEY: drives the ConveyorBeltGraph's "Velocity" variable to
-    carry main_holder_jig config.CONVEYOR_TRAVEL_DISTANCE each press, forward then back. step()
-    applies a pending toggle each teleop frame and zeros velocity once the jig reaches the target.
-    See docs/mefron-history.md for the state-machine/mid-transit-press rationale."""
+    """Toggled by config.CONVEYOR_TOGGLE_KEY: carries main_holder_jig CONVEYOR_TRAVEL_DISTANCE each
+    press, forward then back. State machine + mid-transit-press rationale: docs/mefron-history.md."""
 
     def __init__(self) -> None:
         self._state = "back"  # "back" | "moving_forward" | "front" | "moving_backward"
@@ -126,10 +116,8 @@ class ConveyorControl:
         self._transit_target_y = None
 
     def reset(self) -> None:
-        """Called on every fresh Play. Without this, a '1' press queued before a Stop would fire the
-        instant the next Play starts with no new keypress, and once "moving" it silently ignores
-        further presses until reaching an end. Stop reverts the stage (and the jig) to its start
-        position, so state="back" matches -- see docs/mefron-history.md."""
+        """Called on every fresh Play, or a press queued before a Stop fires the instant Play starts.
+        Stop reverts the jig to its start position, so state="back" matches. docs/mefron-history.md."""
         self._state = "back"
         self._toggle_requested = False
         self._transit_target_y = None
@@ -165,9 +153,8 @@ class ConveyorControl:
         attr.Set(float(value))
 
     def _jig_world_y(self) -> float:
-        # reset_xform_properties=False is required -- the default silently strips main_holder_jig's
-        # unitsResolve xformOp every frame, which was the confirmed root cause of conveyor
-        # vibration. See docs/mefron-history.md.
+        # reset_xform_properties=False is required -- the default strips main_holder_jig's
+        # unitsResolve xformOp every frame, the confirmed root cause of conveyor vibration.
         xform = SingleXFormPrim(prim_path=config.MAIN_HOLDER_JIG_PRIM_PATH, reset_xform_properties=False)
         position, _ = xform.get_world_pose()
         return float(position[1])
