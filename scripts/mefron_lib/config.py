@@ -79,6 +79,12 @@ HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 # Grasp Editor-exported poses, keyed by object name and wired to a key in
 # keyboard.build_gripper_keyboard_control(). Finger widths are read from the yaml live.
 GRASP_TARGETS = {
+    "main_holder": {
+        "key": "G",
+        "yaml_path": REPO_ROOT / "assets" / "main_holder.yaml",
+        "grasp_name": "grasp_0",
+        "part_prim_path": "/World/main_holder",
+    },
     "finger_print_scanner": {
         "key": "J",
         "yaml_path": REPO_ROOT / "assets" / "finger_print_scanner.yaml",
@@ -101,9 +107,19 @@ GRASP_TARGETS = {
     # on approach, see docs/mefron-history.md); the freed key now drives the back cover above.
 }
 
-# T_H_S: each part's pose expressed in main_holder's own local frame at the correctly assembled
+# T_H_S: each part's pose expressed in its MOUNT's own local frame at the correctly assembled
 # position, derived via grasp.compute_relative_pose() -- see docs/grasp-and-assembly-offsets.md.
 ASSEMBLY_RELATIONSHIPS = {
+    # The one entry mounting onto the belt-driven jig rather than main_holder. Given as -24mm in the
+    # jig's own mm-scale frame; the jig is flipped 180 deg about Y, so that is 24mm *up* in world.
+    "main_holder_on_main_holder_jig": {
+        "part_prim_path": "/World/main_holder",
+        "mount_prim_path": "/World/main_holder_jig",
+        "local_position": [0.0, 0.0, -0.024],
+        # 180 deg about Z, not identity -- cancels the jig-vs-holder frame difference, so the holder
+        # seats facing the way it parks on the table. Hand-specified, see docs.
+        "local_orientation_wxyz": [0.0, 0.0, 0.0, 1.0],
+    },
     "finger_print_scanner_on_main_holder": {
         "part_prim_path": "/World/finger_print_scanner",
         "mount_prim_path": "/World/main_holder",

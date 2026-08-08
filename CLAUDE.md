@@ -70,7 +70,7 @@ three dockable tools, and runs the drag-follow teleop loop.
 | Key | Action |
 |---|---|
 | `Y` / `U` / `I` | dock gripper / suction / screwdriver (`TOOL_CHANGE_TARGETS`) |
-| J / B / K | gripper: approach a grasp (`GRASP_TARGETS`) |
+| G / J / B / K | gripper: approach a grasp (`GRASP_TARGETS`) |
 | C / O | gripper: close / open — **O welds** (see below) |
 | N / M | suction: approach (`SUCTION_TARGETS`) |
 | V / L | suction: attach / release — **L welds** |
@@ -78,6 +78,16 @@ three dockable tools, and runs the drag-follow teleop loop.
 | P | place whatever was last grasped or approached |
 | 1 (number row) | conveyor forward, press again for back |
 
+- **`main_holder` into the jig (`G`).** The base part is pickable too, and its
+  `ASSEMBLY_RELATIONSHIPS` entry is the only one whose mount is
+  **`main_holder_jig`**, not `main_holder` — so `G`/C/P/O seats it on the jig and
+  the conveyor then carries the whole assembly. The seat offset was given as
+  `z = -24` in the jig's own **mm-scale** frame → `-0.024` m here, and the jig is
+  flipped 180° about Y, so that is 24mm *up* in world. Its relative orientation is
+  **180° about Z** (`[0,0,0,1]`), not identity — that cancels the jig-vs-holder
+  frame difference, so the holder seats facing the way it parks on the table.
+  Everything else assembles in `main_holder`'s own frame off its *live* pose, so
+  nothing needed re-deriving.
 - **Screws.** 5 picks the screw on `/World/screw_presenter`; 6 carries it to the
   next of `SCREW_HOLES`' nine clearance holes in **`main_holder_back_cover`**
   and pops the next screw in. **No driving rotation** — deliberately out of
@@ -116,6 +126,15 @@ code change needed.
 
 Full investigation detail: `docs/mefron-history.md`.
 
+- **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
+  unverified live.** `test_mefron_assembly_weld_headless.py
+  --relationship=main_holder_on_main_holder_jig` welds cleanly (0.005m
+  correction, 0.000m drift under gravity) but the welded holder does not follow a
+  nudged jig — off by exactly the 0.15m nudge. Suspected harness artifact: it
+  calls `sync_assembly_anchors()` **once** after a PhysX-side teleport and then
+  simulates 90 frames, whereas `run_teleop_loop()` calls it every frame. Not
+  compared against the baseline relationship, and not yet checked in the GUI —
+  confirm on the conveyor before treating it as either a bug or a non-issue.
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
   fingertips at grasp time, so one finger contacts first and shifts the part
   sideways. Not a joint/drive asymmetry (ruled out).

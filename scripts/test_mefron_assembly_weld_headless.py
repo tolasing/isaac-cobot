@@ -1,5 +1,5 @@
 """Headless regression test for the O/L release weld: places the part directly (no arm, no cuRobo)
-and asserts it snaps, holds, rides main_holder, and lets go. Run with --headless."""
+and asserts it snaps, holds, rides its mount, and lets go. Run with --headless."""
 
 from __future__ import annotations
 
@@ -25,7 +25,14 @@ from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim  # noqa: E402
 from pxr import Usd, UsdPhysics  # noqa: E402
 from mefron_lib import assembly, config, grasp  # noqa: E402
 
-_RELATIONSHIP = "finger_print_scanner_on_main_holder"
+# --relationship=<name> runs the same asserts against any config.ASSEMBLY_RELATIONSHIPS entry;
+# main_holder_on_main_holder_jig is the only one whose mount is a belt-driven dynamic body.
+_RELATIONSHIP = next(
+    (arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--relationship=")),
+    "finger_print_scanner_on_main_holder",
+)
+if _RELATIONSHIP not in config.ASSEMBLY_RELATIONSHIPS:
+    raise SystemExit(f"[test_mefron_assembly_weld_headless] unknown --relationship={_RELATIONSHIP}")
 _SETTLE_FRAMES = 90
 # Zero-snap weld (the part is re-authored onto the nominal pose before jointing), so this should
 # converge tightly -- 5mm still absorbs PhysX settling jitter without masking a real frame mistake.
@@ -33,7 +40,7 @@ _WELD_TOLERANCE = 0.005
 # How far off-nominal each case starts: inside / well outside config.ASSEMBLY_WELD_MAX_DISTANCE.
 _NEAR_OFFSET = 0.005
 _FAR_OFFSET = 0.30
-# How far main_holder is teleported for the ride check, and the minimum that counts as having moved.
+# How far the mount is teleported for the ride check, and the minimum that counts as having moved.
 _MOUNT_NUDGE = 0.15
 _MIN_MOUNT_MOVEMENT = 0.05
 
@@ -144,7 +151,7 @@ def main() -> None:
         drift < _WELD_TOLERANCE,
     )
 
-    # The load-bearing check: does an assembled part ride main_holder? sync_assembly_anchors() is
+    # The load-bearing check: does an assembled part ride its mount? sync_assembly_anchors() is
     # called by hand here, since this test drives no teleop loop.
     mount_prim = stage.GetPrimAtPath(mount_prim_path)
     # SingleRigidPrim for a simulated body -- teleporting one needs the PhysX-side write, since a
@@ -164,7 +171,7 @@ def main() -> None:
     mount_trans_after, _ = mount_mover.get_world_pose()
     mount_moved = float(np.linalg.norm(np.array(mount_trans_after) - np.array(mount_trans_before)))
     _check(
-        f"main_holder actually moved before the ride check (moved {mount_moved:.4f}m)",
+        f"{mount_prim_path} actually moved before the ride check (moved {mount_moved:.4f}m)",
         mount_moved > _MIN_MOUNT_MOVEMENT,
     )
 
@@ -174,7 +181,7 @@ def main() -> None:
     rode_trans, _ = part_xform.get_world_pose()
     ride_error = float(np.linalg.norm(np.array(moved_nominal_trans) - rode_trans))
     _check(
-        f"the welded part rides main_holder to its new pose (err={ride_error:.4f}m)",
+        f"the welded part rides {mount_prim_path} to its new pose (err={ride_error:.4f}m)",
         ride_error < _WELD_TOLERANCE,
     )
 

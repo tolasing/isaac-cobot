@@ -119,7 +119,9 @@ def main() -> None:
         flush=True,
     )
     print(
-        "[mefron] Gripper tool (once docked): press C to close, O to open. J/B/K to approach a "
+        "[mefron] Gripper tool (once docked): press C to close, O to open. "
+        + "/".join(target_cfg["key"] for target_cfg in config.GRASP_TARGETS.values())
+        + " to approach a "
         f"grasp, P to place. Releasing within {config.ASSEMBLY_WELD_MAX_DISTANCE}m of the assembly "
         "pose snaps the part there and welds it; a grasp key un-welds it again.",
         flush=True,

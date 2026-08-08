@@ -61,6 +61,85 @@ sitting ~3.75mm too high) and the orientation simplified from a small
 residual rotation to a clean identity quaternion — consistent with a more
 carefully-aligned re-measurement rather than measurement noise.
 
+## 2026-08-08: `main_holder` relative to `main_holder_jig` (the `G` key)
+
+`main_holder` was until now only ever a *mount*, never a *part* — it sat
+wherever the scene author parked it on the packing table. `assets/main_holder.yaml`
+(a Grasp-Editor export, `grasp_0`) plus a seat pose supplied directly by hand
+made it pickable, so the sequence now starts by dropping the base part into the
+jig rather than assuming it is already there. It is wired as an ordinary
+`GRASP_TARGETS` entry on **`G`**, and the flow is the same `G` → C → P → O as
+every other part; the only structural novelty is that its
+`ASSEMBLY_RELATIONSHIPS` entry mounts onto **`main_holder_jig`**, making it the
+first relationship whose mount is the belt-driven jig instead of `main_holder`.
+
+### The supplied offset was in millimetres, not metres
+
+Unlike every other entry in this document, this one was **not** derived by
+`compute_relative_pose()` on two live world poses — it was given directly as
+`x 0, y 0, z -24.0` in the jig's own frame. That frame is millimetre-scale
+(`main_holder_jig` carries `xformOp:scale:unitsResolve = (0.001, 0.001, 0.001)`),
+while `ASSEMBLY_RELATIONSHIPS` offsets are scale-free **metres** — they are
+composed onto `get_world_pose()` results, which drop scale. So the stored value
+is `-0.024`, and the conversion was confirmed against scene geometry rather than
+assumed:
+
+| | value |
+|---|---|
+| jig origin (world) | `(3.14315, -4.78217, 0.98658)`, rotated 180° about **Y** |
+| jig bbox | 250 × 250 × 88mm, **origin sits on its top face** |
+| jig local `+Z` | points world **−Z**, so local `z = -24mm` is 24mm **up** |
+| `main_holder` bbox | 182 × 238 × 22mm, **origin sits on its top face** |
+| holder origin once seated | world Z `0.98658 + 0.024 = 1.01058` |
+| holder underside | `1.01058 − 0.022 = 0.98858` → **2mm above the jig's top face** |
+
+That seats it. Read as centimetres the same number would float the holder 240mm
+in the air, so the unit is not in doubt. Same convention as
+`main_holder_back_cover_on_main_holder`'s `-0.015`.
+
+### Orientation: 180° about Z, specified not measured
+
+Only a position was supplied, so the relative orientation was a separate call:
+**`[0.0, 0.0, 0.0, 1.0]`, 180° about Z**. Identity was written first (the natural
+reading of a CAD mate offset) and corrected by hand before anyone ran it.
+
+Why identity was wrong here: the jig is rotated 180° about **Y** in world while
+the holder parks at 180° about **X**, and those differ by exactly a 180° yaw
+(`R_y(180) = R_z(180)·R_x(180)`). Under identity the holder would have landed
+yawed 180° from how it sits on the table. The 180°-about-Z offset cancels that,
+so the holder seats in the jig with the world orientation it already has — same
+end facing the robot. Geometry does not disambiguate the two: both are flat and
+centred (holder and jig are each centred on their own origin in X/Y, and 182×238
+clears the 250×250 jig either way), which is exactly why it had to be specified.
+
+No `ASSEMBLY_WELD_POSES` entry was added: `assembly_weld_local_pose()` falls back
+to the `ASSEMBLY_RELATIONSHIPS` offset, so P and O agree by construction. Add one
+only if the seated holder needs a visual nudge off where P drove, the way the
+other four parts did.
+
+### Knock-on effects (and non-effects)
+
+- **Nothing else needed re-deriving.** Every other relationship is expressed in
+  `main_holder`'s own frame and composed onto its *live* pose, so the whole
+  sub-assembly follows the holder into the jig for free.
+- **The weld turns `main_holder`'s collision off**, the default. Left that way
+  deliberately: its convex-decomposition collider is still untuned (see
+  `CLAUDE.md`'s open issues), and snapping an untuned collider into the jig is
+  exactly the interpenetration-shake case the default guards against.
+  `ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS` is the opt-out if needed.
+- **The anchor chain gains a link**: jig → `anchor_main_holder_jig` (kinematic) →
+  `main_holder` → `anchor_main_holder` (kinematic) → sub-parts. Each anchor is
+  pose-driven once per frame, so during a conveyor run sub-parts may trail by
+  roughly two frames and re-seat when it stops. The anchor being kinematic means
+  the holder adds **no** load to the friction-driven jig.
+- **Grasp reach is tight**: the yaml puts the ee target at ≈
+  `(2.055, -5.232, 1.029)`, 0.809m from `MOUNT_POSITION` against the Panda's
+  ~0.855m envelope. A `plan_single` failure on `G` is a scene-layout fix, not a
+  code one. The placement pose is comfortable by contrast: ≈
+  `(3.056, -4.801, 1.111)`, 0.535m.
+- **Unresolved**: the headless ride check fails for this relationship — see
+  `CLAUDE.md`'s open issues.
+
 ## The official Grasp Editor tool was tried and abandoned for T_S_G
 
 The official `isaacsim.robot_setup.grasp_editor` tool (`GraspSpec`) was
