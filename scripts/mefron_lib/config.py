@@ -49,7 +49,7 @@ _ROBOT_INIT_SETTLE_FRAMES = 5
 
 # Re-times the already-planned trajectory to play out slower; doesn't change the optimizer's
 # relative speed profile or planning success.
-_TELEOP_TIME_DILATION_FACTOR = 0.3
+_TELEOP_TIME_DILATION_FACTOR = 1.0
 
 # Caps velocity/acceleration limits used during trajectory optimization. cuRobo treats scale <=
 # 0.25 as a special case (swaps in finetune_trajopt_slow.yml); 0.2 stays under that threshold.
@@ -235,6 +235,64 @@ MAIN_HOLDER_JIG_PRIM_PATH = "/World/main_holder_jig"
 CONVEYOR_TRAVEL_DISTANCE = 1.1
 # Number-row "1" -- carb.input.KeyboardInput.KEY_1, not the numpad.
 CONVEYOR_TOGGLE_KEY = "KEY_1"
+
+# --- Per-part conveyor feeders (ConveyorBelt_A06_02..06) ----------------------------------------
+
+# One 1m belt per sub-part, each queueing GUI-placed copies. Keyed by BASE part prim path -- the
+# join key GRASP_TARGETS/ASSEMBLY_RELATIONSHIPS already use. Full design: docs/part-feeders.md.
+PART_FEEDERS = {
+    "/World/PCB_Assembly_color_fixed": {"belt_prim_path": "/World/ConveyorBelt_A06_02/Belt"},
+    "/World/screen": {"belt_prim_path": "/World/ConveyorBelt_A06_03/Belt"},
+    "/World/backpanel_support": {"belt_prim_path": "/World/ConveyorBelt_A06_04/Belt"},
+    "/World/finger_print_scanner": {"belt_prim_path": "/World/ConveyorBelt_A06_05/Belt"},
+    "/World/main_holder_back_cover": {"belt_prim_path": "/World/ConveyorBelt_A06_06/Belt"},
+}
+FEEDER_GRAPH_PRIM_NAME = "FeederBeltGraph"
+# Belt-local, same convention as CONVEYOR_LOCAL_VELOCITY_DIRECTION. These belts' local +X maps to
+# world -Y (A24's maps to +Y), so a NEGATIVE speed feeds toward the robot. Confirmed live.
+FEEDER_LOCAL_VELOCITY_DIRECTION = [1.0, 0.0, 0.0]
+# BELT-LOCAL, not m/s: these belts carry a 0.5 scale, so this is ~0.075 m/s in world (measured).
+# feeder._belt_travel_scale() converts, so FEEDER_MAX_TRAVEL below stays in real metres.
+FEEDER_SPEED = -0.15
+# Ramp instead of stepping the surface velocity: the friction impulse of an instant step can tip a
+# part, and the ramp-down is what keeps the stop overshoot inside the front-edge budget (~28mm).
+FEEDER_RAMP_SECONDS = 0.2
+FEEDER_ADVANCE_DELAY_SECONDS = 5.0
+# Dead-reckoned cut-off so a belt whose queue has run out stops instead of running forever.
+FEEDER_MAX_TRAVEL = 0.85
+
+# Light-beam photo-eye per belt, all geometry derived from live bboxes at setup -- see
+# feeder.build_beam_sensors(). Mounted on the belt's front frame, aimed back down the belt.
+FEEDER_SENSOR_SCOPE_PRIM_PATH = "/World/feeder_sensors"
+FEEDER_BEAM_MOUNT_STANDOFF = 0.01
+# Trips this far BEFORE the parked leading face, and only sees FEEDER_BEAM_DEPTH past it -- the
+# background suppression that keeps queued parts further back invisible.
+FEEDER_BEAM_PRETRIP = 0.002
+FEEDER_BEAM_DEPTH = 0.03
+# How close to minRange counts as "arrived". The belt stops on DEPTH, not on the bare trip: a trip
+# fires a whole FEEDER_BEAM_DEPTH early, which on the far belts lands the part outside the arm's reach.
+# 0.003 is the value the harness passed with. Widening it to ~0.008 would let backpanel_support and
+# finger_print_scanner confirm on the beam too (they have a notch at the ray line) -- UNVERIFIED.
+FEEDER_BEAM_ARRIVAL_EPSILON = 0.003
+# A vertical curtain, not a single ray, and a fine one: measured leading faces sit anywhere from
+# 3mm (PCB_Assembly's board) to 33mm (the back cover) above the belt. 24 rays over 40mm = 1.7mm apart.
+FEEDER_BEAM_NUM_RAYS = 24
+FEEDER_BEAM_CURTAIN_LENGTH = 0.04
+# Rays run UP from the sensor origin (a centred curtain would put half of them under the belt and
+# trip permanently -- it doesn't, which is how we know). 1mm clears the belt without missing a board.
+FEEDER_BEAM_CURTAIN_BASE_OFFSET = 0.001
+# Visual-only barrel housing + beam rod, because the sensor's own debug draw is a few-cm line at belt
+# height that nothing can see. No colliders, so a raycast can't hit them. feeder._build_beam_visual().
+FEEDER_BEAM_HOUSING_RADIUS = 0.009
+FEEDER_BEAM_HOUSING_LENGTH = 0.03
+FEEDER_BEAM_VISUAL_RADIUS = 0.0015
+# How far above/below the belt surface, and how far outside its XY footprint, a rigid body still
+# counts as riding that belt in feeder.belt_queue().
+FEEDER_QUEUE_HEIGHT_TOLERANCE = 0.1
+FEEDER_QUEUE_FOOTPRINT_MARGIN = 0.02
+# Number-row "2": advance every feeder now, skipping the delay. A verification key, not part of the
+# automatic cycle.
+FEEDER_ADVANCE_KEY = "KEY_2"
 
 
 # The two CAD tools with the female coupler modeled onto the body. Both are baked into
@@ -438,6 +496,9 @@ FULL_EXPERIENCE_EXTRA_EXTENSIONS = [
     "isaacsim.sensors.camera.ui",
     "isaacsim.sensors.physics.examples",
     "isaacsim.sensors.physics.ui",
+    # Base ext, listed explicitly (not just via its .examples/.ui below): feeder.py's light-beam
+    # photo-eyes need it, and it must be enabled in headless runs too.
+    "isaacsim.sensors.physx",
     "isaacsim.sensors.physx.examples",
     "isaacsim.sensors.physx.ui",
     "isaacsim.sensors.rtx.ui",

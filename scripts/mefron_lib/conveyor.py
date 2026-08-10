@@ -1,5 +1,6 @@
-"""ConveyorBelt_A24 setup + keyboard control, driven through the isaacsim.asset.gen.conveyor
-OmniGraph node rather than a hand-authored PhysX write. Why: docs/mefron-history.md."""
+"""Belt-graph setup + ConveyorBelt_A24's keyboard control, driven through the
+isaacsim.asset.gen.conveyor OmniGraph node, not a hand-authored PhysX write: docs/mefron-history.md.
+The setup/velocity helpers here are shared with feeder.py's per-part belts."""
 
 from __future__ import annotations
 
@@ -9,30 +10,47 @@ from isaacsim.core.prims import SingleXFormPrim
 from . import config
 
 
-def setup_conveyor_belt_graph() -> None:
-    """Builds config.CONVEYOR_ACTION_GRAPH_PATH via the CreateConveyorBelt kit command. Must run
+def graph_prim_path(belt_prim_path: str, graph_prim_name: str) -> str:
+    """Where CreateConveyorBelt puts its graph: a sibling of the belt body, named graph_prim_name.
+    Mirrors the command's own base_path logic so callers can predict the path."""
+    from pxr import Sdf
+
+    return Sdf.Path(belt_prim_path).GetParentPath().AppendChild(graph_prim_name).pathString
+
+
+def velocity_attr_path(graph_path: str) -> str:
+    return f"{graph_path}.graph:variable:{config.CONVEYOR_VELOCITY_VARIABLE_NAME}"
+
+
+def setup_conveyor_belt_graph(
+    belt_prim_path: str = config.CONVEYOR_BELT_PRIM_PATH,
+    graph_prim_name: str = config.CONVEYOR_ACTION_GRAPH_PRIM_NAME,
+    local_velocity_direction=config.CONVEYOR_LOCAL_VELOCITY_DIRECTION,
+) -> str | None:
+    """Builds one belt's graph via the CreateConveyorBelt kit command, returning its path. Must run
     AFTER kit_experience.enable_full_experience_extensions(); rationale: docs/mefron-history.md."""
     import omni.kit.app
     import omni.kit.commands
     from pxr import Gf, PhysxSchema
 
     stage = omni.usd.get_context().get_stage()
+    graph_path = graph_prim_path(belt_prim_path, graph_prim_name)
 
-    stray_graph_prim = stage.GetPrimAtPath(config.CONVEYOR_ACTION_GRAPH_PATH)
+    stray_graph_prim = stage.GetPrimAtPath(graph_path)
     if stray_graph_prim.IsValid():
-        omni.kit.commands.execute("DeletePrims", paths=[config.CONVEYOR_ACTION_GRAPH_PATH])
+        omni.kit.commands.execute("DeletePrims", paths=[graph_path])
         # Same post-DeletePrims pump as mount_franka()'s: without it CreateConveyorBelt can see the
         # delete as in-flight and uniquify to *_01, breaking the deterministic path.
         omni.kit.app.get_app().update()
 
-    belt_prim = stage.GetPrimAtPath(config.CONVEYOR_BELT_PRIM_PATH)
+    belt_prim = stage.GetPrimAtPath(belt_prim_path)
     if not belt_prim.IsValid():
         print(
-            f"[mefron_lib] WARNING: conveyor belt {config.CONVEYOR_BELT_PRIM_PATH} not found -- "
-            f"skipping conveyor graph setup, key {config.CONVEYOR_TOGGLE_KEY} will do nothing.",
+            f"[mefron_lib] WARNING: conveyor belt {belt_prim_path} not found -- skipping its graph "
+            "setup, so that belt will not move.",
             flush=True,
         )
-        return
+        return None
     if belt_prim.HasAPI(PhysxSchema.PhysxSurfaceVelocityAPI):
         PhysxSchema.PhysxSurfaceVelocityAPI(belt_prim).GetSurfaceVelocityAttr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
 
@@ -40,26 +58,25 @@ def setup_conveyor_belt_graph() -> None:
     # which raises on a str and makes the whole command fail silently (logged, not raised).
     success, _ = omni.kit.commands.execute(
         "CreateConveyorBelt",
-        prim_name=config.CONVEYOR_ACTION_GRAPH_PRIM_NAME,
+        prim_name=graph_prim_name,
         conveyor_prim=belt_prim,
     )
     if not success:
         print(
-            "[mefron_lib] WARNING: CreateConveyorBelt command failed -- "
-            f"key {config.CONVEYOR_TOGGLE_KEY} will do nothing.",
+            f"[mefron_lib] WARNING: CreateConveyorBelt failed for {belt_prim_path} -- that belt will "
+            "not move.",
             flush=True,
         )
-        return
+        return None
 
-    graph_prim = stage.GetPrimAtPath(config.CONVEYOR_ACTION_GRAPH_PATH)
+    graph_prim = stage.GetPrimAtPath(graph_path)
     if not graph_prim.IsValid():
         print(
-            f"[mefron_lib] WARNING: CreateConveyorBelt did not create "
-            f"{config.CONVEYOR_ACTION_GRAPH_PATH} as expected -- key {config.CONVEYOR_TOGGLE_KEY} "
-            "will do nothing.",
+            f"[mefron_lib] WARNING: CreateConveyorBelt did not create {graph_path} as expected -- "
+            f"{belt_prim_path} will not move.",
             flush=True,
         )
-        return
+        return None
 
     # Keyed off inputs:direction, not inputs:conveyorPrim -- the latter is a "target"-typed input,
     # which USD stores as a relationship, so GetAttribute() on it is always invalid.
@@ -70,13 +87,13 @@ def setup_conveyor_belt_graph() -> None:
             break
     if node_prim is None:
         print(
-            f"[mefron_lib] WARNING: could not find the IsaacConveyor node under "
-            f"{config.CONVEYOR_ACTION_GRAPH_PATH} -- key {config.CONVEYOR_TOGGLE_KEY} will do nothing.",
+            f"[mefron_lib] WARNING: could not find the IsaacConveyor node under {graph_path} -- "
+            f"{belt_prim_path} will not move.",
             flush=True,
         )
-        return
+        return None
 
-    node_prim.GetAttribute("inputs:direction").Set(Gf.Vec3f(*(float(v) for v in config.CONVEYOR_LOCAL_VELOCITY_DIRECTION)))
+    node_prim.GetAttribute("inputs:direction").Set(Gf.Vec3f(*(float(v) for v in local_velocity_direction)))
 
     enabled_attr = node_prim.GetAttribute("inputs:enabled")
     if not enabled_attr.IsValid():
@@ -96,23 +113,55 @@ def setup_conveyor_belt_graph() -> None:
             flush=True,
         )
 
-    velocity_attr_path = f"{config.CONVEYOR_ACTION_GRAPH_PATH}.graph:variable:{config.CONVEYOR_VELOCITY_VARIABLE_NAME}"
     print(
         f"[mefron_lib] conveyor graph ready: node={node_prim.GetPath()} "
-        f"enabled={enabled_readback} velocity_attr={velocity_attr_path}",
+        f"enabled={enabled_readback} velocity_attr={velocity_attr_path(graph_path)}",
         flush=True,
     )
+    return graph_path
+
+
+class BeltVelocity:
+    """One belt graph's Velocity variable. Must be this variable, not the node's inputs:velocity --
+    the ReadVariable node overwrites that every tick. Shared by ConveyorControl and feeder.py."""
+
+    def __init__(self, graph_path: str, label: str) -> None:
+        self._attr_path = velocity_attr_path(graph_path)
+        self._label = label
+        self._attr = None
+        self._warned = False
+
+    def _resolve(self):
+        if self._attr is not None:
+            return self._attr
+        attr = omni.usd.get_context().get_stage().GetAttributeAtPath(self._attr_path)
+        if attr is None or not attr.IsValid():
+            if not self._warned:
+                print(
+                    f"[mefron_lib] WARNING: conveyor graph variable {self._attr_path} not found -- "
+                    f"{self._label} will do nothing.",
+                    flush=True,
+                )
+                self._warned = True
+            return None
+        self._attr = attr
+        return attr
+
+    def set(self, value: float) -> None:
+        attr = self._resolve()
+        if attr is None:
+            return
+        attr.Set(float(value))
 
 
 class ConveyorControl:
     """Toggled by config.CONVEYOR_TOGGLE_KEY: carries main_holder_jig CONVEYOR_TRAVEL_DISTANCE each
     press, forward then back. State machine + mid-transit-press rationale: docs/mefron-history.md."""
 
-    def __init__(self) -> None:
+    def __init__(self, graph_path: str = config.CONVEYOR_ACTION_GRAPH_PATH) -> None:
         self._state = "back"  # "back" | "moving_forward" | "front" | "moving_backward"
         self._toggle_requested = False
-        self._velocity_attr = None
-        self._warned_missing_velocity_attr = False
+        self._velocity = BeltVelocity(graph_path, f"key {config.CONVEYOR_TOGGLE_KEY}")
         self._transit_target_y = None
 
     def reset(self) -> None:
@@ -126,31 +175,8 @@ class ConveyorControl:
     def request_toggle(self) -> None:
         self._toggle_requested = True
 
-    def _resolve_velocity_attr(self):
-        if self._velocity_attr is not None:
-            return self._velocity_attr
-        stage = omni.usd.get_context().get_stage()
-        attr = stage.GetAttributeAtPath(
-            f"{config.CONVEYOR_ACTION_GRAPH_PATH}.graph:variable:{config.CONVEYOR_VELOCITY_VARIABLE_NAME}"
-        )
-        if attr is None or not attr.IsValid():
-            if not self._warned_missing_velocity_attr:
-                print(
-                    f"[mefron_lib] WARNING: conveyor graph variable "
-                    f"{config.CONVEYOR_ACTION_GRAPH_PATH}.graph:variable:{config.CONVEYOR_VELOCITY_VARIABLE_NAME} "
-                    f"not found -- key {config.CONVEYOR_TOGGLE_KEY} will do nothing.",
-                    flush=True,
-                )
-                self._warned_missing_velocity_attr = True
-            return None
-        self._velocity_attr = attr
-        return attr
-
     def _set_velocity(self, value: float) -> None:
-        attr = self._resolve_velocity_attr()
-        if attr is None:
-            return
-        attr.Set(float(value))
+        self._velocity.set(value)
 
     def _jig_world_y(self) -> float:
         # reset_xform_properties=False is required -- the default strips main_holder_jig's

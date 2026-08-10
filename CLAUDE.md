@@ -41,6 +41,8 @@ laptop keyboard. That key remap is the only behavioral difference from `atc`.
   derived, the release weld, and the open grasp-centering problem.
 - `docs/tool-changer.md` — the ATC's design, alternatives considered, screws,
   and open issues.
+- `docs/part-feeders.md` — the per-part feeder belts, their photo-eyes, and the
+  base-path→live-copy resolver every pick now goes through.
 - `docs/ee-arrival-accuracy.md` — why the ee settles ~3mm short (measured,
   cuRobo ruled out), the live probes, and the verified offline FK chain.
 - `docs/docker-and-devcontainer.md` — environment setup (generic infra).
@@ -48,7 +50,7 @@ laptop keyboard. That key remap is the only behavioral difference from `atc`.
   **Do not modify those two files**; write a separate script instead.
 - `robots/accessories/` — the dockable tools' CAD. Only the
   `*_with_tool_female.usd` pair is referenced; the rest are unreferenced.
-- `scripts/` — `mefron.py` (the only entry point) plus five
+- `scripts/` — `mefron.py` (the only entry point) plus six
   `test_mefron_*_headless.py` regression harnesses. Everything else was deleted
   2026-08-08; see `docs/mefron-history.md` for what and why.
 - `scripts/mefron_lib/` — `config.py` (all constants), `kit_bootstrap.py` /
@@ -57,7 +59,8 @@ laptop keyboard. That key remap is the only behavioral difference from `atc`.
   `robot.py` (the arm itself), `toolchanger.py` (the ATC), `assembly.py` (the
   O/L release weld), `screws.py` (screw pick/place), `keyboard.py` (the five
   control objects), `motion.py` (cuRobo setup + waypoint queues), `teleop.py`
-  (the per-frame loop), `conveyor.py`.
+  (the per-frame loop), `conveyor.py`, `feeder.py` (the per-part feeder belts
+  and the base-path→live-copy resolver).
 
 ## Active script + current state
 
@@ -77,6 +80,7 @@ three dockable tools, and runs the drag-follow teleop loop.
 | 5 / 6 | screwdriver: pick the presented screw / place it in the next hole |
 | P | place whatever was last grasped or approached |
 | 1 (number row) | conveyor forward, press again for back |
+| 2 (number row) | part feeders: advance now, skipping the 5s wait |
 
 - **`main_holder` into the jig (`G`).** The base part is pickable too, and its
   `ASSEMBLY_RELATIONSHIPS` entry is the only one whose mount is
@@ -96,6 +100,21 @@ three dockable tools, and runs the drag-follow teleop loop.
   settled, so a clean placement is **not** evidence the arm arrived. Placement
   reads the cover's *live* pose, so doing it before the cover is assembled seats
   screws wherever it's parked (warned, not refused). See `docs/tool-changer.md`.
+- **Part feeders (`ConveyorBelt_A06_02…06`).** Each sub-part has its own 1m belt
+  queueing **GUI-placed copies** named `<base>`, `<base>_01`, … (Ctrl+D's own
+  naming; move copies along **−Y only**, keeping X/Z, or the photo-eye's ray line
+  misses them). 5s after a part leaves the pick spot, that belt runs until its
+  light-beam photo-eye says the next copy has arrived, then ramps to a stop —
+  measured 6.8–9.1mm from the authored pick spot on all five belts, headless.
+  Nothing keys off the arm: the countdown starts when the **beam clears**, so the
+  belt also won't run while the tool is standing in the station. A24 and its `1`
+  key are untouched. Because a pick can land on any copy, every live pose read
+  goes through `feeder.resolve_for_pick()` / `resolve_assembled()` — the copy at
+  the station versus the copy already assembled, which are deliberately different
+  answers (screws must go into the fitted cover while `K` moves to the next one).
+  A grasp key can no longer reach an already-assembled copy. `FEEDER_SPEED` is
+  **belt-local, not m/s** (these belts carry a 0.5 scale). Full design, and the
+  two PhysX traps that make or break it: `docs/part-feeders.md`.
 - **Gripper widths.** A grasp key stages that object's yaml-specified widths and
   opens to pregrasp width, so C/O ramp toward whichever object was last grasped.
   C/O writes the **docked tool's own** `panda_finger_joint1/2` DriveAPI every
@@ -118,9 +137,12 @@ only — normally `main_holder_jig` + `tool_rack_gripper`, see open issues);
 `SCREW_HOLE_INSERTION_DEPTH` is `0.00`, so a placed screw sits at the hole
 mouth; `GRIPPER_OPEN_POSITION`/`CLOSED_POSITION` are only pre-grasp defaults;
 `female_coupler_local_*` and `SURFACE_GRIPPER_LOCAL_POSITION` are unmeasured
-placeholders. All three tools are hand-placed and baked into `mefron.usd`, so
-dock poses are read off their live poses each run — move a tool in the GUI, no
-code change needed.
+placeholders; `FEEDER_SPEED` is belt-local, so it is half its value in m/s. All
+three tools are hand-placed and baked into `mefron.usd`, so dock poses are read
+off their live poses each run — move a tool in the GUI, no code change needed. The
+feeders follow the same principle: their belts' photo-eye geometry, pick spots and
+part queues are all derived from live poses at startup, so adding a copy or moving
+a belt in the GUI needs no code change either.
 
 ## Currently open issues
 
@@ -135,6 +157,17 @@ Full investigation detail: `docs/mefron-history.md`.
   simulates 90 frames, whereas `run_teleop_loop()` calls it every frame. Not
   compared against the baseline relationship, and not yet checked in the GUI —
   confirm on the conveyor before treating it as either a bug or a non-issue.
+- **Part feeders are headless-verified only, never yet run in the GUI.** All five
+  belts pass `test_mefron_feeder_headless.py`, but nothing about them has been seen
+  live: not the belt direction, not the arm picking a *copy*, not a screw going
+  into an assembled copy, and not whether a part tips. Treat every number in
+  `docs/part-feeders.md` as measured-headless until confirmed on screen.
+- **Two feeder belts stop on the pose fail-safe, not the photo-eye.**
+  `backpanel_support` and `finger_print_scanner` have a notch at the ray line, so
+  the depth test can miss them and `PartFeeder._overshot_station()` stops the belt
+  instead, logging a WARNING every advance. Landing accuracy is unaffected (7-9mm).
+  Widening `FEEDER_BEAM_ARRIVAL_EPSILON` from 0.003 to ~0.008 should let the beam
+  confirm; **untested**, and it loosens the stop for the other three belts too.
 - **Grasp-centering**: `finger_print_scanner` isn't equidistant from both
   fingertips at grasp time, so one finger contacts first and shifts the part
   sideways. Not a joint/drive asymmetry (ruled out).
@@ -217,6 +250,19 @@ Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
 - **A "held" object that hangs in mid-air may just be a sleeping PhysX body.**
   One velocity write drops it. This misdiagnosed both the suction-release and
   "welded part follows the wrist" bugs — check for it before theorizing.
+- **A resting part is asleep, and turning a KINEMATIC belt's surface velocity on
+  does not wake it** — it just sits there while the belt runs under it. Same class
+  as the gotcha above. `feeder._wake_bodies()` calls PhysX's own `wake_up()` on
+  the belt's queue every frame while it feeds. `docs/part-feeders.md`.
+- **`PhysxSurfaceVelocityAPI` must be applied BEFORE Play.** The `IsaacConveyor`
+  node applies it itself when it first computes, but PhysX may never resync a body
+  it already created — USD reads the right velocity while the belt drives nothing.
+  Nondeterministic across runs and per belt within one run, which makes it look
+  like anything but this. `feeder.prime_surface_velocity()`; `docs/part-feeders.md`.
+- **`SingleRigidPrim.set_world_pose()` writes the PhysX/Fabric pose, not USD.**
+  For a *kinematic* body nothing writes it back, so a `SingleXFormPrim` read (and
+  anything built on one, like `feeder.belt_queue()`) still sees the old pose. A
+  dynamic body's simulated transform does get written back.
 
 ## Pinned versions
 

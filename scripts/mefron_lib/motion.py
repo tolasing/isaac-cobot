@@ -8,7 +8,7 @@ import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
 from pxr import Sdf
 
-from . import config
+from . import config, feeder
 from .grasp import compute_assembly_grasp_target
 from .keyboard import ScrewControl, ToolChangerControl
 
@@ -201,15 +201,16 @@ def _warn_if_screw_mount_unassembled() -> None:
     )
     if relationship_name is None:
         return
-    live_trans, _ = SingleXFormPrim(
-        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
-    ).get_world_pose()
+    # The assembled COPY, matching compute_screw_hole_pose()'s own resolution -- comparing against a
+    # different copy than the holes are read off would make this warning meaningless.
+    mount_prim_path = feeder.resolve_assembled(config.SCREW_HOLE_MOUNT_PRIM_PATH)
+    live_trans, _ = SingleXFormPrim(prim_path=mount_prim_path, reset_xform_properties=False).get_world_pose()
     assembled_trans, _ = compute_part_weld_pose(relationship_name)
     distance = float(np.linalg.norm(np.array(live_trans) - np.array(assembled_trans)))
     if distance > config.ASSEMBLY_WELD_MAX_DISTANCE:
         print(
-            f"[mefron] {config.SCREW_HOLE_MOUNT_PRIM_PATH} is {distance:.3f}m from its assembled "
-            "pose -- screws will be placed wherever it currently sits.",
+            f"[mefron] {mount_prim_path} is {distance:.3f}m from its assembled pose -- screws will be "
+            "placed wherever it currently sits.",
             flush=True,
         )
 

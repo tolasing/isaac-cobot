@@ -7,6 +7,17 @@ import numpy as np
 from isaacsim.core.prims import SingleXFormPrim
 
 from . import config
+from .feeder import resolve_assembled, resolve_for_pick
+
+
+def relationship_pose_prim_paths(relationship_name: str) -> tuple[str, str]:
+    """(part, mount) resolved to live instances. A part resolves to the copy being picked, a mount to
+    the copy already assembled -- except the mount == part suction-approach entries. docs/part-feeders.md."""
+    relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    part_prim_path = resolve_for_pick(relationship["part_prim_path"])
+    if relationship["mount_prim_path"] == relationship["part_prim_path"]:
+        return part_prim_path, part_prim_path
+    return part_prim_path, resolve_assembled(relationship["mount_prim_path"])
 
 
 def compute_relative_pose(reference_trans, reference_quat, dependent_trans, dependent_quat):
@@ -54,7 +65,9 @@ def compute_grasp_approach_pose_from_file(
     grasp_spec = import_grasps_from_file(str(yaml_path))
     # reset_xform_properties=False -- parts carry an xformOp:scale:unitsResolve op the default
     # would silently strip. See docs/mefron-history.md.
-    part_trans, part_quat = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False).get_world_pose()
+    part_trans, part_quat = SingleXFormPrim(
+        prim_path=resolve_for_pick(part_prim_path), reset_xform_properties=False
+    ).get_world_pose()
     return grasp_spec.compute_gripper_pose_from_rigid_body_pose(grasp_name, part_trans, part_quat)
 
 
@@ -83,9 +96,10 @@ def measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat):
 def compute_part_target_pose(relationship_name: str = "finger_print_scanner_on_main_holder"):
     """The part's own target world pose on its mount, independent of any grasp offset."""
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    _, mount_prim_path = relationship_pose_prim_paths(relationship_name)
     # reset_xform_properties=False -- mount_prim_path carries the same unitsResolve op as above.
     mount_trans, mount_quat = SingleXFormPrim(
-        prim_path=relationship["mount_prim_path"], reset_xform_properties=False
+        prim_path=mount_prim_path, reset_xform_properties=False
     ).get_world_pose()
     return compute_dependent_world_pose(
         mount_trans, mount_quat, relationship["local_position"], relationship["local_orientation_wxyz"]
@@ -102,7 +116,7 @@ def assembly_weld_local_pose(relationship_name: str):
 def compute_part_weld_pose(relationship_name: str):
     """The world pose that weld seats the part at -- the mount's LIVE pose composed with the offset
     above. Same live-relative principle as compute_part_target_pose(), just the weld's own offset."""
-    mount_prim_path = config.ASSEMBLY_RELATIONSHIPS[relationship_name]["mount_prim_path"]
+    _, mount_prim_path = relationship_pose_prim_paths(relationship_name)
     mount_trans, mount_quat = SingleXFormPrim(
         prim_path=mount_prim_path, reset_xform_properties=False
     ).get_world_pose()
@@ -189,9 +203,9 @@ def compute_screw_hole_pose(hole_index: int):
     """The world pose a screw should end up at for config.SCREW_HOLES[hole_index]: the back cover's
     LIVE pose composed with the local pose above."""
     # reset_xform_properties=False -- the cover carries an xformOp:scale:unitsResolve op; see
-    # compute_part_target_pose() above.
+    # compute_part_target_pose() above. resolve_assembled: the holes are in the copy already fitted.
     mount_trans, mount_quat = SingleXFormPrim(
-        prim_path=config.SCREW_HOLE_MOUNT_PRIM_PATH, reset_xform_properties=False
+        prim_path=resolve_assembled(config.SCREW_HOLE_MOUNT_PRIM_PATH), reset_xform_properties=False
     ).get_world_pose()
     return compute_dependent_world_pose(mount_trans, mount_quat, *screw_hole_local_pose(hole_index))
 
@@ -219,14 +233,14 @@ def compute_ee_target_for_screw_pose(ee_link_prim_path: str, screw_trans, screw_
 def compute_assembly_grasp_target(ee_link_prim_path: str, relationship_name: str = "finger_print_scanner_on_main_holder"):
     """The world pose /World/target takes for P: the part's target pose from ASSEMBLY_RELATIONSHIPS,
     with the CURRENT live gripper-to-part offset applied on top. Computed once, on the keypress."""
-    relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
+    part_prim_path, _ = relationship_pose_prim_paths(relationship_name)
     # reset_xform_properties=False on both -- ee_link_prim_path has no unitsResolve op to lose
-    # either way, but relationship["part_prim_path"] can carry one (see above).
+    # either way, but the part can carry one (see above).
     gripper_trans, gripper_quat = SingleXFormPrim(
         prim_path=ee_link_prim_path, reset_xform_properties=False
     ).get_world_pose()
     part_trans, part_quat = SingleXFormPrim(
-        prim_path=relationship["part_prim_path"], reset_xform_properties=False
+        prim_path=part_prim_path, reset_xform_properties=False
     ).get_world_pose()
     offset_trans, offset_quat = measure_grasp_offset(gripper_trans, gripper_quat, part_trans, part_quat)
     return compute_assembly_grasp_target_from_offset(offset_trans, offset_quat, relationship_name)

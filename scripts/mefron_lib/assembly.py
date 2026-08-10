@@ -10,7 +10,7 @@ import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
 from pxr import Gf, Sdf, UsdPhysics
 
-from . import config
+from . import config, feeder
 from .usd_util import collision_enabled_flags, create_fixed_joint, set_prim_collision_enabled
 
 # Which mount each anchor tracks, stored on the anchor itself so sync_assembly_anchors() needs no
@@ -35,8 +35,12 @@ def clear_assembly_welds() -> None:
         omni.kit.commands.execute("DeletePrims", paths=[config.ASSEMBLY_WELD_SCOPE_PRIM_PATH])
         omni.kit.app.get_app().update()
 
-    for relationship in config.ASSEMBLY_RELATIONSHIPS.values():
-        part_prim_path = relationship["part_prim_path"]
+    # Every feeder COPY too, not just config's base paths -- an older run's weld can have left
+    # collision off on a copy, and nothing else would ever turn it back on.
+    for part_prim_path in {
+        *(relationship["part_prim_path"] for relationship in config.ASSEMBLY_RELATIONSHIPS.values()),
+        *feeder.all_part_instance_prim_paths(),
+    }:
         if any(not enabled for enabled in collision_enabled_flags(part_prim_path)):
             print(
                 f"[mefron_lib] {part_prim_path} had collision disabled on load -- re-enabling "
@@ -100,10 +104,11 @@ def sync_assembly_anchors() -> None:
 def weld_part_at_assembly_pose(relationship_name: str) -> bool:
     """Snaps a released part onto its nominal ASSEMBLY_WELD_POSES pose (NOT the one P drove to) and
     welds it there. Returns False past ASSEMBLY_WELD_MAX_DISTANCE, leaving a far release ordinary."""
-    from .grasp import assembly_weld_local_pose, compute_part_weld_pose
+    from .grasp import assembly_weld_local_pose, compute_part_weld_pose, relationship_pose_prim_paths
 
     relationship = config.ASSEMBLY_RELATIONSHIPS[relationship_name]
-    part_prim_path = relationship["part_prim_path"]
+    # The live copies, not config's base paths -- one source of truth with the pose math above.
+    part_prim_path, mount_prim_path = relationship_pose_prim_paths(relationship_name)
     part_xform = SingleXFormPrim(prim_path=part_prim_path, reset_xform_properties=False)
     live_trans, _ = part_xform.get_world_pose()
     target_trans, target_quat = compute_part_weld_pose(relationship_name)
@@ -116,7 +121,7 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
         )
         return False
 
-    anchor_path = ensure_assembly_anchor(relationship["mount_prim_path"])
+    anchor_path = ensure_assembly_anchor(mount_prim_path)
     # Re-author the part's own USD xform too, so a Stop restores it ASSEMBLED rather than snapping it
     # back to where it started -- same reason weld_screw_into_hole() does it.
     part_xform.set_world_pose(position=target_trans, orientation=target_quat)
@@ -130,9 +135,15 @@ def weld_part_at_assembly_pose(relationship_name: str) -> bool:
         body0_local_position=tuple(weld_local_position),
         body0_local_orientation_wxyz=tuple(weld_local_orientation),
     )
+    # From now on this copy IS the assembled one -- mount poses and screw holes must read it, while a
+    # grasp key moves on to the next copy on the belt.
+    feeder.record_assembled(relationship["part_prim_path"], part_prim_path)
     # Must come AFTER the joint -- the snap leaves the part interpenetrating its mount, which wakes
     # as a violent shake once the arm moves. See docs/grasp-and-assembly-offsets.md.
-    keep_collision = part_prim_path in config.ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS
+    # Keyed on the BASE path: a copy must inherit its original's opt-out, not silently lose it.
+    keep_collision = (
+        feeder.base_part_prim_path_of(part_prim_path) in config.ASSEMBLY_WELD_KEEP_COLLISION_PART_PRIM_PATHS
+    )
     if not keep_collision:
         set_prim_collision_enabled(part_prim_path, False)
     print(
@@ -153,5 +164,7 @@ def release_assembly_weld(part_prim_path: str) -> bool:
     omni.kit.commands.execute("DeletePrims", paths=[joint_path])
     omni.kit.app.get_app().update()
     set_prim_collision_enabled(part_prim_path, True)
+    # This copy is no longer assembled, so put it back in the running for belt_queue()/mount poses.
+    feeder.forget_assembled(part_prim_path)
     print(f"[mefron_lib] released the assembly weld on {part_prim_path}.", flush=True)
     return True

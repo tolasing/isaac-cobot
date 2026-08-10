@@ -10,7 +10,7 @@ from isaacsim.core.prims import SingleArticulation
 from isaacsim.core.utils.types import ArticulationAction
 from pxr import UsdPhysics
 
-from . import assembly, config, motion, toolchanger
+from . import assembly, config, feeder, motion, toolchanger
 from .grasp import (
     compute_grasp_approach_pose_from_file,
     compute_grasp_finger_widths_from_file,
@@ -157,21 +157,24 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     )
                 else:
                     grasp_target = config.GRASP_TARGETS[requested_object]
+                    # Pin the whole grasp->place->weld cycle to the copy at the station now; a lifted
+                    # part leaves the belt queue, so nothing later could still name it.
+                    part_prim_path = feeder.latch(grasp_target["part_prim_path"])
                     # Free an already-assembled part first, or its weld joint pins it in place and
                     # the failure looks like a broken gripper.
-                    if assembly.release_assembly_weld(grasp_target["part_prim_path"]):
+                    if assembly.release_assembly_weld(part_prim_path):
                         _invalidate_articulation_handles(state)
                     cube_position, cube_orientation = compute_grasp_approach_pose_from_file(
                         grasp_target["yaml_path"],
                         grasp_target["grasp_name"],
-                        part_prim_path=grasp_target["part_prim_path"],
+                        part_prim_path=part_prim_path,
                     )
                     target.set_world_pose(position=cube_position, orientation=cube_orientation)
                     # Only the ignore paths printed before, so a snap that landed somewhere
                     # unexpected was indistinguishable from a key that never registered.
                     print(
-                        f"[mefron] {arm['_name']}: grasp approach '{requested_object}' -- target snapped to "
-                        f"{np.round(cube_position, 4).tolist()}.",
+                        f"[mefron] {arm['_name']}: grasp approach '{requested_object}' on "
+                        f"{part_prim_path} -- target snapped to {np.round(cube_position, 4).tolist()}.",
                         flush=True,
                     )
                     open_position, closed_position = compute_grasp_finger_widths_from_file(
@@ -192,8 +195,8 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                 )
             else:
                 approach_relationship = config.SUCTION_TARGETS[requested_object]["approach_relationship"]
-                # Same un-weld as the grasp branch above -- see there.
-                part_prim_path = config.ASSEMBLY_RELATIONSHIPS[approach_relationship]["part_prim_path"]
+                # Same latch + un-weld as the grasp branch above -- see there.
+                part_prim_path = feeder.latch(config.ASSEMBLY_RELATIONSHIPS[approach_relationship]["part_prim_path"])
                 if assembly.release_assembly_weld(part_prim_path):
                     _invalidate_articulation_handles(state)
                 cube_position, cube_orientation = compute_part_target_pose(approach_relationship)
@@ -373,9 +376,10 @@ def run_teleop_loop(
     simulation_app,
     arms: list[dict],
     max_iterations: int | None = None,
-    # Duck-typed (not conveyor.ConveyorControl) -- this loop only calls .reset()/.step() on it,
-    # deliberately staying decoupled from conveyor.py.
+    # Duck-typed (not conveyor.ConveyorControl / feeder.FeederControl) -- this loop only calls
+    # .reset()/.step() on either, deliberately staying decoupled from both modules.
     conveyor_control: object | None = None,
+    feeder_control: object | None = None,
 ) -> None:
     """Drags each arm's own `target`; each robot follows via cuRobo MotionGen plan/apply, rebuilding
     on every fresh Play. `arms` is a list of per-robot dicts (see mefron.py for the shape)."""
@@ -429,6 +433,8 @@ def run_teleop_loop(
                         control.reset()
             if conveyor_control is not None:
                 conveyor_control.reset()
+            if feeder_control is not None:
+                feeder_control.reset()
             step_index = 0
             was_playing = True
 
@@ -445,3 +451,5 @@ def run_teleop_loop(
 
         if conveyor_control is not None:
             conveyor_control.step()
+        if feeder_control is not None:
+            feeder_control.step()

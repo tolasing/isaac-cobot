@@ -12,7 +12,7 @@ import omni.usd
 from isaacsim.core.prims import SingleXFormPrim
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
-from . import config
+from . import config, feeder
 from .usd_util import import_urdf, un_instance_ancestor
 
 # Pre-MovePrim intermediate paths a mount_franka() import can land at, plus the retired pre-ATC
@@ -183,7 +183,9 @@ def apply_gripper_friction(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
     )
 
     target_paths = [f"{prim_path}/{name}" for name in config.GRIPPER_FINGER_LINK_NAMES]
-    target_paths += config.HIGH_FRICTION_PRIM_PATHS
+    # Every GUI-placed copy of a high-friction part too, or only the original grips properly.
+    for high_friction_prim_path in config.HIGH_FRICTION_PRIM_PATHS:
+        target_paths += feeder.part_instance_prim_paths(high_friction_prim_path) or [high_friction_prim_path]
     for target_path in target_paths:
         prim = stage.GetPrimAtPath(target_path)
         if not prim.IsValid():

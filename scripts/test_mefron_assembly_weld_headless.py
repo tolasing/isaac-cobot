@@ -23,7 +23,7 @@ import omni.timeline  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim  # noqa: E402
 from pxr import Usd, UsdPhysics  # noqa: E402
-from mefron_lib import assembly, config, grasp  # noqa: E402
+from mefron_lib import assembly, config, feeder, grasp  # noqa: E402
 
 # --relationship=<name> runs the same asserts against any config.ASSEMBLY_RELATIONSHIPS entry;
 # main_holder_on_main_holder_jig is the only one whose mount is a belt-driven dynamic body.
@@ -92,6 +92,9 @@ def main() -> None:
 
     relationship = config.ASSEMBLY_RELATIONSHIPS[_RELATIONSHIP]
     part_prim_path = relationship["part_prim_path"]
+    # This test stands in for a grasp key, so it must latch like one: the cases below teleport the
+    # part off its feeder belt, and without a latch the resolver rightly moves to the next copy.
+    feeder.latch(part_prim_path)
     mount_prim_path = relationship["mount_prim_path"]
     joint_path = assembly._assembly_weld_joint_path(part_prim_path)
     anchor_path = assembly._assembly_anchor_path(mount_prim_path)

@@ -10,7 +10,7 @@ grasps:
       position: [-0.0869817146540827, 0.01839091066894335, -0.1002637113098778]
       orientation: {w: 0.7071092192630131, xyz: [-0.0004389393883463572, -0.0006697711761944061, 0.7071038896598129]}
       cspace_position:
-         panda_finger_joint1: 0.003918852657079697
+         panda_finger_joint1: 0.00 #3918852657079697
       pregrasp_cspace_position:
          panda_finger_joint1: 0.02
 

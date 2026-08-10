@@ -23,6 +23,7 @@ from mefron_lib import (  # noqa: E402
     assembly,
     config,
     conveyor,
+    feeder,
     keyboard,
     kit_experience,
     motion,
@@ -148,6 +149,15 @@ def main() -> None:
         f"{config.CONVEYOR_TRAVEL_DISTANCE}m, press again to send it back the same distance.",
         flush=True,
     )
+    # Builds one graph + one photo-eye per config.PART_FEEDERS belt, then runs itself -- no key is
+    # needed for the normal cycle.
+    feeder_control = feeder.build_feeder_control()
+    print(
+        f"[mefron] Part feeders: {len(feeder_control.feeders)} of {len(config.PART_FEEDERS)} belts armed. "
+        f"{config.FEEDER_ADVANCE_DELAY_SECONDS}s after a part leaves its pick spot, that belt brings the "
+        f"next copy up and its photo-eye stops it there. Press {config.FEEDER_ADVANCE_KEY} to skip the wait.",
+        flush=True,
+    )
     print("[mefron] click Play in the GUI to start teleop.", flush=True)
     arms = [
         {
@@ -166,7 +176,9 @@ def main() -> None:
             "screw_control": screw_control,
         },
     ]
-    teleop.run_teleop_loop(simulation_app, arms, conveyor_control=conveyor_control)
+    teleop.run_teleop_loop(
+        simulation_app, arms, conveyor_control=conveyor_control, feeder_control=feeder_control
+    )
     simulation_app.close()
 
 
