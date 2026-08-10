@@ -3,6 +3,9 @@
 How `scripts/mefron_lib/feeder.py` works, and the measurements behind its
 constants. Current state and keys live in `CLAUDE.md`.
 
+Confirmed working live in the GUI 2026-08-10. The numbers below are still
+headless measurements unless a line says otherwise.
+
 ## What it does
 
 `mefron.usd` gives each sub-part its own 1 m belt (`ConveyorBelt_A06_02…06`),

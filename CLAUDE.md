@@ -157,11 +157,13 @@ Full investigation detail: `docs/mefron-history.md`.
   simulates 90 frames, whereas `run_teleop_loop()` calls it every frame. Not
   compared against the baseline relationship, and not yet checked in the GUI —
   confirm on the conveyor before treating it as either a bug or a non-issue.
-- **Part feeders are headless-verified only, never yet run in the GUI.** All five
-  belts pass `test_mefron_feeder_headless.py`, but nothing about them has been seen
-  live: not the belt direction, not the arm picking a *copy*, not a screw going
-  into an assembled copy, and not whether a part tips. Treat every number in
-  `docs/part-feeders.md` as measured-headless until confirmed on screen.
+- **Part feeders: confirmed live in the GUI 2026-08-10.** All five belts also pass
+  `test_mefron_feeder_headless.py`. The measurements in `docs/part-feeders.md`
+  (6.8–9.1mm landing accuracy, the 0.5 belt-scale factor, the beam windows) are
+  still headless numbers — the GUI confirmed the behaviour, not those figures.
+  Which sub-cases were exercised on screen isn't recorded: the arm picking a
+  *copy*, a screw going into an assembled copy, and whether a part tips on a full
+  drain are worth re-checking before relying on them.
 - **Two feeder belts stop on the pose fail-safe, not the photo-eye.**
   `backpanel_support` and `finger_print_scanner` have a notch at the ray line, so
   the depth test can miss them and `PartFeeder._overshot_station()` stops the belt
