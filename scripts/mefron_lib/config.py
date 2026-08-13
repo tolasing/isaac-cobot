@@ -81,22 +81,23 @@ _TELEOP_VELOCITY_SCALE = 0.6
 _TELEOP_ACCELERATION_SCALE = 0.1
 
 # Grasp-physics constants for robot.apply_gripper_friction()/stiffen_gripper_drive().
-# STALE from here to HIGH_FRICTION_PRIM_PATHS: every name/width below is the Franka hand's. The
-# PGC-140 swap (step 3) also INVERTS open/closed -- see docs/fr5-migration.md.
-GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
+GRIPPER_JOINT_NAMES = ["pgc140_finger1_joint", "pgc140_finger2_joint"]
+# INVERTED vs the Franka: on the PGC-140 the joint measures inward travel, so 0.0 is OPEN (59mm
+# apart) and 0.025 is CLOSED. Derived from the URDF's opposed joint yaws; see docs/fr5-migration.md.
 # Only the DEFAULT widths before any grasp key is pressed -- each grasp key overrides them.
-# Narrowed to bracket a 12mm grip: the full stroke dragged the part sideways.
-GRIPPER_OPEN_POSITION = 0.010
-GRIPPER_CLOSED_POSITION = 0.000
+GRIPPER_OPEN_POSITION = 0.000
+GRIPPER_CLOSED_POSITION = 0.025
 # Rate (m/s) the commanded gripper position ramps toward open/closed, instead of stepping
 # instantly -- avoids a snap shut under the high drive stiffness.
 GRIPPER_CLOSE_SPEED = 0.02
 GRIPPER_FRICTION_MATERIAL_PATH = "/World/GripperFrictionMaterial"
 GRIPPER_STATIC_FRICTION = 1.5
 GRIPPER_DYNAMIC_FRICTION = 1.5
-GRIPPER_FINGER_LINK_NAMES = ["panda_leftfinger", "panda_rightfinger"]
+GRIPPER_FINGER_LINK_NAMES = ["pgc140_finger1_link", "pgc140_finger2_link"]
 GRIPPER_DRIVE_STIFFNESS = 10000.0
-GRIPPER_DRIVE_DAMPING = 200.0
+# The PGC-140 asset's own value. 200 was the Franka's; a 14g finger at stiffness 10000 needs the
+# damping, and under-damped drives ring -- see the FR5's own import bug in docs/fr5-migration.md.
+GRIPPER_DRIVE_DAMPING = 1000.0
 # "force" (N/m) over the assets' baked mass-normalized "acceleration", which turned STIFFNESS
 # into well under a newton on a few-gram finger. See docs/mefron-history.md.
 GRIPPER_DRIVE_TYPE = "force"
@@ -470,7 +471,10 @@ TOOL_CHANGE_TARGETS = {
     "gripper": {
         "key": "Y",
         # Switched to baked last, after a live-referenced gripper asset kept landing a gapped dock.
-        "baked_tool_prim_path": "/World/gripper_tool_visual_only",
+        "baked_tool_prim_path": "/World/cr5_pgc140_gripper",
+        # Multi-link articulation, unlike the flat suction/screwdriver tools: female_coupler must
+        # hang off a real RigidBodyAPI link, not the tool root. docs/tool-changer.md gotchas 3-4.
+        "female_coupler_parent_link_name": "pgc140_base_link",
         "rack_prim_path": "/World/tool_rack_gripper",
         "female_coupler_local_position": [0.0, 0.0, 0.0],
         "female_coupler_local_orientation_wxyz": [1.0, 0.0, 0.0, 0.0],

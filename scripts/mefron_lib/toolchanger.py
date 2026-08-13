@@ -98,11 +98,24 @@ def spawn_dockable_tool(tool_name: str) -> str:
             local_scale=target.get("local_scale"),
         )
     if target.get("female_coupler_parent_link_name"):
-        # Multi-link articulation: the importer's synthesized root_joint welds base_link to the
-        # world and must go. DeletePrims no-ops on it; SetActive(False) is what works.
-        root_joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/root_joint")
-        if root_joint_prim.IsValid():
-            root_joint_prim.SetActive(False)
+        # Multi-link articulation: a synthesized root joint welding base_link to the world must go.
+        # DeletePrims no-ops on it; SetActive(False) is what works. Both spellings -- the URDF
+        # importer writes root_joint, the PGC-140's Grasp-Editor asset writes rootJoint.
+        for root_joint_name in ("root_joint", "rootJoint"):
+            root_joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/{root_joint_name}")
+            if not root_joint_prim.IsValid():
+                continue
+            joint = UsdPhysics.Joint(root_joint_prim)
+            # The PGC-140's is a limit-free generic joint constraining nothing, and deactivating it
+            # would leave its articulation rootless -- only kill one that actually welds to the world.
+            if root_joint_prim.IsA(UsdPhysics.FixedJoint):
+                root_joint_prim.SetActive(False)
+            else:
+                print(
+                    f"[mefron_lib] {tool_prim_path}/{root_joint_name}: {root_joint_prim.GetTypeName()} "
+                    f"body1={[str(t) for t in joint.GetBody1Rel().GetTargets()]} -- left active.",
+                    flush=True,
+                )
     else:
         # Flat single-prim asset -- electric_screwdriver.usd carries no baked-in RigidBodyAPI at
         # all, so apply it explicitly rather than trusting the source asset.
@@ -155,8 +168,8 @@ def park_tool_at_rack(tool_name: str) -> None:
 
 
 def enable_gripper_tool_fingers() -> None:
-    """One-time-per-run structural fixup for the gripper tool's hand-authored fingers: xform-stack
-    reset, joint reactivation, drive stiffening. All three rationales: docs/tool-changer.md."""
+    """One-time-per-run fixup for the gripper tool's fingers: un-instancing, joint reactivation and
+    drive stiffening. Rationales: docs/tool-changer.md and docs/fr5-migration.md."""
     stage = omni.usd.get_context().get_stage()
     tool_prim_path = _tool_prim_path("gripper")
 
@@ -167,13 +180,9 @@ def enable_gripper_tool_fingers() -> None:
             print(f"[mefron_lib] WARNING: {finger_path} not found -- skipping finger fixup.", flush=True)
             continue
         un_instance_ancestor(finger_prim, finger_path)
-        finger_xformable = UsdGeom.Xformable(finger_prim)
-        if not finger_xformable.GetResetXformStack():
-            # Order matters: these author the same xformOpOrder attribute SetResetXformStack does.
-            world_transform = finger_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-            finger_xformable.ClearXformOpOrder()
-            finger_xformable.AddTransformOp().Set(world_transform)
-            finger_xformable.SetResetXformStack(True)
+        # NO xform-stack reset here. That was for the Franka hand's hand-authored fingers; the
+        # PGC-140's are real URDF articulation links, and baking their world transform would
+        # detach them from the tool root -- they would stay put while the docked tool moved.
 
     for joint_name in config.GRIPPER_JOINT_NAMES:
         joint_path = f"{tool_prim_path}/joints/{joint_name}"

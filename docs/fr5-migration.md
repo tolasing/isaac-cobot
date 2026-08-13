@@ -12,7 +12,7 @@ Done procedurally, one GUI-verified step at a time, rather than as one swap.
 |---|---|---|---|
 | **1** | Vendor the FR5, mount it on the pedestal in place of the Franka | GUI: scene opens, arm looks right | **GUI-confirmed 2026-08-13** |
 | 2 | cuRobo config + collision spheres from the Lula/XRDF editor | teleop plans and moves | **code landed + headless-verified, GUI check pending** |
-| 3 | PGC-140 as the ATC's dockable gripper tool | Y docks it, C/O drives the fingers | not started |
+| 3 | PGC-140 as the ATC's dockable gripper tool | Y docks it, C/O drives the fingers | **in progress** — placed, C/O wired; **wrist vibrates after docking** |
 
 The gripper stays a **dockable ATC tool** — it is not bolted into a combined
 arm+gripper URDF. The male coupler moves to the FR5's wrist, the PGC-140 replaces
@@ -309,6 +309,95 @@ authored under the arm's own `Looks` scope so the re-import disposes of it too.
 - One STL serves both `<visual>` and `<collision>` — the arm renders flat grey,
   and every collision mesh is full-resolution CAD.
 
+## Step 3 — the PGC-140 gripper (in progress)
+
+The gripper tool is now the PGC-140, placed by hand in `mefron.usd` at
+`/World/cr5_pgc140_gripper` from
+[`robots/grippers/cr5_pgc140_gripper/`](../robots/grippers/cr5_pgc140_gripper/) —
+which is the Grasp-Editor asset plus the female coupler bolted to the back of
+`pgc140_base_link` (flush at z=-0.0084, body reaching z=-0.0184, mating face
+outermost; same `orient` + `scale:unitsResolve` convention the Franka tool uses).
+
+### C / O are wired
+
+| | was (Franka hand) | now (PGC-140) |
+|---|---|---|
+| `GRIPPER_JOINT_NAMES` | `panda_finger_joint1/2` | `pgc140_finger1/2_joint` |
+| `GRIPPER_FINGER_LINK_NAMES` | `panda_left/rightfinger` | `pgc140_finger1/2_link` |
+| `GRIPPER_OPEN_POSITION` | 0.010 | **0.000** |
+| `GRIPPER_CLOSED_POSITION` | 0.000 | **0.025** |
+| `GRIPPER_DRIVE_DAMPING` | 200 | 1000 (the asset's own value) |
+
+Open/closed **invert** — on the PGC-140 the joint measures inward travel. Verified
+headless: `O` writes 0.0 and `C` writes 0.025 to both finger drives.
+
+Three code changes were needed beyond renaming, each for a real reason:
+
+1. **`type=acceleration` -> `force`.** The asset ships `acceleration`, which
+   mass-normalises stiffness: on a 14g finger, stiffness 10000 becomes ~143 N/m.
+   Exactly the trap `GRIPPER_DRIVE_TYPE` already documents for the Franka.
+   `stiffen_gripper_drive()` fixes it; confirmed `type=force` after the run.
+2. **Dropped the xform-stack reset** in `enable_gripper_tool_fingers()`. Baking
+   each finger's world transform and setting `resetXformStack` was right for the
+   Franka's hand-authored fingers and *wrong* for real URDF articulation links —
+   it detaches them from the tool root, so they would stay put while the docked
+   tool moved.
+3. **`rootJoint` vs `root_joint`.** `spawn_dockable_tool()` only looked for the
+   importer's `root_joint`, so this asset's `rootJoint` was silently skipped. Now
+   both are checked, but only a `FixedJoint` that genuinely welds to the world is
+   deactivated — the PGC-140's is a limit-free generic joint constraining nothing,
+   and killing it would leave its articulation rootless.
+
+### OPEN: the wrist link section vibrates after docking
+
+**Observed live in the GUI 2026-08-13:** `Y` docks the tool successfully, and
+afterwards **the wrist link section vibrates**. Not reproduced headlessly at all.
+
+Ruled out by measurement, so do not re-chase these:
+
+- **Tool collision fighting the dock joint** (`docs/tool-changer.md` gotcha 2).
+  `pgc140_base_link`'s collision is *disabled* in `mefron.usd`; only the fingers
+  collide and they sit 93mm out from the mount.
+- **Arm drive damping.** Steady-state arm joint velocity measures 0.0000 both
+  bare-wrist and tool-docked at the current damping. A sweep that appeared to
+  show otherwise (2.4 / 13.4 / 3.2 rad/s at damping 50 / 200 / 500) was invalid:
+  the probe docked cumulatively without undocking, re-authoring the same wrist
+  joint path over a live one, which is this repo's own "redefining a Joint prim
+  leaves PhysX solving against the stale body1" gotcha. Those numbers measure the
+  probe's bug, not the arm.
+
+Leads, none tested:
+
+1. **Two articulations coupled by one maximal-coordinate joint.** The FR5 is an
+   articulation and so is `/World/cr5_pgc140_gripper` (`ArticulationRootAPI`).
+   `create_fixed_joint()` sets `excludeFromArticulation=True`, so PhysX solves the
+   coupling outside both reduced-coordinate solvers — a known jitter source. The
+   Franka tool may have avoided this; worth checking whether it was an
+   articulation at all.
+2. **The dock frames are still placeholders.** Both
+   `TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION` and the gripper's
+   `female_coupler_local_position` are `[0,0,0]`, so `pgc140_base_link`'s *origin*
+   is welded to `wrist3_link`'s origin and the gripper body interpenetrates the
+   wrist. Deriving the real offsets by hand-jog is the obvious next step and fixes
+   the visual dock regardless of whether it cures the vibration.
+3. **`attach_surface_gripper_physics()` authors a D6 joint on `wrist3_link` with
+   `body1` unset**, i.e. against the world, with `transX`/`transY` limits locked
+   and drives on `transZ`/`rotX`/`rotY`/`rotZ`. Pre-existing (it rode `panda_hand`
+   before), but confirm the SurfaceGripper component really disables it when not
+   gripping. `SURFACE_GRIPPER_LOCAL_POSITION` is also still a pre-ATC placeholder.
+
+The one thing worth establishing first: whether the tool vibrates *relative to the
+wrist* (dock joint) or the whole wrist assembly moves (arm/coupling). Those point
+at different fixes.
+
+### Still Franka-shaped
+
+The four `GRASP_TARGETS` yamls remain keyed to `panda_hand` /
+`panda_finger_joint1`, so `G/J/B/K` raise `KeyError` until re-exported against the
+PGC-140. `grasp.compute_grasp_finger_widths_from_file()` now defaults its joint
+name from `config.GRIPPER_JOINT_NAMES[0]`, so it will read the new names once the
+yamls carry them.
+
 ## Verify step 1
 
 ```
@@ -356,8 +445,8 @@ no "close enough" carry-over. All are marked `STALE` or `UNVERIFIED` in
 | ~~`FRANKA_MOTION_GEN_ROBOT_CFG`~~ | `config.py`, `motion.py` | **done** — `FR5_XRDF_PATH` |
 | ~~FR5 collision spheres~~ | `configs/curobo/fr5.xrdf` | **done** — Lula editor, 2026-08-13 |
 | The four `GRASP_TARGETS` yamls | `assets/*.yaml` | step 3 — re-export in the Grasp Editor against the PGC-140 |
-| `GRIPPER_JOINT_NAMES`, `GRIPPER_FINGER_LINK_NAMES` | `config.py` | step 3 → `pgc140_finger{1,2}_joint`/`_link` |
-| `GRIPPER_OPEN_POSITION` / `GRIPPER_CLOSED_POSITION` | `config.py` | step 3 — **and the convention inverts** |
+| ~~`GRIPPER_JOINT_NAMES`, `GRIPPER_FINGER_LINK_NAMES`~~ | `config.py` | **done** — `pgc140_finger{1,2}_joint`/`_link` |
+| ~~`GRIPPER_OPEN_POSITION` / `GRIPPER_CLOSED_POSITION`~~ | `config.py` | **done** — 0.000 / 0.025, inverted |
 | `TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ` | `config.py` | step 3 |
 | `SURFACE_GRIPPER_LOCAL_POSITION` | `config.py` | step 3 (already pre-ATC stale) |
 | `female_coupler_local_*` for the gripper tool | `config.TOOL_CHANGE_TARGETS` | step 3 (already placeholders) |

@@ -74,7 +74,7 @@ def compute_grasp_approach_pose_from_file(
 def compute_grasp_finger_widths_from_file(
     yaml_path: str,
     grasp_name: str,
-    finger_joint_name: str = "panda_finger_joint1",
+    finger_joint_name: str = config.GRIPPER_JOINT_NAMES[0],
 ):
     """Reads the yaml's pregrasp_cspace_position (open) and cspace_position (closed) widths --
     the object-specific values that override config's global defaults once a grasp is selected."""

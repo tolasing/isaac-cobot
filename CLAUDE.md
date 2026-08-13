@@ -38,9 +38,11 @@ the cell off the Franka stand-in onto the real hardware — a **FAIRINO FR5** ar
 steps. **Steps 1 (the FR5 arm) and 2 (cuRobo) have landed.** cuRobo now loads
 `configs/curobo/fr5.xrdf` — a cuMotion XRDF from the Lula editor, converted at
 load time, *not* a `.yml` — and the full pipeline runs with teleop planning and
-following (headless; live GUI still to confirm). **Step 3, the gripper, has
-not:** the dockable gripper tool is still the Franka hand, so `Y` docks it with
-placeholder offsets, and the grasp/screw/tool-changer harnesses still fail. Every
+following, confirmed live. **Step 3, the gripper, is in progress:** the dockable
+gripper tool is now a **PGC-140** hand-placed at `/World/cr5_pgc140_gripper`, and
+C/O drive its fingers — **open/closed are INVERTED** vs the Franka (0.000 open,
+0.025 closed). `Y` docks it, but **the wrist link section then vibrates** (open
+issue below). The grasp/screw/tool-changer harnesses still fail. Every
 hand-jogged pose the swap invalidates is marked `STALE`/`UNVERIFIED` in
 `config.py` rather than converted. Sequence, prior art on the `dobot` branch, and
 the re-derivation checklist: `docs/fr5-migration.md`.
@@ -174,6 +176,17 @@ a belt in the GUI needs no code change either.
 ## Currently open issues
 
 Full investigation detail: `docs/mefron-history.md`.
+
+- **The wrist link section vibrates after `Y` docks the PGC-140.** Live in the
+  GUI, not reproducible headless. Already ruled out by measurement, don't
+  re-chase: the tool's own collision (its `pgc140_base_link` collider is
+  *disabled*; only the fingers collide, 93mm out) and arm drive damping
+  (steady-state arm velocity is 0.0000 both bare and docked). Leading suspects,
+  untested: the FR5 and the tool are **two separate articulations** coupled by one
+  `excludeFromArticulation` FixedJoint, and the dock frames are still `[0,0,0]`
+  placeholders, so `pgc140_base_link`'s origin is welded to `wrist3_link`'s and
+  the bodies interpenetrate. Deriving the real coupler offsets is the next step
+  either way. Full detail: `docs/fr5-migration.md`.
 
 - **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
   unverified live.** `test_mefron_assembly_weld_headless.py

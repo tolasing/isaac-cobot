@@ -84,7 +84,7 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
         state["robot"] = SingleArticulation(prim_path=robot_prim_path, name=f"mefron_teleop_robot_{arm['_name']}")
         state["robot"].initialize()
         state["idx_list"] = [state["robot"].get_dof_index(x) for x in j_names]
-        # No gripper joint indices to resolve: panda_finger_joint1/2 are deactivated on this arm's
+        # No gripper joint indices to resolve: the tool's finger joints are not in this arm's
         # own articulation and driven via toolchanger.set_gripper_tool_finger_target() instead.
         state["articulation_controller"] = state["robot"].get_articulation_controller()
         # A None index would feed apply_action()'s native PhysX call below and can crash the process
