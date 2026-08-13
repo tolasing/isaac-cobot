@@ -1,0 +1,307 @@
+# FR5 + PGC-140 migration (`atc-fairino`)
+
+Moving the `atc` cell off its Franka Panda stand-in onto the real target
+hardware: a **FAIRINO FR5** arm with a **DH Robotics PGC-140** parallel gripper.
+
+Branched from `atc` @ `6374624` ("Record the part feeders as GUI-confirmed"),
+i.e. deliberately *without* `835abb5`'s in-progress jig-base change.
+
+Done procedurally, one GUI-verified step at a time, rather than as one swap.
+
+| Step | Scope | Gate | State |
+|---|---|---|---|
+| **1** | Vendor the FR5, mount it on the pedestal in place of the Franka | GUI: scene opens, arm looks right | **GUI-confirmed 2026-08-13** |
+| 2 | cuRobo config + collision spheres from the Lula/XRDF editor | teleop plans and moves | **code landed + headless-verified, GUI check pending** |
+| 3 | PGC-140 as the ATC's dockable gripper tool | Y docks it, C/O drives the fingers | not started |
+
+The gripper stays a **dockable ATC tool** — it is not bolted into a combined
+arm+gripper URDF. The male coupler moves to the FR5's wrist, the PGC-140 replaces
+`/World/gripper_tool_visual_only` in the rack, and suction/screwdriver are
+untouched. cuRobo therefore plans the bare 6-DOF arm and never sees the fingers,
+exactly as it does today.
+
+## Prior art: mine the `dobot` branch, don't restart
+
+That branch already did this class of swap once, for a Dobot CR5 + PGC-140, and
+paid for several findings the hard way. Steps 2–3 should start from it:
+
+- `a15a021` — "Replace Franka with CR5+PGC-140 in mefron.py". The template for
+  this whole exercise, including the mount-yaw bug below.
+- `robots/pgc140/` + its `SOURCE.md` — the PGC-140 already vendored from
+  `DH-Robotics/dh_gripper_ros` @ `f59f9c2`, with the link/joint renames and the
+  live-confirmed removal of `finger2_joint`'s `<mimic>` tag (this Isaac Sim
+  version imports a prismatic `<mimic>` as a **rotational** `PhysxMimicJointAPI`
+  with mangled limits and no drive, leaving finger2 stuck). Re-vendoring from
+  upstream would walk straight back into that.
+- `configs/curobo/cr5.yml` + `cr5_collision_spheres.yml` — the shape of a
+  non-Franka cuRobo config in this repo, and the repo-relative→absolute path
+  patching every loader must do (cuRobo joins `urdf_path`/`asset_root_path`
+  against its *own* bundled dirs otherwise).
+- `assets/Grasp_Editor/.../cr5_pgc140_gripper.usd` and
+  `assets/Grasp_Editor/pgc_finger_print_scanner.yaml` — a gripper-only USD for
+  the Grasp Editor, and one real PGC-140 grasp already exported against it.
+
+Two of its live-confirmed findings apply directly here:
+
+- **The CR5 needed a 180° yaw** in `MOUNT_ORIENTATION_WXYZ` where the Franka
+  wanted identity. **The FR5 needs it too** — GUI-confirmed 2026-08-13, it faced
+  backwards out of the cell on identity. `MOUNT_ORIENTATION_WXYZ` is now
+  `[0, 0, 0, 1]`; headless readback puts wrist3 at `(+0.497, +0.102, +0.576)`
+  relative to `base_link`, the exact mirror of the un-yawed pose.
+- **The PGC-140's finger convention is inverted vs the Franka's.** `q=0.0` is
+  **open** (~30mm from centerline) and `q=0.025` (each joint's upper limit) is
+  **closed** (~13mm). The Franka is the other way round. An earlier draft on
+  that branch locked the gripper closed during planning by getting this
+  backwards.
+
+## Step 1 — what landed
+
+- **`robots/fr5/`** — `urdf/fairino5_v6.urdf` + seven STL meshes from
+  `FAIR-INNOVATION/frcobot_ros2` @ `867cb32`. Why that file and not the
+  sibling `FR5WM.urdf` (wrong kinematics, and it does not parse), plus the
+  no-upstream-license finding: [`robots/fr5/SOURCE.md`](../robots/fr5/SOURCE.md).
+- **`config.ROBOT_PRIM_PATH`** → `/World/FR5`. Every consumer already read the
+  constant, so this was a one-line change; `/World/Franka` moved into
+  `robot._STRAY_HISTORICAL_ARM_PATHS` so a Franka baked into `mefron.usd` by a
+  past stray Save is deleted on open.
+- **`robot.mount_franka()` → `robot.mount_arm()`**, importing `FR5_URDF_PATH`
+  through the existing `usd_util.import_urdf()`. Note the shape change: the
+  Franka came from cuRobo's bundled assets, the FR5 is repo-local.
+- **`robot.print_arm_inventory()`** — prints the link/joint names the importer
+  actually produced. Step 2's `fr5.yml` must be written against *those*, not
+  against the URDF's names as read.
+- **`robot.apply_home_pose()`** — see "The all-zero pose is a singularity" below.
+- **`robot.apply_accent_color()`** — see "Accent color" below.
+- **`mefron.py --arm-only`** — mounts the arm, poses it, paints it, and hands the
+  GUI over. No ATC, no cuRobo, no teleop. It *plays* the timeline (unlike the
+  teleop loop, which waits for the user) because only PhysX can actually move the
+  arm to the staged home pose; safe here since there is no `motion_gen.warmup()`
+  to corrupt. Delete it once the FR5 is wired all the way through.
+
+### The all-zero pose is a singularity
+
+The FR5's URDF zero configuration is **fully outstretched horizontally** — wrist3
+lands 0.820m out and only 0.050m above the base. That is what a first GUI run
+shows: an arm lying flat across the cell.
+
+It is not merely ugly. Measured offline from the vendored URDF (numerical
+Jacobian at the pose): **condition number `inf`** — genuinely rank-deficient, the
+same class of failure the `dobot` branch hit when it left the CR5's
+`retract_config` at all-zeros and every `plan_single()` failed IK.
+
+`config.FR5_HOME_JOINT_POSITIONS = [0, -π/2, π/2, -π/2, -π/2, 0]` replaces it —
+the classic UR-style ready pose, chosen for conditioning, not aesthetics:
+
+| | all-zero | home pose |
+|---|---|---|
+| wrist3 rel. base | (-0.820, -0.102, +0.050) | (-0.497, -0.102, +0.577) |
+| tool Z | (0, -1, 0) — sideways | (0, 0, -1) — straight down |
+| Jacobian cond | **inf** | 8.2 |
+| within joint limits | yes | yes |
+
+**Confirmed live, headless 2026-08-13:** with the pose staged and the timeline
+played, the simulated arm settles at wrist3 `(-0.497, -0.102, +0.576)` relative
+to `base_link` — the offline FK prediction to within 1mm. That also confirms the
+unit conversion: `UsdPhysics` angular drive targets and `JointStateAPI` positions
+are in **degrees**, while the URDF, cuRobo and this constant are all radians.
+
+**Step 2 should seed `fr5.yml`'s `cspace.retract_config` from this**, not from
+zeros, for exactly the reason above.
+
+### Generating the collision spheres (step 2's GUI half)
+
+Run `mefron.py --arm-only`, then **Tools → Robotics → Lula Robot Description
+Editor**, and select the articulation at `/World/FR5`.
+
+- **Instanceable meshes cannot be auto-fitted.** The editor refuses them and only
+  offers hand-authoring ("Found instanceable mesh at path … cannot be used to
+  generate spheres automatically"). Everything the URDF importer produces is
+  instanceable, so `--arm-only` calls `robot.un_instance_link_meshes()` up front
+  to clear all 14 visuals/collisions scopes. Without it, auto-generate is dead on
+  every link.
+- **Leave `base_link` out** of the sphere set, matching cuRobo's own `ur5e.yml`,
+  which has no `base_link` entry either. It is bolted to the pedestal, and a
+  sphere there overlaps the mount — exactly what made every CR5 plan fail with
+  `INVALID_START_STATE_WORLD_COLLISION` on the `dobot` branch.
+- **Per-link budget worth copying**, from `ur5e.yml` — whose two long links are
+  within 3mm of the FR5's (upper arm 0.425 identical, forearm 0.3922 vs 0.39501),
+  so its proven distribution transfers: shoulder 1, upper arm 8, forearm 9,
+  wrist1 4, wrist2 4, wrist3 1. 28 spheres total.
+
+The editor's own "generate" button is a thin wrapper over
+`lula.create_collision_sphere_generator(points, faces).generate_spheres(n, radius_offset)`,
+with the mesh points transformed into the link's frame first — so if the GUI ever
+becomes the bottleneck, the identical fit is scriptable headlessly.
+
+**This cuRobo build reads XRDF natively** (`curobo/util/xrdf_utils.py`'s
+`convert_xrdf_to_curobo()`, plus a bundled `ur10e.xrdf` reference), so the
+editor's export can feed `fr5.yml` directly with no format conversion.
+
+## Step 2 — what landed
+
+`configs/curobo/fr5.xrdf`, exported from the editor, loaded through cuRobo's own
+`convert_xrdf_to_curobo()` by `motion.load_robot_cfg()`. No `fr5.yml` exists and
+none is needed — XRDF *is* the cuRobo config here.
+
+`FRANKA_MOTION_GEN_ROBOT_CFG` is gone, replaced by `FR5_XRDF_PATH` +
+`FR5_URDF_ASSET_ROOT` (absolute, because cuRobo resolves relative paths against
+its own bundled dirs). `setup_motion_gen()` lost its `has_parallel_jaw_gripper`
+argument and `_robot_cfg_without_gripper_joints()` went with it — both existed
+only to strip `panda_finger_joint1/2` from the Franka's cspace, and the FR5
+never had them.
+
+The ATC's male coupler, the surface-gripper joint, and the screw wrist weld all
+moved from `panda_hand` to `wrist3_link`.
+
+### Three things the editor's export needed by hand
+
+Re-exporting over `fr5.xrdf` **loses all three** — re-apply them:
+
+1. **`tool_frames` was absent, and cuRobo hard-fails without it.** The editor has
+   no ee-link concept, but `convert_xrdf_to_curobo()` does
+   `output_dict["ee_link"] = tool_frames[0]` behind a `raise_error=True` lookup.
+   Added `tool_frames: ["wrist3_link"]`.
+2. **`collision.buffer_distance` was absent, which silently means zero padding**
+   (`if buffer_distance is None: buffer_distance = 0.0`). Since the spheres were
+   fitted with the editor's radius offset at 0, they'd have had no margin at all.
+   Set to 0.01 per link, matching cuRobo's own `ur10e.xrdf`.
+3. `wrist3_link` carried the **same sphere twice**, identical center and radius —
+   the count field resets to 0 after a commit, which makes a double-click easy.
+
+`modifiers: set_base_frame` is *not* needed: cuRobo takes `base_link` from
+`kinematics_parser.root_link`, and the FR5's URDF root is already `base_link`
+(unlike the CR5's combined URDF, which had a `dummy_link` root).
+
+### Verified headless 2026-08-13
+
+- **`convert_xrdf_to_curobo()` + `CudaRobotModel` build clean.** ee_link
+  `wrist3_link`, joints `j1`…`j6`, `retract_config` carried from the editor's
+  `default_joint_positions`, accel 10 / jerk 500, 6 collision links (no
+  `base_link`).
+- **Three independent methods agree on FK.** Offline URDF math
+  `(-0.497, -0.102, +0.577)`, PhysX readback `(-0.497, -0.102, +0.576)`, cuRobo's
+  own model `(-0.4971, -0.1021, +0.5766)`. cuRobo's FR5 matches the simulated one.
+- **No sphere overlaps at `retract_config`.** All-pairwise clearance over
+  non-ignored pairs, tightest `wrist1_link ↔ wrist3_link` at **+0.035m**. So the
+  editor's adjacent-pairs-only `self_collision.ignore` is sufficient as exported —
+  the CR5 needed three extra skip-one entries, the FR5 needs none. One
+  configuration only, not a sweep.
+- **`plan_single()` succeeds** to ±10cm X, −15cm Z, +20cm Y off the home pose
+  (57–69 waypoints, 1.0–1.2s).
+- **`test_mefron_teleop_headless.py` PASSES** — `plan_single success=True`, arm
+  followed the simulated drag both directions, 0.165 rad max joint delta.
+- Full `mefron.py --headless` runs start to finish, no tracebacks.
+
+**Not verified:** live GUI teleop, and the other four headless harnesses
+(`assembly`, `assembly_weld`, `screw`, `tool_changer`) — those exercise grasp
+yamls and gripper-tool docking, i.e. step 3.
+
+### Accent color
+
+The vendored URDF paints **every** link the same light grey
+(`rgba 0.89804 0.91765 0.92941`) and contains no orange anywhere — so there was
+no existing color to honour instead. `robot.apply_accent_color()` authors one
+material and binds it to `FR5_ACCENT_LINK_NAMES` (`shoulder_link`,
+`wrist2_link`); change `FR5_ACCENT_COLOR_RGB` to retune it.
+
+Three traps, all confirmed on the imported stage — the first two each produced a
+**silently white arm with a binding that read as correctly authored**:
+
+1. **The importer binds its grey with `strongerThanDescendants`, on an
+   intermediate Xform** (`{link}/visuals/{link}`), not on the Mesh. That beats
+   any binding authored on the Mesh below it. `apply_accent_color()` therefore
+   re-binds every prim in the subtree that already carries a binding, at that
+   same strength — not just the meshes.
+2. **The importer's materials are OmniPBR MDL**
+   (`info:mdl:sourceAsset = @OmniPBR.mdl@`, `inputs:diffuse_color_constant`),
+   not `UsdPreviewSurface`. A `UsdPreviewSurface` authored here rendered as
+   untouched white. The accent material mirrors the importer's structure exactly.
+3. Each link's `visuals` is an **instanceable prototype**; authoring through one
+   silently no-ops. It goes through the existing `usd_util.un_instance_ancestor()`.
+
+**Check bindings with `ComputeBoundMaterial()`, never `GetDirectBinding()`.**
+The latter reports what is authored *on that prim* and happily returned the
+accent material while the grey was still what actually rendered — it does not
+account for ancestor binding strength. Confirmed working 2026-08-13: the mesh
+resolves to `/World/FR5/Looks/FR5Accent`.
+
+Runtime-only by necessity: the arm is re-imported from URDF every run, so nothing
+about it can be baked into `mefron.usd` the way the scenery is. The material is
+authored under the arm's own `Looks` scope so the re-import disposes of it too.
+- `remove_parallel_jaw_gripper()` / `hide_hand_housing()` are no longer called:
+  the FR5 ships a bare ISO flange with no hand to strip. Left in place, marked
+  FRANKA-ONLY, pending step 3.
+
+### FR5 facts worth having on hand
+
+- **Import confirmed headless 2026-08-13** (`--arm-only --headless`): the
+  importer produced 7 link Xforms and 6 drive-carrying joints, named exactly as
+  the URDF names them — no importer mangling, so step 2's `fr5.yml` can use them
+  verbatim. **Not** a confirmation that the arm is correctly *placed*; that is
+  the GUI check below.
+- Links: `base_link`, `shoulder_link`, `upperarm_link`, `forearm_link`,
+  `wrist1_link`, `wrist2_link`, `wrist3_link`. Joints: `j1`…`j6`.
+- `ee_link` is `wrist3_link` — there is no `tool0`/flange link. It carries
+  visual geometry, which `motion.build_teleop_target()` requires.
+- 922mm reach (425mm upper arm, 395mm forearm) against the Panda's ~855mm. That
+  eases CLAUDE.md's "screws: reach is tight" open issue, and it means every
+  reachability judgement made under the Franka is now conservative, not stale.
+- Real `effort`/`velocity` limits on every joint, so cuRobo's
+  `ValueError: Joint velocity limits is zero` (which forced a URDF patch on the
+  CR5) cannot happen here.
+- One STL serves both `<visual>` and `<collision>` — the arm renders flat grey,
+  and every collision mesh is full-resolution CAD.
+
+## Verify step 1
+
+```
+${ISAACSIM_ROOT_PATH}/python.sh scripts/mefron.py --arm-only
+```
+
+1. **Base flush on `/World/ur10_mount`** — not sunk into the pedestal, not
+   floating. `MOUNT_POSITION` is the pedestal prim's own translate and was never
+   confirmed to be its top mounting flange.
+2. ~~**Arm faces into the cell**~~ — settled: it needed the 180° yaw, applied.
+3. **All seven links have visible geometry**, with `shoulder_link` and
+   `wrist2_link` orange and the rest flat grey (the URDF ships no textures).
+4. **The arm stands in its home pose, not flat.** If it is lying outstretched,
+   `apply_home_pose()` did not take — check the joint-name warnings.
+5. **No self-intersection at the home pose**, and the arm does not fold into
+   the packing table.
+
+Expected, not regressions:
+
+- `mefron.usd` **and all four `configuration/*.usd`** show a diff afterwards —
+  the URDF importer rewrites them unconditionally on every run (CLAUDE.md
+  gotcha). Never blindly `git checkout` them unless, as after the step-1 run,
+  the tree was known-clean beforehand.
+- `open_stage()` logs `Unresolved reference prim path .../World/Franka/panda_hand/visuals`
+  for the baked `/World/target` prim (and the same for the retired
+  `target2`/`target3` → `Franka2`/`Franka3`, which already dangled before this
+  branch). `motion.build_teleop_target()` re-authors `/World/target` against the
+  live `ee_link` every run, so this clears itself in step 2 — the stale
+  reference in the baked layer is cosmetic until then.
+- **All six `test_mefron_*_headless.py` harnesses fail**, and plain `mefron.py`
+  without `--arm-only` fails past the arm mount. They build cuRobo from
+  `franka.yml` and reach for `panda_hand` paths on an arm that is neither. Step 2.
+
+## Re-derivation checklist
+
+Every one of these was hand-jogged against the Franka and its hand. **Nothing
+here gets a number until it is re-derived in the GUI** — no numeric conversion,
+no "close enough" carry-over. All are marked `STALE` or `UNVERIFIED` in
+`config.py`.
+
+| What | Where | Blocked on |
+|---|---|---|
+| ~~`MOUNT_ORIENTATION_WXYZ`~~ | `config.py` | **done** — 180° about Z, GUI-confirmed 2026-08-13 |
+| `FR5_DRIVE_STRENGTH` / `FR5_DRIVE_DAMPING` | `config.py` | step 2 (carried over from the Franka's tuning) |
+| ~~`FRANKA_MOTION_GEN_ROBOT_CFG`~~ | `config.py`, `motion.py` | **done** — `FR5_XRDF_PATH` |
+| ~~FR5 collision spheres~~ | `configs/curobo/fr5.xrdf` | **done** — Lula editor, 2026-08-13 |
+| The four `GRASP_TARGETS` yamls | `assets/*.yaml` | step 3 — re-export in the Grasp Editor against the PGC-140 |
+| `GRIPPER_JOINT_NAMES`, `GRIPPER_FINGER_LINK_NAMES` | `config.py` | step 3 → `pgc140_finger{1,2}_joint`/`_link` |
+| `GRIPPER_OPEN_POSITION` / `GRIPPER_CLOSED_POSITION` | `config.py` | step 3 — **and the convention inverts** |
+| `TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ` | `config.py` | step 3 |
+| `SURFACE_GRIPPER_LOCAL_POSITION` | `config.py` | step 3 (already pre-ATC stale) |
+| `female_coupler_local_*` for the gripper tool | `config.TOOL_CHANGE_TARGETS` | step 3 (already placeholders) |
+| Screw pick/place offsets | `config.py`, `screws.py` | step 3 — currently relative to `panda_hand` |

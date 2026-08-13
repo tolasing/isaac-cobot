@@ -1,4 +1,4 @@
-"""Interactive cuRobo teleop + pick-and-place on one Franka with an automatic tool changer.
+"""Interactive cuRobo teleop + pick-and-place on one FAIRINO FR5 with an automatic tool changer.
 Thin entry point -- the logic lives in mefron_lib/. See CLAUDE.md and docs/."""
 
 from __future__ import annotations
@@ -8,6 +8,9 @@ import sys
 from isaacsim import SimulationApp
 
 _headless = "--headless" in sys.argv
+# Mid-migration GUI check: mount the arm and stop. Everything past it is still Franka-shaped --
+# see docs/fr5-migration.md.
+_arm_only = "--arm-only" in sys.argv
 if __name__ == "__main__":
     simulation_app = SimulationApp({"headless": _headless})
 
@@ -32,6 +35,27 @@ from mefron_lib import (  # noqa: E402
     teleop,
     toolchanger,
 )
+from pxr import UsdPhysics  # noqa: E402
+
+
+def _run_arm_only_loop(simulation_app) -> None:
+    """Hands the GUI over with just the arm mounted -- no ATC, no cuRobo, no teleop. Purely a
+    "does it open and look right" check; delete once the FR5 is wired all the way through."""
+    if _headless:
+        return
+    kit_experience.enable_full_experience_extensions()
+    # Play, unlike the teleop loop's wait-for-the-user: the home pose is staged on the joints and
+    # only PhysX can actually move the arm there. Safe here -- no motion_gen warmup to corrupt.
+    stage = omni.usd.get_context().get_stage()
+    if not stage.GetPrimAtPath("/physicsScene").IsValid() and not stage.GetPrimAtPath("/PhysicsScene").IsValid():
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+    omni.timeline.get_timeline_interface().play()
+    print(
+        "[mefron] --arm-only: arm at its home pose, no ATC/cuRobo/teleop. Close the window to quit.",
+        flush=True,
+    )
+    while simulation_app.is_running():
+        simulation_app.update()
 
 
 def main() -> None:
@@ -43,7 +67,7 @@ def main() -> None:
     carb.settings.get_settings().set_bool("/app/player/useFixedTimeStepping", True)
 
     # Must run BEFORE open_stage(): mefron.usd has a persisted, broken /panda prim reference, and
-    # resolving it caches an Sdf.Layer that later crashes mount_franka()'s import.
+    # resolving it caches an Sdf.Layer that later crashes mount_arm()'s import.
     clear_stale_robot_configuration(config.MEFRON_CONFIGURATION_DIR)
 
     omni.usd.get_context().open_stage(str(config.MEFRON_USD))
@@ -54,11 +78,24 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
-    # The ATC replaces this arm's own hand with a swappable tool, so panda_hand terminates the wrist
-    # cleanly for the male coupler.
-    robot.remove_parallel_jaw_gripper()
-    robot.hide_hand_housing()
+    robot.mount_arm()
+    robot.apply_home_pose()
+    robot.apply_accent_color()
+    if _arm_only:
+        # So Tools > Robotics > Lula Robot Description Editor can auto-generate collision spheres:
+        # it refuses instanceable meshes. See docs/fr5-migration.md.
+        robot.un_instance_link_meshes()
+        robot.print_arm_inventory()
+        _run_arm_only_loop(simulation_app)
+        simulation_app.close()
+        return
+
+    print(
+        "[mefron] NOTE: the dockable GRIPPER tool is still the Franka hand and will dock with "
+        "placeholder offsets until step 3's PGC-140. docs/fr5-migration.md",
+        flush=True,
+    )
+    # The FR5 ships a bare flange, so there is no hand to strip -- the coupler rides wrist3_link.
     toolchanger.attach_tool_changer_male_coupler()
     # Rides panda_hand permanently, whichever tool is docked -- V/L is gated on the suction tool.
     # SURFACE_GRIPPER_LOCAL_POSITION needs re-deriving now the coupler adds a standoff.
@@ -86,11 +123,8 @@ def main() -> None:
         print(f"[mefron] {status_path}: {'OK' if prim.IsValid() else 'MISSING'}", flush=True)
 
     print("[mefron] warming up cuRobo motion_gen (viewport will look frozen/black until this finishes)...", flush=True)
-    # has_parallel_jaw_gripper=False -- panda_finger_joint1/2 are deactivated on this arm's own
-    # articulation now; the gripper is a separate dockable tool module.
-    motion_gen, robot_cfg = motion.setup_motion_gen(
-        config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH, has_parallel_jaw_gripper=False
-    )
+    # The FR5's own 6 joints only -- the gripper is a separate dockable tool module cuRobo never sees.
+    motion_gen, robot_cfg = motion.setup_motion_gen(config.ROBOT_PRIM_PATH, config.TARGET_PRIM_PATH)
     print("[mefron] curobo motion_gen: READY", flush=True)
 
     # Force a stop unconditionally: physics left playing across warmup()'s ~30s unpumped gap corrupts

@@ -32,6 +32,19 @@ rack until a tool-change key docks one. Full design: `docs/tool-changer.md`.
 tool-changer keys moved off the numpad to **Y/U/I** so it can be driven from a
 laptop keyboard. That key remap is the only behavioral difference from `atc`.
 
+**This branch (`atc-fairino`)** branches from `atc` @ `6374624` and is migrating
+the cell off the Franka stand-in onto the real hardware — a **FAIRINO FR5** arm
+(`robots/fr5/`) with a **DH Robotics PGC-140** gripper — in three GUI-verified
+steps. **Steps 1 (the FR5 arm) and 2 (cuRobo) have landed.** cuRobo now loads
+`configs/curobo/fr5.xrdf` — a cuMotion XRDF from the Lula editor, converted at
+load time, *not* a `.yml` — and the full pipeline runs with teleop planning and
+following (headless; live GUI still to confirm). **Step 3, the gripper, has
+not:** the dockable gripper tool is still the Franka hand, so `Y` docks it with
+placeholder offsets, and the grasp/screw/tool-changer harnesses still fail. Every
+hand-jogged pose the swap invalidates is marked `STALE`/`UNVERIFIED` in
+`config.py` rather than converted. Sequence, prior art on the `dobot` branch, and
+the re-derivation checklist: `docs/fr5-migration.md`.
+
 ## Where things live
 
 - **This file** — current state, and gotchas that break something if unknown.
@@ -45,11 +58,17 @@ laptop keyboard. That key remap is the only behavioral difference from `atc`.
   base-path→live-copy resolver every pick now goes through.
 - `docs/ee-arrival-accuracy.md` — why the ee settles ~3mm short (measured,
   cuRobo ruled out), the live probes, and the verified offline FK chain.
+- `docs/fr5-migration.md` — this branch's three-step FR5 + PGC-140 migration,
+  what step 1 landed, and the re-derivation checklist. **Read before touching
+  anything arm- or gripper-shaped.**
 - `docs/docker-and-devcontainer.md` — environment setup (generic infra).
 - `examples/curobo_reference/` — pristine copy of cuRobo's own teleop demo.
   **Do not modify those two files**; write a separate script instead.
 - `robots/accessories/` — the dockable tools' CAD. Only the
   `*_with_tool_female.usd` pair is referenced; the rest are unreferenced.
+- `robots/fr5/` — the vendored FAIRINO FR5 (`urdf/fairino5_v6.urdf` + STL
+  meshes). Provenance, the `FR5WM` rejection, and the **no upstream license**
+  finding: `robots/fr5/SOURCE.md`.
 - `scripts/` — `mefron.py` (the only entry point) plus six
   `test_mefron_*_headless.py` regression harnesses. Everything else was deleted
   2026-08-08; see `docs/mefron-history.md` for what and why.
@@ -64,11 +83,19 @@ laptop keyboard. That key remap is the only behavioral difference from `atc`.
 
 ## Active script + current state
 
-`scripts/mefron.py` opens `mefron.usd` directly via `open_stage()`, mounts
-cuRobo's bundled Franka on the `ur10_mount` pedestal, strips that arm's *own*
-hand (`remove_parallel_jaw_gripper()` + `hide_hand_housing()`, so `panda_hand`
-terminates the wrist cleanly), fits the ATC's male coupler, spawns and parks the
-three dockable tools, and runs the drag-follow teleop loop.
+`scripts/mefron.py` opens `mefron.usd` directly via `open_stage()`, mounts the
+vendored **FR5** on the `ur10_mount` pedestal (`robot.mount_arm()`, at
+`/World/FR5`), fits the ATC's male coupler, spawns and parks the three dockable
+tools, and runs the drag-follow teleop loop.
+
+**Mid-migration.** The arm and cuRobo are FR5; the **gripper tool is still the
+Franka hand**, so everything below about C/O, grasp yamls and gripper docking is
+what step 3 has to port. The FR5 ships a bare ISO flange, so
+`remove_parallel_jaw_gripper()`/`hide_hand_housing()` have nothing to strip and
+are no longer called, and the ATC's male coupler rides `wrist3_link` instead of
+`panda_hand`. `--arm-only` stops right after the arm mount and hands the GUI over
+(no ATC/cuRobo/teleop) — it also un-instances the link meshes so the Lula editor
+can fit spheres. See `docs/fr5-migration.md`.
 
 | Key | Action |
 |---|---|
@@ -205,6 +232,13 @@ Full investigation detail: `docs/mefron-history.md`.
 
 Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
 
+- **The FR5's all-zero joint config is a singularity.** It is also fully
+  outstretched (wrist3 0.82m out, 0.05m up) — measured Jacobian condition number
+  `inf`, so IK fails for essentially any target. `robot.apply_home_pose()` stages
+  `FR5_HOME_JOINT_POSITIONS` (cond 8.2) instead, and `fr5.yml`'s
+  `retract_config` must be seeded from it too. `docs/fr5-migration.md`.
+- **`UsdPhysics` angular quantities are degrees**, while the URDF, cuRobo and
+  this repo's own constants are radians. `apply_home_pose()` converts.
 - **`PhysicsScene` required.** `SingleArticulation.initialize()` silently breaks
   without one — `UsdPhysics.Scene.Define(stage, "/physicsScene")`.
 - **`timeline.play()` timing.** Calling it before `/physicsScene` exists or

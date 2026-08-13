@@ -1,5 +1,5 @@
 """Enables the full experience's extra extensions AFTER the Franka is mounted -- see
-robot.mount_franka(). Needs a live SimulationApp, unlike kit_bootstrap.py."""
+robot.mount_arm(). Needs a live SimulationApp, unlike kit_bootstrap.py."""
 
 from __future__ import annotations
 

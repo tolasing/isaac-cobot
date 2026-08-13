@@ -25,31 +25,28 @@ def get_obstacles(robot_prim_path: str = config.ROBOT_PRIM_PATH, target_prim_pat
     ).get_collision_check_world()
 
 
-def _robot_cfg_without_gripper_joints(robot_cfg: dict) -> dict:
-    """Strips config.GRIPPER_JOINT_NAMES from cspace's parallel per-joint lists, for an arm whose
-    jaw joints aren't on the live stage. lock_joints/collision_spheres stay -- cuRobo's own model."""
-    import copy
+def load_robot_cfg() -> dict:
+    """The FR5's cuRobo kinematics dict, converted from config.FR5_XRDF_PATH. Absolute paths
+    throughout: cuRobo resolves relative ones against its OWN bundled dirs, not this repo."""
+    from curobo.types.file_path import ContentPath
+    from curobo.util.xrdf_utils import convert_xrdf_to_curobo
 
-    robot_cfg = copy.deepcopy(robot_cfg)
-    cspace = robot_cfg["kinematics"]["cspace"]
-    keep_idx = [i for i, name in enumerate(cspace["joint_names"]) if name not in config.GRIPPER_JOINT_NAMES]
-    for key in ("joint_names", "retract_config", "null_space_weight", "cspace_distance_weight"):
-        cspace[key] = [cspace[key][i] for i in keep_idx]
-    return robot_cfg
+    content_path = ContentPath(
+        robot_xrdf_absolute_path=str(config.FR5_XRDF_PATH),
+        robot_urdf_absolute_path=str(config.FR5_URDF_PATH),
+        robot_asset_absolute_path=str(config.FR5_URDF_ASSET_ROOT),
+    )
+    return convert_xrdf_to_curobo(content_path)["robot_cfg"]
 
 
 def setup_motion_gen(
     robot_prim_path: str = config.ROBOT_PRIM_PATH,
     target_prim_path: str = config.TARGET_PRIM_PATH,
-    has_parallel_jaw_gripper: bool = True,
 ):
     from curobo.types.base import TensorDeviceType
-    from curobo.util_file import get_robot_configs_path, join_path, load_yaml
     from curobo.wrap.reacher.motion_gen import MotionGen, MotionGenConfig
 
-    robot_cfg = load_yaml(join_path(get_robot_configs_path(), config.FRANKA_MOTION_GEN_ROBOT_CFG))["robot_cfg"]
-    if not has_parallel_jaw_gripper:
-        robot_cfg = _robot_cfg_without_gripper_joints(robot_cfg)
+    robot_cfg = load_robot_cfg()
     # A real, populated world must be passed at construction time, or update_world()/warmup() later fail.
     world_cfg = get_obstacles(robot_prim_path, target_prim_path)
     motion_gen_config = MotionGenConfig.load_from_robot_config(

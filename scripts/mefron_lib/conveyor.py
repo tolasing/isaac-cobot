@@ -39,7 +39,7 @@ def setup_conveyor_belt_graph(
     stray_graph_prim = stage.GetPrimAtPath(graph_path)
     if stray_graph_prim.IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[graph_path])
-        # Same post-DeletePrims pump as mount_franka()'s: without it CreateConveyorBelt can see the
+        # Same post-DeletePrims pump as mount_arm()'s: without it CreateConveyorBelt can see the
         # delete as in-flight and uniquify to *_01, breaking the deterministic path.
         omni.kit.app.get_app().update()
 

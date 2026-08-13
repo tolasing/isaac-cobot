@@ -1,5 +1,5 @@
-"""The Franka arm itself: mounting it on its UR10 pedestal, stripping its own hand for the ATC,
-and gripper physics tuning (friction material, drive stiffness). See docs/mefron-history.md."""
+"""The arm itself: mounting it on its UR10 pedestal, and gripper physics tuning (friction
+material, drive stiffness). See docs/mefron-history.md and docs/fr5-migration.md."""
 
 from __future__ import annotations
 
@@ -15,16 +15,17 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 from . import config, feeder
 from .usd_util import import_urdf, un_instance_ancestor
 
-# Pre-MovePrim intermediate paths a mount_franka() import can land at, plus the retired pre-ATC
+# Pre-MovePrim intermediate paths a mount_arm() import can land at, plus the retired pre-ATC
 # arm2/arm3 paths -- a stray Save bakes any of these into the shared mefron.usd as an orphan.
 _STRAY_HISTORICAL_PANDA_PATH = "/panda"
 _STRAY_HISTORICAL_GRIPPER_TOOL_PATH = "/panda_gripper_only"
-_STRAY_HISTORICAL_ARM_PATHS = ["/World/Franka2", "/World/Franka3"]
+# /World/Franka joins the list now the live arm is an FR5 at its own path -- see docs/fr5-migration.md.
+_STRAY_HISTORICAL_ARM_PATHS = ["/World/Franka", "/World/Franka2", "/World/Franka3"]
 
 
 def clear_stray_robot_prims() -> None:
     """Deletes robot prims a past session's stray Save baked into mefron.usd. Must run right after
-    open_stage(), before the settle pump -- mount_franka()'s own cleanup is too late."""
+    open_stage(), before the settle pump -- mount_arm()'s own cleanup is too late."""
     stage = omni.usd.get_context().get_stage()
     stray_paths = [
         path
@@ -46,28 +47,25 @@ def clear_stray_robot_prims() -> None:
     omni.kit.app.get_app().update()
 
 
-def mount_franka(
+def mount_arm(
     prim_path: str = config.ROBOT_PRIM_PATH,
     mount_position=config.MOUNT_POSITION,
     mount_orientation_wxyz=config.MOUNT_ORIENTATION_WXYZ,
 ) -> None:
-    """Mounts cuRobo's bundled Franka Panda at prim_path/mount_position. Must run BEFORE
+    """Mounts the vendored FAIRINO FR5 at prim_path/mount_position. Must run BEFORE
     kit_experience.enable_full_experience_extensions() -- the URDF importer crashes otherwise."""
-    from curobo.util_file import get_assets_path, join_path
-
     stage = omni.usd.get_context().get_stage()
     if stage.GetPrimAtPath(prim_path).IsValid():
-        # Without this, import_urdf's MovePrim silently uniquifies to e.g. /World/Franka_01. The
+        # Without this, import_urdf's MovePrim silently uniquifies to e.g. /World/FR5_01. The
         # frame pump lets the delete commit before the importer's own uniqueness check runs.
         omni.kit.commands.execute("DeletePrims", paths=[prim_path])
         omni.kit.app.get_app().update()
 
-    urdf_path = Path(join_path(get_assets_path(), config.FRANKA_URDF_RELATIVE_PATH))
     import_urdf(
-        urdf_path=urdf_path,
+        urdf_path=Path(config.FR5_URDF_PATH),
         prim_path=prim_path,
-        default_drive_strength=config.FRANKA_DRIVE_STRENGTH,
-        default_position_drive_damping=config.FRANKA_DRIVE_DAMPING,
+        default_drive_strength=config.FR5_DRIVE_STRENGTH,
+        default_position_drive_damping=config.FR5_DRIVE_DAMPING,
     )
     xform = SingleXFormPrim(prim_path=prim_path)
     xform.set_world_pose(
@@ -76,9 +74,98 @@ def mount_franka(
     )
 
 
+def apply_home_pose(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Stages FR5_HOME_JOINT_POSITIONS on every joint's angular drive + JointStateAPI, so PhysX
+    settles there on Play instead of the URDF's outstretched, singular all-zero pose."""
+    from pxr import PhysxSchema
+
+    stage = omni.usd.get_context().get_stage()
+    for joint_name, radians in zip(config.FR5_JOINT_NAMES, config.FR5_HOME_JOINT_POSITIONS):
+        joint_prim = stage.GetPrimAtPath(f"{prim_path}/joints/{joint_name}")
+        if not joint_prim.IsValid():
+            print(f"[mefron_lib] WARNING: {prim_path}/joints/{joint_name} not found -- skipping home pose.", flush=True)
+            continue
+        # UsdPhysics angular quantities are DEGREES, unlike the URDF's radians and cuRobo's.
+        degrees = float(np.degrees(radians))
+        UsdPhysics.DriveAPI.Apply(joint_prim, "angular").CreateTargetPositionAttr().Set(degrees)
+        PhysxSchema.JointStateAPI.Apply(joint_prim, "angular").CreatePositionAttr().Set(degrees)
+
+
+def apply_accent_color(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Paints FR5_ACCENT_LINK_NAMES with FR5_ACCENT_COLOR_RGB. Runtime-only: the vendored URDF has
+    one flat grey for every link and no accent color to honour instead."""
+    from pxr import UsdShade
+
+    stage = omni.usd.get_context().get_stage()
+    material_path = f"{prim_path}/Looks/{config.FR5_ACCENT_MATERIAL_NAME}"
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+    # OmniPBR MDL, matching the URDF importer's own material convention exactly -- a
+    # UsdPreviewSurface authored here rendered as untouched white. See docs/fr5-migration.md.
+    shader.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+    shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+    shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(*config.FR5_ACCENT_COLOR_RGB)
+    )
+    material.CreateSurfaceOutput("mdl").ConnectToSource(shader.ConnectableAPI(), "out")
+
+    for link_name in config.FR5_ACCENT_LINK_NAMES:
+        visuals_path = f"{prim_path}/{link_name}/visuals"
+        visuals_prim = stage.GetPrimAtPath(visuals_path)
+        if not visuals_prim.IsValid():
+            print(f"[mefron_lib] WARNING: {visuals_path} not found -- skipping accent color.", flush=True)
+            continue
+        # Every link's visuals is a shared instance prototype; binding through one silently no-ops.
+        un_instance_ancestor(visuals_prim, visuals_path)
+        # The importer binds the grey on an intermediate Xform as strongerThanDescendants, which
+        # beats any binding on the Mesh below it -- so re-bind wherever a binding is already
+        # authored, at that same strength, not just on the Mesh.
+        rebound = [
+            prim
+            for prim in Usd.PrimRange(visuals_prim)
+            if prim.IsA(UsdGeom.Imageable)
+            and (
+                prim.IsA(UsdGeom.Mesh)
+                or bool(UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath())
+            )
+        ]
+        if not rebound:
+            print(f"[mefron_lib] WARNING: {visuals_path} has nothing bindable -- skipping accent color.", flush=True)
+            continue
+        for prim in rebound:
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(material, UsdShade.Tokens.strongerThanDescendants)
+
+
+def un_instance_link_meshes(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Un-shares every link's visuals/collisions. The Lula Robot Description Editor refuses to
+    auto-generate collision spheres from instanceable meshes, and the importer makes them all so."""
+    stage = omni.usd.get_context().get_stage()
+    for link_name in [config.FR5_BASE_LINK, *config.FR5_MOVING_LINK_NAMES]:
+        for scope in ("visuals", "collisions"):
+            scope_path = f"{prim_path}/{link_name}/{scope}"
+            scope_prim = stage.GetPrimAtPath(scope_path)
+            if scope_prim.IsValid():
+                un_instance_ancestor(scope_prim, scope_path)
+
+
+def print_arm_inventory(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
+    """Prints the link/joint names the importer actually produced. Step 2's fr5.yml must be written
+    against these, not against the URDF's own names -- see docs/fr5-migration.md."""
+    stage = omni.usd.get_context().get_stage()
+    root = stage.GetPrimAtPath(prim_path)
+    if not root.IsValid():
+        print(f"[mefron_lib] {prim_path}: MISSING -- nothing to inventory.", flush=True)
+        return
+
+    links = [p.GetName() for p in root.GetChildren() if p.GetTypeName() == "Xform"]
+    joints = [p.GetName() for p in Usd.PrimRange(root) if p.HasAPI(UsdPhysics.DriveAPI)]
+    print(f"[mefron_lib] {prim_path} links ({len(links)}): {links}", flush=True)
+    print(f"[mefron_lib] {prim_path} driven joints ({len(joints)}): {joints}", flush=True)
+
+
 def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
-    """Deactivates (not deletes) the Franka's own finger links + drive joints, so the ATC's tools
-    can replace them. DeletePrims silently no-ops for these -- see docs/mefron-history.md."""
+    """FRANKA-ONLY, UNCALLED since the FR5 swap -- it ships a bare flange with no hand to strip.
+    Deactivates (not deletes) the Franka's own finger links + drive joints. docs/fr5-migration.md."""
     stage = omni.usd.get_context().get_stage()
     paths = [f"{prim_path}/{name}" for name in config.GRIPPER_FINGER_LINK_NAMES] + [
         f"{prim_path}/joints/{name}" for name in config.GRIPPER_JOINT_NAMES
@@ -92,8 +179,8 @@ def remove_parallel_jaw_gripper(prim_path: str = config.ROBOT_PRIM_PATH) -> None
 
 
 def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
-    """Hides panda_hand/visuals and disables panda_hand/collisions -- the ATC's hidden housing under
-    the male coupler. Both sub-scopes are separately instanceable; see docs/mefron-history.md."""
+    """FRANKA-ONLY, UNCALLED since the FR5 swap. Hides panda_hand/visuals and disables its
+    collisions -- the ATC's hidden housing under the male coupler. docs/fr5-migration.md."""
     stage = omni.usd.get_context().get_stage()
     visuals_path = f"{prim_path}/panda_hand/visuals"
     prim = stage.GetPrimAtPath(visuals_path)
@@ -116,12 +203,12 @@ def hide_hand_housing(prim_path: str = config.ROBOT_PRIM_PATH) -> None:
 
 
 def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
-    """Authors the surface_gripper attach mechanism on panda_hand: one UsdPhysics.Joint with
+    """Authors the surface_gripper attach mechanism on the FR5's flange: one UsdPhysics.Joint with
     compliance tuning -- without it lifting leaves the object behind. See docs/mefron-history.md."""
     from usd.schema.isaac import robot_schema
 
     stage = omni.usd.get_context().get_stage()
-    hand_path = f"{prim_path}/panda_hand"
+    hand_path = f"{prim_path}/{config.FR5_EE_LINK}"
     joint_path = f"{hand_path}/{config.SURFACE_GRIPPER_JOINT_PRIM_NAME}"
     gripper_path = f"{hand_path}/{config.SURFACE_GRIPPER_PRIM_NAME}"
 

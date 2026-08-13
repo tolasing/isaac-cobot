@@ -136,7 +136,7 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
+    robot.mount_arm()
     robot.remove_parallel_jaw_gripper()
     robot.hide_hand_housing()
     toolchanger.attach_tool_changer_male_coupler()

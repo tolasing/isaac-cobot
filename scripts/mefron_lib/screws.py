@@ -128,9 +128,9 @@ def attach_screw_to_wrist(index: int, robot_prim_path: str = config.ROBOT_PRIM_P
         position=screw_trans, orientation=screw_quat
     )
 
-    # body0 is panda_hand itself: a real rigid body at unit scale, so localPos0 is unambiguous --
+    # body0 is the FR5's own flange: a real rigid body at unit scale, so localPos0 is unambiguous --
     # unlike the docked tool prim, whose 0.001 scale makes a joint frame a guess (gotcha 8).
-    hand_path = f"{robot_prim_path}/panda_hand"
+    hand_path = f"{robot_prim_path}/{config.FR5_EE_LINK}"
     hand_trans, hand_quat = SingleXFormPrim(prim_path=hand_path, reset_xform_properties=False).get_world_pose()
     local_trans, local_quat = compute_relative_pose(hand_trans, hand_quat, screw_trans, screw_quat)
 

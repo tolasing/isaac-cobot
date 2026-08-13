@@ -1,0 +1,119 @@
+# Exported from Tools > Robotics > Lula Robot Description Editor against /World/FR5.
+# HAND-ADDED after export, and lost if you re-export over this file: tool_frames (the editor has
+# no ee-link concept, and cuRobo hard-fails without it) and collision.buffer_distance.
+format: "xrdf"
+
+format_version: 1.0
+
+default_joint_positions: 
+  j1: -0.0
+  j2: -1.5707
+  j3: 1.571
+  j4: -1.5688
+  j5: -1.5708
+  j6: 0.0
+
+cspace: 
+  joint_names: 
+    - "j1"
+    - "j2"
+    - "j3"
+    - "j4"
+    - "j5"
+    - "j6"
+  acceleration_limits: [10, 10, 10, 10, 10, 10]
+  jerk_limits: [500, 500, 500, 500, 500, 500]
+
+tool_frames: ["wrist3_link"]
+
+collision:
+  geometry: "auto_generated_collision_sphere_group"
+  # Spheres were fitted with the editor's radius offset at 0, so this is the only padding.
+  buffer_distance:
+    shoulder_link: 0.01
+    upperarm_link: 0.01
+    forearm_link: 0.01
+    wrist1_link: 0.01
+    wrist2_link: 0.01
+    wrist3_link: 0.01
+
+self_collision:
+  geometry: "auto_generated_collision_sphere_group"
+  ignore: 
+    base_link: 
+      - "shoulder_link"
+    shoulder_link: 
+      - "upperarm_link"
+    upperarm_link: 
+      - "forearm_link"
+    forearm_link: 
+      - "wrist1_link"
+    wrist1_link: 
+      - "wrist2_link"
+    wrist2_link: 
+      - "wrist3_link"
+
+geometry: 
+  auto_generated_collision_sphere_group: 
+    spheres: 
+      shoulder_link: 
+        - center: [-0.0, -0.004, 0.148]
+          radius: 0.0568
+      upperarm_link: 
+        - center: [-0.004, -0.0, 0.14]
+          radius: 0.0577
+        - center: [-0.423, -0.003, 0.147]
+          radius: 0.055
+        - center: [-0.221, -0.0, 0.138]
+          radius: 0.0438
+        - center: [-0.134, 0.0, 0.138]
+          radius: 0.0438
+        - center: [-0.304, -0.0, 0.138]
+          radius: 0.0438
+        - center: [-0.05, 0.001, 0.136]
+          radius: 0.0555
+        - center: [-0.426, 0.008, 0.11]
+          radius: 0.0488
+        - center: [-0.376, 0.01, 0.133]
+          radius: 0.0466
+      forearm_link: 
+        - center: [-0.018, 0.002, 0.015]
+          radius: 0.046
+        - center: [-0.392, 0.0, -0.0]
+          radius: 0.0399
+        - center: [-0.274, 0.0, 0.0]
+          radius: 0.0394
+        - center: [-0.176, 0.0, -0.0]
+          radius: 0.0394
+        - center: [-0.105, 0.001, 0.0]
+          radius: 0.0384
+        - center: [-0.321, 0.001, -0.0]
+          radius: 0.0389
+        - center: [-0.216, -0.0, 0.0]
+          radius: 0.0394
+        - center: [0.015, -0.001, 0.024]
+          radius: 0.0364
+        - center: [-0.05, 0.001, 0.003]
+          radius: 0.0419
+      wrist1_link: 
+        - center: [-0.0, -0.002, 0.101]
+          radius: 0.0395
+        - center: [0.0, -0.017, 0.102]
+          radius: 0.0395
+        - center: [-0.001, 0.008, 0.091]
+          radius: 0.0376
+        - center: [-0.001, 0.009, 0.105]
+          radius: 0.0364
+      wrist2_link: 
+        - center: [-0.0, 0.0, 0.097]
+          radius: 0.0395
+        - center: [-0.003, 0.021, 0.102]
+          radius: 0.0364
+        - center: [0.0, -0.007, 0.103]
+          radius: 0.0389
+        - center: [0.001, 0.022, 0.09]
+          radius: 0.0327
+      wrist3_link:
+        # The export had this sphere twice, identical -- deduped by hand.
+        - center: [-0.017, 0.003, 0.075]
+          radius: 0.0179

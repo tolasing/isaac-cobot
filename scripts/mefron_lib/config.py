@@ -11,20 +11,44 @@ MEFRON_USD = REPO_ROOT / "assets" / "mefron" / "factory floor" / "mefron.usd"
 # kit_bootstrap.clear_stale_robot_configuration().
 MEFRON_CONFIGURATION_DIR = MEFRON_USD.parent / "configuration"
 
-ROBOT_PRIM_PATH = "/World/Franka"
+ROBOT_PRIM_PATH = "/World/FR5"
 TARGET_PRIM_PATH = "/World/target"
-# UR10 pedestal the Franka mounts on; MOUNT_POSITION is this prim's own xformOp:translate
+# UR10 pedestal the arm mounts on; MOUNT_POSITION is this prim's own xformOp:translate
 # (unconfirmed whether that's the top mounting flange).
 MOUNT_PLATE_PRIM_PATH = "/World/ur10_mount"
 MOUNT_POSITION = [2.625260866887235, -4.7019853821770115, 0.8093334035921127]
-MOUNT_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
+# 180 deg about Z, not the Franka's identity -- CONFIRMED LIVE 2026-08-13, the FR5 faced backwards
+# out of the cell without it. Same correction the CR5 needed. See docs/fr5-migration.md.
+MOUNT_ORIENTATION_WXYZ = [0.0, 0.0, 0.0, 1.0]
 
-FRANKA_URDF_RELATIVE_PATH = "robot/franka_description/franka_panda.urdf"
-FRANKA_DRIVE_STRENGTH = 1047.19751
-# ~4x the bare-wrist 52.35988 -- the ATC's rigid FixedJoint underdamps with a tool bolted on.
-# Empirical, not yet confirmed sufficient live; full derivation in docs/tool-changer.md.
-FRANKA_DRIVE_DAMPING = 210.0
-FRANKA_MOTION_GEN_ROBOT_CFG = "franka.yml"
+# Repo-local, unlike the Franka's cuRobo-bundled path this replaced. Provenance: robots/fr5/SOURCE.md.
+FR5_URDF_PATH = REPO_ROOT / "robots" / "fr5" / "urdf" / "fairino5_v6.urdf"
+FR5_BASE_LINK = "base_link"
+# Terminates the chain -- the FR5 ships no tool0/flange link. Carries visual geometry, which
+# motion.build_teleop_target() requires of ee_link.
+FR5_EE_LINK = "wrist3_link"
+FR5_JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
+# Everything past base_link, in chain order -- the links cuRobo collision-checks.
+FR5_MOVING_LINK_NAMES = ["shoulder_link", "upperarm_link", "forearm_link", "wrist1_link", "wrist2_link", "wrist3_link"]
+# Radians. NOT all-zero: that is fully outstretched (wrist3 0.82m out, 0.05m up) AND singular --
+# measured Jacobian cond = inf vs 8.2 here, tool pointing straight down. docs/fr5-migration.md.
+FR5_HOME_JOINT_POSITIONS = [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
+
+# Accent links, painted at runtime: the URDF colors every link the same light grey and carries no
+# orange at all. See robot.apply_accent_color().
+FR5_ACCENT_LINK_NAMES = ["shoulder_link", "wrist2_link"]
+FR5_ACCENT_COLOR_RGB = [0.937, 0.400, 0.055]
+# Authored under the arm's own Looks scope, so re-importing the arm disposes of it too.
+FR5_ACCENT_MATERIAL_NAME = "FR5Accent"
+# UNVERIFIED: carried over from the Franka's own tuning, not derived for the FR5. Tune once the
+# arm actually moves (step 2). The FR5 URDF's own effort/velocity limits are real, unlike the CR5's.
+FR5_DRIVE_STRENGTH = 1047.19751
+FR5_DRIVE_DAMPING = 210.0
+# cuRobo robot config, as a cuMotion XRDF exported from the Lula Robot Description Editor and
+# converted at load time. Its default_joint_positions ARE FR5_HOME_JOINT_POSITIONS -- keep in sync.
+FR5_XRDF_PATH = REPO_ROOT / "configs" / "curobo" / "fr5.xrdf"
+# Mesh root the XRDF's URDF resolves its ../meshes/ against.
+FR5_URDF_ASSET_ROOT = REPO_ROOT / "robots" / "fr5" / "urdf"
 
 # Reach-envelope obstacles only, not the whole backdrop. Currently a DEBUG value -- normally
 # main_holder_jig + tool_rack_gripper; see CLAUDE.md's open issues before restoring those.
@@ -57,6 +81,8 @@ _TELEOP_VELOCITY_SCALE = 0.6
 _TELEOP_ACCELERATION_SCALE = 0.1
 
 # Grasp-physics constants for robot.apply_gripper_friction()/stiffen_gripper_drive().
+# STALE from here to HIGH_FRICTION_PRIM_PATHS: every name/width below is the Franka hand's. The
+# PGC-140 swap (step 3) also INVERTS open/closed -- see docs/fr5-migration.md.
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 # Only the DEFAULT widths before any grasp key is pressed -- each grasp key overrides them.
 # Narrowed to bracket a 12mm grip: the full stroke dragged the part sideways.
@@ -78,6 +104,8 @@ HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
 # Grasp Editor-exported poses, keyed by object name and wired to a key in
 # keyboard.build_gripper_keyboard_control(). Finger widths are read from the yaml live.
+# STALE: all four yamls are keyed to panda_hand/panda_finger_joint1 and must be re-exported
+# against the PGC-140 in the Grasp Editor (step 3). See docs/fr5-migration.md.
 GRASP_TARGETS = {
     "main_holder": {
         "key": "G",
@@ -374,8 +402,8 @@ SCREW_PLACE_KEY = "KEY_6"
 # above -- the joint rides panda_hand permanently, whichever tool is docked.
 SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"
 SURFACE_GRIPPER_PRIM_NAME = "SurfaceGripper"
-# The joint's frame on panda_hand's side. PRE-ATC value -- needs re-deriving by hand-jog now the
-# coupler adds a standoff. See docs/tool-changer.md.
+# The joint's frame on the wrist's side. PRE-ATC value, and now also pre-FR5 -- needs re-deriving
+# by hand-jog. See docs/tool-changer.md and docs/fr5-migration.md.
 SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.1]
 SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # isaac:maxGripDistance -- how far the attachment point searches. Schema default 0.01m, widened
@@ -424,8 +452,8 @@ TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION = [0.0, 0.0, 0.0]
 TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
-# The gripper tool's panda_hand is the same stock mesh as the arm's own, so docking it uses
-# franka_panda.urdf's real panda_hand_joint offset, inverted (it's body1's own local frame).
+# STALE: this was franka_panda.urdf's own panda_hand_joint offset, inverted -- meaningless once the
+# arm is an FR5 and the tool a PGC-140. Re-derive in step 3; see docs/fr5-migration.md.
 TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ = [0.9238795325112867, 0.0, 0.0, 0.3826834323650898]
 
 # Hover clearance above a rack's dock pose while aligning before the descent. Relative to each

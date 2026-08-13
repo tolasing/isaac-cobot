@@ -16,8 +16,8 @@ from .usd_util import create_fixed_joint, reference_asset, un_instance_ancestor
 
 
 def attach_tool_changer_male_coupler(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
-    """Authors the ATC's permanent male half as a plain UsdGeom.Cylinder under panda_hand. Welded
-    on by construction and never detaches -- only the tools docked to it do."""
+    """Authors the ATC's permanent male half as a plain UsdGeom.Cylinder under the FR5's flange.
+    Welded on by construction and never detaches -- only the tools docked to it do."""
     stage = omni.usd.get_context().get_stage()
     coupler_prim_path = _male_coupler_prim_path(prim_path)
     if stage.GetPrimAtPath(coupler_prim_path).IsValid():
@@ -58,7 +58,7 @@ def _female_coupler_prim_path(tool_name: str) -> str:
 
 
 def _male_coupler_prim_path(robot_prim_path: str = config.ROBOT_PRIM_PATH) -> str:
-    return f"{robot_prim_path}/panda_hand/{config.TOOL_CHANGER_MALE_PRIM_NAME}"
+    return f"{robot_prim_path}/{config.FR5_EE_LINK}/{config.TOOL_CHANGER_MALE_PRIM_NAME}"
 
 
 def spawn_dockable_tool(tool_name: str) -> str:
@@ -207,16 +207,23 @@ def dock_tool_to_wrist(tool_name: str, robot_prim_path: str = config.ROBOT_PRIM_
         omni.kit.commands.execute("DeletePrims", paths=[rack_joint_path])
         omni.kit.app.get_app().update()
 
-    if tool_name == "gripper":
-        # Same stock panda_hand mesh as the arm's own -- mate panda_link8 to it via the real URDF
-        # offset instead of approximating through the coupler geometry. See docs/tool-changer.md.
+    # The gripper tool is still the Franka hand, mated panda_link8-to-panda_hand via the real URDF
+    # offset. That link is gone on the FR5, so this whole branch waits on step 3's PGC-140.
+    panda_link8_path = f"{robot_prim_path}/panda_link8"
+    if tool_name == "gripper" and stage.GetPrimAtPath(panda_link8_path).IsValid():
         create_fixed_joint(
             _wrist_joint_path(tool_name, robot_prim_path),
-            f"{robot_prim_path}/panda_link8",
+            panda_link8_path,
             f"{_tool_prim_path(tool_name)}/panda_hand",
             body1_local_orientation_wxyz=config.TOOL_CHANGER_GRIPPER_HAND_JOINT_LOCAL_ORIENTATION_WXYZ,
         )
         return
+    if tool_name == "gripper":
+        print(
+            f"[mefron_lib] WARNING: {panda_link8_path} not found -- docking the Franka gripper tool "
+            "through the coupler with placeholder offsets. Expect a gapped dock until step 3.",
+            flush=True,
+        )
 
     create_fixed_joint(
         _wrist_joint_path(tool_name, robot_prim_path),

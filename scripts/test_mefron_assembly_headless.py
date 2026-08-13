@@ -49,7 +49,7 @@ def main() -> None:
     for _ in range(120):
         simulation_app.update()
 
-    robot.mount_franka()
+    robot.mount_arm()
     robot.apply_gripper_friction()
     robot.stiffen_gripper_drive()
 
