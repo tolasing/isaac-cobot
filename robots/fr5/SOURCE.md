@@ -34,7 +34,9 @@ one this repo uses:
 
 ## Modifications made to the vendored files
 
-`urdf/fairino5_v6.urdf` had its mesh `<geometry>` URIs rewritten from ROS
+Two changes, both listed here in full.
+
+**First change — mesh URIs.** `urdf/fairino5_v6.urdf` had its `<geometry>` URIs rewritten from ROS
 package-relative form to plain relative filesystem paths, since this repo has no
 ROS package resolver — the same rewrite convention `../cr5/` and `../pgc140/`
 already use:
@@ -43,9 +45,34 @@ already use:
 package://fairino_description/meshes/fairino5_v6/<file>.STL  →  ../meshes/<file>.STL
 ```
 
-This is the only content change. No geometry, inertial, joint limit, or
-kinematic data was altered, and the upstream quirks below were left in place
-rather than silently "cleaned up".
+**Second change — `<dynamics damping>` on all six joints, `0` → `10.0`:**
+
+```xml
+<dynamics damping="10.0" friction="0" />     <!-- was damping="0" -->
+```
+
+Upstream ships `damping="0"`, and Isaac Sim's URDF importer honours that over
+`import_urdf`'s own `default_position_drive_damping`. Read back straight after
+import, the joints came out at **stiffness 625, damping 0** — neither value this
+repo asked for. Undamped drives ring, which measured as **6.04x velocity
+overshoot with only 0.029 rad position error**: the arm buzzing along its
+commanded path rather than lagging it, i.e. visible teleop jerk. `10.0` matches
+what cuRobo's own `franka_panda.urdf` declares, and is why the Franka never
+showed this. Measured after the change: **1.14x**.
+
+Isolated, so a future reader does not chase the wrong knob: **damping is the
+whole story.** Stiffness 1047 with damping 0 still measures 6.05x, identical to
+stiffness 625. URDF has no stiffness field, and it does not need one.
+
+Same class of bug as the CR5's on the `dobot` branch (`9f08fb5`, "the fully
+undamped spring rang hardest right where a time-optimal trajectory's jerk
+peaks") — same SolidWorks exporter, same `damping="0"`.
+
+**Re-vendoring from upstream silently reintroduces this.** Reapply it, and
+re-measure rather than assuming.
+
+No geometry, inertial, joint limit, or kinematic data was altered, and the
+upstream quirks below were left in place rather than silently "cleaned up".
 
 ## Known quirks inherited from the upstream file
 

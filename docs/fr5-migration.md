@@ -192,9 +192,66 @@ Re-exporting over `fr5.xrdf` **loses all three** — re-apply them:
   followed the simulated drag both directions, 0.165 rad max joint delta.
 - Full `mefron.py --headless` runs start to finish, no tracebacks.
 
-**Not verified:** live GUI teleop, and the other four headless harnesses
-(`assembly`, `assembly_weld`, `screw`, `tool_changer`) — those exercise grasp
-yamls and gripper-tool docking, i.e. step 3.
+### Teleop jerked: the URDF importer left the joints undamped
+
+**Root cause, confirmed by live trace + headless A/B.** Upstream's
+`fairino5_v6.urdf` declares `<dynamics damping="0"/>` on all six joints, and
+Isaac's URDF importer honours that over `import_urdf`'s own arguments. Read back
+straight after import:
+
+```
+config asks : stiffness=1047.2  damping=210.0
+j1..j6 got  : stiffness=625.0   damping=0.0      <- undamped springs
+```
+
+Undamped drives ring, which measured as **6.04x velocity overshoot with only
+0.029 rad position error** — the arm buzzing along its commanded path at roughly
+25Hz rather than lagging it.
+
+**Fixed in the vendored URDF** (`damping="0"` -> `"10.0"`, matching what cuRobo's
+own `franka_panda.urdf` declares), not in code: `6.04x -> 1.18x` through
+`mount_arm()` itself. Full rationale and the re-vendor warning:
+[`robots/fr5/SOURCE.md`](../robots/fr5/SOURCE.md).
+
+**Damping is the whole story — stiffness is a red herring.** Stiffness 1047 with
+damping 0 still measures 6.05x, identical to 625. `FR5_DRIVE_STRENGTH` /
+`FR5_DRIVE_DAMPING` are passed to `import_urdf` and *ignored*; they are kept only
+because the helper's signature requires them.
+
+**This is also exactly why the Franka never did it:** its URDF declares
+`<dynamics damping="10.0"/>`. Same bug the CR5 hit (`9f08fb5`, "the fully
+undamped spring rang hardest right where a time-optimal trajectory's jerk peaks")
+— same SolidWorks exporter, same `damping="0"`.
+
+**Always read drive gains back after import; never assume the importer applied
+them.**
+
+#### How it was found, and what was wrongly blamed first
+
+Four theories were tried and discarded before this, each reverted afterwards.
+Recording them so nobody re-treads the path:
+
+| blamed | verdict |
+|---|---|
+| render frame time | **wrong** — live trace: mean 19.3ms, p99 29.0ms |
+| trajectory playback pinned to frame rate | real but not the symptom; reverted |
+| teleop velocity/acceleration scales | not the cause; reverted to 0.6 / 0.1 |
+| replans firing while still moving (`_STATIC_JOINT_VELOCITY_THRESHOLD`) | not the cause; reverted to 0.5 |
+| 820ms obstacle rescan every 1000 frames | **real**, but a *freeze*, not jerk; reverted |
+
+The obstacle-rescan stall is genuine and still there: `get_obstacles()` costs
+**820ms** re-extracting `ConveyorBelt_A06_01`'s CAD mesh, robot-independently
+(`update_world()` is 7.5ms on the FR5, 8.8ms on the Franka), and it runs every
+`_TELEOP_OBSTACLE_RESCAN_INTERVAL` frames. Worth fixing on its own merits later —
+caching on the obstacles' world transforms took it to 86ms — but it was reverted
+here to keep this change set to the one proven fix.
+
+Two headless measurements disagreed about overshoot (6.05x vs 1.03x) purely
+because the "clean" one wrote drive gains explicitly before measuring, silently
+applying the very fix that was missing. What settled it was instrumenting the
+live GUI session — headless runs cannot see render cost — with a per-frame CSV of
+commanded vs actual velocity. That tracer was removed with the other reverts; it
+is worth rebuilding if motion quality is ever in question again.
 
 ### Accent color
 

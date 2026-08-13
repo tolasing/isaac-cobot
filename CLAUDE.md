@@ -232,6 +232,14 @@ Full investigation detail: `docs/mefron-history.md`.
 
 Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
 
+- **The URDF importer's drive arguments never reach the joints.** `import_urdf`'s
+  `default_drive_strength`/`default_position_drive_damping` are silently ignored —
+  the FR5 imported at stiffness 625 / **damping 0**, straight from its URDF's
+  `<dynamics damping="0"/>`. Undamped drives ring: 6.04x velocity overshoot with
+  0.03 rad position error, i.e. visible teleop jerk. Fixed in the vendored URDF
+  (`damping="10.0"`, as cuRobo's own Franka declares — which is why the Franka
+  never showed it); damping is the whole story, stiffness changes nothing.
+  **Read drive gains back after any import.** `docs/fr5-migration.md`.
 - **The FR5's all-zero joint config is a singularity.** It is also fully
   outstretched (wrist3 0.82m out, 0.05m up) — measured Jacobian condition number
   `inf`, so IK fails for essentially any target. `robot.apply_home_pose()` stages

@@ -40,8 +40,8 @@ FR5_ACCENT_LINK_NAMES = ["shoulder_link", "wrist2_link"]
 FR5_ACCENT_COLOR_RGB = [0.937, 0.400, 0.055]
 # Authored under the arm's own Looks scope, so re-importing the arm disposes of it too.
 FR5_ACCENT_MATERIAL_NAME = "FR5Accent"
-# UNVERIFIED: carried over from the Franka's own tuning, not derived for the FR5. Tune once the
-# arm actually moves (step 2). The FR5 URDF's own effort/velocity limits are real, unlike the CR5's.
+# MEASURED IGNORED: the URDF importer applied neither of these (joints came out at stiffness 625,
+# damping 0). Real damping now comes from the URDF's own <dynamics> -- robots/fr5/SOURCE.md.
 FR5_DRIVE_STRENGTH = 1047.19751
 FR5_DRIVE_DAMPING = 210.0
 # cuRobo robot config, as a cuMotion XRDF exported from the Lula Robot Description Editor and
