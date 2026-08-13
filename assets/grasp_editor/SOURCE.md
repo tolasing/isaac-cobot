@@ -24,6 +24,28 @@ geometry at all — only `pgc140_base_link` and the two finger links.
   damping 1000), so the undamped-import trap that bit `robots/fr5/` does not
   apply here.
 
+### Modified here: the friction material was authored but never bound
+
+As inherited from `dobot`, `FingerFrictionPhysicsMaterial` (staticFriction 1.5,
+dynamicFriction 1.5 — the same values `config.GRIPPER_STATIC_FRICTION` gives the
+Franka) sat in the asset **bound to nothing**. Resolving the *physics*-purpose
+binding on each finger collider returned a **visual** material instead —
+`Looks/material_100100100` for finger1, `Looks/material_CAD1EE` for finger2 —
+neither of which carries `PhysicsMaterialAPI`. The fingers therefore ran on
+PhysX's scene-default friction and parts slipped out of the jaws, while the same
+part grips fine with the Franka, whose fingers get 1.5 bound at runtime by
+`robot.apply_gripper_friction()`.
+
+Fixed by binding the material directly on the two finger collider meshes with
+`materialPurpose="physics"` and `strongerThanDescendants`. It must go **on the
+meshes**, not on the link Xforms: each mesh carries its own all-purpose visual
+binding, and a nearer binding would win over an ancestor's. Visual appearance is
+unchanged — the two purposes resolve independently.
+
+Same silent-no-op class as `robot.apply_accent_color()`'s two traps: a material
+authored correctly and a binding that never takes effect. **Check bindings with
+`ComputeBoundMaterial(materialPurpose=...)`, never `GetDirectBinding()`.**
+
 ```
 /cr5_pgc140_robot                        ArticulationRoot
   pgc140_base_link                       RigidBody
