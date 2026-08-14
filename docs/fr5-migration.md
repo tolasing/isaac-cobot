@@ -497,12 +497,26 @@ Franka: -0.11558 + 0.100 = -0.0156   <- cup standoff that worked
 FR5:    -0.11746 + 0.110 = -0.0075   <- ~8mm deeper
 ```
 
-Reproducing the Franka's proven standoff wants local z ≈ **-0.1256**. Not
-applied — poses in this repo are hand-jogged in the GUI, not computed.
+So both suction approach poses were **raised by the 10mm difference** rather than
+re-jogged — the one case in this repo where a pose is computed instead of hand
+-derived, and it is defensible only because it reproduces a standoff that was
+already proven on the Franka, to the micron:
+
+| | local z | tool +Z · part Z | cup at part-local z |
+|---|---|---|---|
+| `..._on_screen` | -0.11558 → **-0.12558** | +0.99997 | -0.01558 (= Franka's) |
+| `..._on_pcb_assembly` | 0.11492 → **0.12492** | **-0.99970** | +0.01495 (= Franka's) |
+
+The pcb_assembly pose approaches from the part's **+Z** — its quaternion is a
+~180° flip, so its raise is `+0.01`, the opposite sign. Both cups land well inside
+`SURFACE_GRIPPER_MAX_GRIP_DISTANCE` (0.03).
+
+`N` confirmed live 2026-08-14. **`M` is not**: unlike the screen pose it was never
+re-jogged for the FR5 at all, so it still carries the Franka's own jog with only
+this raise on top.
+
 `SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code references** at all; it
-is documentation for a value baked into that pose by hand.
-`suction_gripper_approach_on_pcb_assembly` has the same 10mm issue and has not
-been re-jogged.
+is documentation for a value baked into those poses by hand.
 
 **Guard added regardless.** `teleop._step_arm()` now checks
 `_SUCTION_GRIP_SETTLE_FRAMES` (30) after a `V`, and if the manager still reports

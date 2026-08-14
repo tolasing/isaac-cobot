@@ -42,8 +42,8 @@ following, confirmed live. **Step 3, the gripper, is in progress:** the dockable
 gripper tool is now a **PGC-140** hand-placed at `/World/cr5_pgc140_gripper`, and
 C/O drive its fingers — **open/closed are INVERTED** vs the Franka (0.000 open,
 0.025 closed). **`Y` docks it and the arm moves with it on**, confirmed live, as
-are `J`/`B`/`K`'s three PGC-140 grasps and `U`/`V`/`L`'s suction (`V` from a
-hand-jogged pose — `N`'s own is too deep, see open issues).
+are `J`/`B`/`K`'s three PGC-140 grasps and `N` → `U`/`V`/`L`'s suction. `M`'s
+approach pose is computed rather than jogged and is unverified — see open issues.
 The grasp/screw/tool-changer harnesses still fail. Every
 hand-jogged pose the swap invalidates is marked `STALE`/`UNVERIFIED` in
 `config.py` rather than converted. Sequence, prior art on the `dobot` branch, and
@@ -180,13 +180,14 @@ a belt in the GUI needs no code change either.
 
 Full investigation detail: `docs/mefron-history.md`.
 
-- **`N` seats the suction cup ~8mm too deep into the screen.** `V` works from a
-  hand-jogged pose but not from `N`'s. The FR5's attach point reaches 110mm past
-  `tool_flange`; the Franka's reached 100mm past `panda_hand`, so the re-jogged
-  approach pose (which landed within 2mm of the Franka's) buries the cup.
-  `suction_gripper_approach_on_screen`'s local z still needs the standoff put
-  back, and `SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code
-  references** — it is hand-baked into that pose. `docs/fr5-migration.md`.
+- **`M`'s suction approach is unverified.** Both suction approach poses were
+  *computed*, not jogged: the FR5's attach point reaches 110mm past `tool_flange`
+  where the Franka's reached 100mm past `panda_hand`, so each was raised 10mm to
+  restore the Franka's proven cup standoff. `N` is confirmed live; `M` is the only
+  pose here never re-jogged for the FR5 at all, so it carries the Franka's own jog
+  under that raise. Its raise is `+0.01` — it approaches from the part's +Z.
+  `SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code references** and is
+  hand-baked into both. `docs/fr5-migration.md`.
 - **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
   unverified live.** `test_mefron_assembly_weld_headless.py
   --relationship=main_holder_on_main_holder_jig` welds cleanly (0.005m

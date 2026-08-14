@@ -199,12 +199,13 @@ ASSEMBLY_RELATIONSHIPS = {
     },
     # An APPROACH target in screen's own live frame, not a mount pose -- mount_prim_path ==
     # part_prim_path on purpose. Derivation and the 2026-08-06 re-derive: docs/mefron-history.md.
-    # Re-jogged against the FR5 2026-08-14, cup on the screen. Landed within ~2mm of the Franka's
-    # own value: panda_hand and tool_flange are both the tool MATE PLANE, so the frames coincide.
+    # Re-jogged for the FR5 2026-08-14, then RAISED 8.1mm: its cup reaches 110mm past tool_flange
+    # where the Franka's reached 100mm past panda_hand, so the jogged pose buried it in the screen.
     "suction_gripper_approach_on_screen": {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
-        "local_position": [0.0004351868885375872, 0.0006265233779021496, -0.11745762908001614],
+        # z restores the Franka's proven standoff: -0.11558 + 0.100 == -0.12558 + 0.110.
+        "local_position": [0.0004351868885375872, 0.0006265233779021496, -0.12558],
         "local_orientation_wxyz": [
             0.9999927291330012,
             -0.0037552243116191365,
@@ -212,11 +213,13 @@ ASSEMBLY_RELATIONSHIPS = {
             4.563258598413431e-05,
         ],
     },
-    # Same derivation as suction_gripper_approach_on_screen above.
+    # Same derivation, and the same 10mm raise -- but this one is the Franka's own jog, never
+    # re-jogged for the FR5, so it carries that error on top. UNVERIFIED. docs/fr5-migration.md.
     "suction_gripper_approach_on_pcb_assembly": {
         "part_prim_path": "/World/PCB_Assembly_color_fixed",
         "mount_prim_path": "/World/PCB_Assembly_color_fixed",
-        "local_position": [-0.0028148316864434492, 4.480405335696105e-06, 0.11491755932216695],
+        # Approaches from +Z (its quaternion flips the tool axis), so raising is +0.01, not -0.01.
+        "local_position": [-0.0028148316864434492, 4.480405335696105e-06, 0.12491755932216695],
         "local_orientation_wxyz": [0.011293781372283615, 0.38247333692520136, 0.9238856699972284, 0.004676089968013461],
     },
 }
