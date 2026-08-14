@@ -11,8 +11,8 @@ Done procedurally, one GUI-verified step at a time, rather than as one swap.
 | Step | Scope | Gate | State |
 |---|---|---|---|
 | **1** | Vendor the FR5, mount it on the pedestal in place of the Franka | GUI: scene opens, arm looks right | **GUI-confirmed 2026-08-13** |
-| 2 | cuRobo config + collision spheres from the Lula/XRDF editor | teleop plans and moves | **code landed + headless-verified, GUI check pending** |
-| 3 | PGC-140 as the ATC's dockable gripper tool | Y docks it, C/O drives the fingers | **in progress** — placed, C/O wired; **wrist vibrates after docking** |
+| 2 | cuRobo config + collision spheres from the Lula/XRDF editor | teleop plans and moves | **GUI-confirmed 2026-08-13** |
+| 3 | PGC-140 as the ATC's dockable gripper tool | Y docks it, C/O drives the fingers | **in progress** — placed, C/O wired, docks and moves; target origin off the mating face |
 
 The gripper stays a **dockable ATC tool** — it is not bolted into a combined
 arm+gripper URDF. The male coupler moves to the FR5's wrist, the PGC-140 replaces
@@ -348,47 +348,46 @@ Three code changes were needed beyond renaming, each for a real reason:
    deactivated — the PGC-140's is a limit-free generic joint constraining nothing,
    and killing it would leave its articulation rootless.
 
-### OPEN: the wrist link section vibrates after docking
+### RESOLVED: the docked tool was a second articulation
 
-**Observed live in the GUI 2026-08-13:** `Y` docks the tool successfully, and
-afterwards **the wrist link section vibrates**. Not reproduced headlessly at all.
+**Symptom (live GUI):** `Y` docked, then the wrist link section vibrated, then the
+arm went stuck, and a Stop/Play afterwards sent it haywire.
 
-Ruled out by measurement, so do not re-chase these:
+**Cause.** The PGC-140 asset carries `ArticulationRootAPI` — it was built for the
+Grasp Editor, which needs a free-floating articulation. The ATC then welds it to
+the arm with an `excludeFromArticulation` FixedJoint, so PhysX had **two
+reduced-coordinate articulations rigidly coupled through a maximal-coordinate
+constraint**. That chatters, then deadlocks. The Franka tool never hit it: its
+asset has *no* `ArticulationRootAPI`, no rigid bodies and no joints at all — plain
+geometry that the runtime gives physics to.
 
-- **Tool collision fighting the dock joint** (`docs/tool-changer.md` gotcha 2).
-  `pgc140_base_link`'s collision is *disabled* in `mefron.usd`; only the fingers
-  collide and they sit 93mm out from the mount.
-- **Arm drive damping.** Steady-state arm joint velocity measures 0.0000 both
-  bare-wrist and tool-docked at the current damping. A sweep that appeared to
-  show otherwise (2.4 / 13.4 / 3.2 rad/s at damping 50 / 200 / 500) was invalid:
-  the probe docked cumulatively without undocking, re-authoring the same wrist
-  joint path over a live one, which is this repo's own "redefining a Joint prim
-  leaves PhysX solving against the stale body1" gotcha. Those numbers measure the
-  probe's bug, not the arm.
+**Fix:** `toolchanger._demote_tool_articulation()`, called from
+`spawn_dockable_tool()` for any tool with a `female_coupler_parent_link_name`.
+It removes `ArticulationRootAPI` and deactivates the tool's root joint, leaving
+three rigid bodies and two prismatic joints — the shape the ATC has always docked.
+Nothing is lost: `set_gripper_tool_finger_target()` writes the finger `DriveAPI`
+targets directly and never went through an articulation controller.
+**Confirmed live 2026-08-13: docks, and the arm moves with the tool on.**
 
-Leads, none tested:
+Runtime rather than an edit to `mefron.usd`, so it survives re-placing or
+re-referencing the asset, and `assets/grasp_editor/`'s copy keeps its articulation
+root where the Grasp Editor genuinely needs it.
 
-1. **Two articulations coupled by one maximal-coordinate joint.** The FR5 is an
-   articulation and so is `/World/cr5_pgc140_gripper` (`ArticulationRootAPI`).
-   `create_fixed_joint()` sets `excludeFromArticulation=True`, so PhysX solves the
-   coupling outside both reduced-coordinate solvers — a known jitter source. The
-   Franka tool may have avoided this; worth checking whether it was an
-   articulation at all.
-2. **The dock frames are still placeholders.** Both
-   `TOOL_CHANGER_DOCKED_EE_LINK_LOCAL_POSITION` and the gripper's
-   `female_coupler_local_position` are `[0,0,0]`, so `pgc140_base_link`'s *origin*
-   is welded to `wrist3_link`'s origin and the gripper body interpenetrates the
-   wrist. Deriving the real offsets by hand-jog is the obvious next step and fixes
-   the visual dock regardless of whether it cures the vibration.
-3. **`attach_surface_gripper_physics()` authors a D6 joint on `wrist3_link` with
-   `body1` unset**, i.e. against the world, with `transX`/`transY` limits locked
-   and drives on `transZ`/`rotX`/`rotY`/`rotZ`. Pre-existing (it rode `panda_hand`
-   before), but confirm the SurfaceGripper component really disables it when not
-   gripping. `SURFACE_GRIPPER_LOCAL_POSITION` is also still a pre-ATC placeholder.
+Ruled out by measurement along the way, so nobody re-chases them: the tool's own
+collision (`pgc140_base_link`'s collider is disabled; only the fingers collide,
+93mm out) and arm drive damping (steady-state arm velocity 0.0000 both bare and
+docked — a sweep suggesting otherwise was the probe re-authoring one wrist joint
+path over a live one, this repo's own stale-`body1` gotcha).
 
-The one thing worth establishing first: whether the tool vibrates *relative to the
-wrist* (dock joint) or the whole wrist assembly moves (arm/coupling). Those point
-at different fixes.
+### OPEN: the draggable target's origin is not the tool-mating face
+
+`motion.build_teleop_target()` makes `/World/target` an internal reference to
+`{robot}/{ee_link}/visuals`, so its origin is `wrist3_link`'s link frame. Observed
+in the GUI: that origin does not sit where tools actually dock, which makes
+dragging to a dock pose unintuitive. Not yet measured — see whether the flange
+face is offset from `wrist3_link`'s origin, and note that simply moving `ee_link`
+to a synthetic TCP frame would break `build_teleop_target()`, which needs
+`ee_link` to have real `visuals` geometry.
 
 ### Still Franka-shaped
 

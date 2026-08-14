@@ -61,6 +61,25 @@ def _male_coupler_prim_path(robot_prim_path: str = config.ROBOT_PRIM_PATH) -> st
     return f"{robot_prim_path}/{config.FR5_EE_LINK}/{config.TOOL_CHANGER_MALE_PRIM_NAME}"
 
 
+def _demote_tool_articulation(tool_prim_path: str) -> None:
+    """Turns a multi-link tool from its own articulation into plain jointed rigid bodies, and frees
+    its root. The ATC owns a tool's pose entirely -- it is always FixedJoint'd to a rack or the
+    wrist -- and a second articulation welded on chatters then deadlocks. docs/fr5-migration.md."""
+    stage = omni.usd.get_context().get_stage()
+    tool_prim = stage.GetPrimAtPath(tool_prim_path)
+    if tool_prim.IsValid() and tool_prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+        tool_prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+        print(f"[mefron_lib] {tool_prim_path}: removed ArticulationRootAPI -- docked as rigid bodies.", flush=True)
+
+    # Both spellings: the URDF importer writes root_joint, the PGC-140's Grasp-Editor asset
+    # rootJoint. DeletePrims no-ops on either; SetActive(False) is what works.
+    for root_joint_name in ("root_joint", "rootJoint"):
+        root_joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/{root_joint_name}")
+        if root_joint_prim.IsValid() and root_joint_prim.IsActive():
+            root_joint_prim.SetActive(False)
+            print(f"[mefron_lib] {tool_prim_path}/{root_joint_name}: deactivated.", flush=True)
+
+
 def spawn_dockable_tool(tool_name: str) -> str:
     """Places one of config.TOOL_CHANGE_TARGETS's tools at its rack as a real rigid body, ready to
     be jointed there. All 3 are baked into mefron.usd and only read. See docs/tool-changer.md."""
@@ -98,24 +117,7 @@ def spawn_dockable_tool(tool_name: str) -> str:
             local_scale=target.get("local_scale"),
         )
     if target.get("female_coupler_parent_link_name"):
-        # Multi-link articulation: a synthesized root joint welding base_link to the world must go.
-        # DeletePrims no-ops on it; SetActive(False) is what works. Both spellings -- the URDF
-        # importer writes root_joint, the PGC-140's Grasp-Editor asset writes rootJoint.
-        for root_joint_name in ("root_joint", "rootJoint"):
-            root_joint_prim = stage.GetPrimAtPath(f"{tool_prim_path}/{root_joint_name}")
-            if not root_joint_prim.IsValid():
-                continue
-            joint = UsdPhysics.Joint(root_joint_prim)
-            # The PGC-140's is a limit-free generic joint constraining nothing, and deactivating it
-            # would leave its articulation rootless -- only kill one that actually welds to the world.
-            if root_joint_prim.IsA(UsdPhysics.FixedJoint):
-                root_joint_prim.SetActive(False)
-            else:
-                print(
-                    f"[mefron_lib] {tool_prim_path}/{root_joint_name}: {root_joint_prim.GetTypeName()} "
-                    f"body1={[str(t) for t in joint.GetBody1Rel().GetTargets()]} -- left active.",
-                    flush=True,
-                )
+        _demote_tool_articulation(tool_prim_path)
     else:
         # Flat single-prim asset -- electric_screwdriver.usd carries no baked-in RigidBodyAPI at
         # all, so apply it explicitly rather than trusting the source asset.

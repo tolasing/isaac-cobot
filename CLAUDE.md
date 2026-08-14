@@ -41,8 +41,8 @@ load time, *not* a `.yml` — and the full pipeline runs with teleop planning an
 following, confirmed live. **Step 3, the gripper, is in progress:** the dockable
 gripper tool is now a **PGC-140** hand-placed at `/World/cr5_pgc140_gripper`, and
 C/O drive its fingers — **open/closed are INVERTED** vs the Franka (0.000 open,
-0.025 closed). `Y` docks it, but **the wrist link section then vibrates** (open
-issue below). The grasp/screw/tool-changer harnesses still fail. Every
+0.025 closed). **`Y` docks it and the arm moves with it on**, confirmed live.
+The grasp/screw/tool-changer harnesses still fail. Every
 hand-jogged pose the swap invalidates is marked `STALE`/`UNVERIFIED` in
 `config.py` rather than converted. Sequence, prior art on the `dobot` branch, and
 the re-derivation checklist: `docs/fr5-migration.md`.
@@ -90,9 +90,10 @@ vendored **FR5** on the `ur10_mount` pedestal (`robot.mount_arm()`, at
 `/World/FR5`), fits the ATC's male coupler, spawns and parks the three dockable
 tools, and runs the drag-follow teleop loop.
 
-**Mid-migration.** The arm and cuRobo are FR5; the **gripper tool is still the
-Franka hand**, so everything below about C/O, grasp yamls and gripper docking is
-what step 3 has to port. The FR5 ships a bare ISO flange, so
+**Mid-migration.** Arm, cuRobo and the gripper tool are all swapped; what step 3
+still owes is the grasp yamls (all four still keyed to `panda_finger_joint1`, so
+`G/J/B/K` raise `KeyError`) and the dock/grasp offsets, still `[0,0,0]`
+placeholders. The FR5 ships a bare ISO flange, so
 `remove_parallel_jaw_gripper()`/`hide_hand_housing()` have nothing to strip and
 are no longer called, and the ATC's male coupler rides `wrist3_link` instead of
 `panda_hand`. `--arm-only` stops right after the arm mount and hands the GUI over
@@ -177,17 +178,12 @@ a belt in the GUI needs no code change either.
 
 Full investigation detail: `docs/mefron-history.md`.
 
-- **The wrist link section vibrates after `Y` docks the PGC-140.** Live in the
-  GUI, not reproducible headless. Already ruled out by measurement, don't
-  re-chase: the tool's own collision (its `pgc140_base_link` collider is
-  *disabled*; only the fingers collide, 93mm out) and arm drive damping
-  (steady-state arm velocity is 0.0000 both bare and docked). Leading suspects,
-  untested: the FR5 and the tool are **two separate articulations** coupled by one
-  `excludeFromArticulation` FixedJoint, and the dock frames are still `[0,0,0]`
-  placeholders, so `pgc140_base_link`'s origin is welded to `wrist3_link`'s and
-  the bodies interpenetrate. Deriving the real coupler offsets is the next step
-  either way. Full detail: `docs/fr5-migration.md`.
-
+- **The draggable `/World/target`'s origin is not the tool-mating face.** It is an
+  internal reference to `{robot}/{ee_link}/visuals`, so its origin is
+  `wrist3_link`'s link frame, which is not where tools dock — dragging to a dock
+  pose is unintuitive. Note `build_teleop_target()` needs `ee_link` to have real
+  `visuals` geometry, so moving `ee_link` to a synthetic TCP frame would silently
+  produce an empty target. `docs/fr5-migration.md`.
 - **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
   unverified live.** `test_mefron_assembly_weld_headless.py
   --relationship=main_holder_on_main_holder_jig` welds cleanly (0.005m
