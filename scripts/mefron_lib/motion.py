@@ -83,12 +83,18 @@ def build_teleop_target(
     from curobo.types.base import TensorDeviceType
     from curobo.types.math import Pose as CuroboPose
 
-    ee_link = robot_cfg["kinematics"]["ee_link"]
-    source_path = f"{robot_prim_path}/{ee_link}/visuals"
+    # ee_link is the synthetic tool_flange frame, which has no geometry -- show wrist3_link's mesh
+    # instead, pushed back by the flange offset so the target's ORIGIN is where tools dock.
+    source_path = f"{robot_prim_path}/{config.FR5_EE_LINK}/visuals"
 
     stage = omni.usd.get_context().get_stage()
     target_prim = stage.DefinePrim(target_prim_path, "Xform")
-    target_prim.GetReferences().AddInternalReference(Sdf.Path(source_path))
+    visual_prim = stage.DefinePrim(f"{target_prim_path}/ee_visual", "Xform")
+    visual_prim.GetReferences().AddInternalReference(Sdf.Path(source_path))
+    SingleXFormPrim(prim_path=f"{target_prim_path}/ee_visual").set_local_pose(
+        translation=np.array([0.0, 0.0, -config.FR5_TOOL_FLANGE_OFFSET]),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
 
     tensor_args = TensorDeviceType()
     retract_config = np.array(robot_cfg["kinematics"]["cspace"]["retract_config"])

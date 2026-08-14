@@ -72,6 +72,20 @@ def mount_arm(
         position=np.array(mount_position),
         orientation=np.array(mount_orientation_wxyz),
     )
+    attach_tool_flange_frame(prim_path)
+
+
+def attach_tool_flange_frame(prim_path: str = config.ROBOT_PRIM_PATH) -> str:
+    """Authors the ee frame as a live child of wrist3_link. cuRobo gets the same frame from the
+    XRDF's add_frame; this is the prim grasp/screw code reads the ee's world pose off."""
+    stage = omni.usd.get_context().get_stage()
+    flange_path = f"{prim_path}/{config.FR5_EE_LINK}/{config.FR5_EE_FRAME_NAME}"
+    stage.DefinePrim(flange_path, "Xform")
+    SingleXFormPrim(prim_path=flange_path).set_local_pose(
+        translation=np.array([0.0, 0.0, config.FR5_TOOL_FLANGE_OFFSET]),
+        orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+    )
+    return flange_path
 
 
 def apply_home_pose(prim_path: str = config.ROBOT_PRIM_PATH) -> None:

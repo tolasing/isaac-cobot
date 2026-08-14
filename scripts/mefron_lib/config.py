@@ -27,6 +27,13 @@ FR5_BASE_LINK = "base_link"
 # Terminates the chain -- the FR5 ships no tool0/flange link. Carries visual geometry, which
 # motion.build_teleop_target() requires of ee_link.
 FR5_EE_LINK = "wrist3_link"
+# The ISO tool flange, +99.0mm along wrist3_link's own Z -- measured from the imported geometry
+# (link origin sits 53mm short of any metal) and corroborated by the FR5's 922mm published reach.
+FR5_TOOL_FLANGE_OFFSET = 0.0990
+# cuRobo's real ee frame: added to fr5.xrdf via modifiers/add_frame AND authored as a live child
+# Xform, since grasp/screw code reads the ee's world pose off an actual prim.
+FR5_EE_FRAME_NAME = "tool_flange"
+FR5_EE_FRAME_PRIM_PATH = f"{ROBOT_PRIM_PATH}/{FR5_EE_LINK}/{FR5_EE_FRAME_NAME}"
 FR5_JOINT_NAMES = ["j1", "j2", "j3", "j4", "j5", "j6"]
 # Everything past base_link, in chain order -- the links cuRobo collision-checks.
 FR5_MOVING_LINK_NAMES = ["shoulder_link", "upperarm_link", "forearm_link", "wrist1_link", "wrist2_link", "wrist3_link"]
@@ -443,9 +450,9 @@ SCREEN_PRIM_PATH = "/World/screen"
 TOOL_CHANGER_MALE_PRIM_NAME = "tool_changer_male"
 TOOL_CHANGER_CYLINDER_RADIUS = 0.0315  # Ø63mm
 TOOL_CHANGER_CYLINDER_HEIGHT = 0.02
-# +Z half-height, not 0 -- UsdGeom.Cylinder is centered on its own origin, so at z=0 half of it
-# would sit behind panda_hand's origin, overlapping panda_link8.
-TOOL_CHANGER_MALE_LOCAL_POSITION = [0.0, 0.0, TOOL_CHANGER_CYLINDER_HEIGHT / 2]
+# Sits ON the flange, not at wrist3_link's origin: that origin is 99mm inboard, in empty space, so
+# the coupler used to float clear of the wrist's own metal. Its inner face IS the mate plane.
+TOOL_CHANGER_MALE_LOCAL_POSITION = [0.0, 0.0, FR5_TOOL_FLANGE_OFFSET + TOOL_CHANGER_CYLINDER_HEIGHT / 2]
 TOOL_CHANGER_MALE_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 
 # ee_link's pose relative to a mated female coupler -- the same for every tool by design. Still an

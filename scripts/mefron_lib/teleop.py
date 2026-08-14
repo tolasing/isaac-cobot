@@ -403,7 +403,9 @@ def run_teleop_loop(
         )
         arm["_j_names"] = arm["robot_cfg"]["kinematics"]["cspace"]["joint_names"]
         arm["_default_config"] = np.array(arm["robot_cfg"]["kinematics"]["cspace"]["retract_config"])
-        arm["_ee_link_prim_path"] = f"{arm['robot_prim_path']}/{arm['robot_cfg']['kinematics']['ee_link']}"
+        # NOT {robot}/{ee_link}: ee_link is the XRDF's synthetic tool_flange, whose live prim
+        # robot.attach_tool_flange_frame() authors under wrist3_link.
+        arm["_ee_link_prim_path"] = config.FR5_EE_FRAME_PRIM_PATH
         arm["_plan_config"] = MotionGenPlanConfig(time_dilation_factor=config._TELEOP_TIME_DILATION_FACTOR)
         arm["_state"] = _fresh_arm_state()
 

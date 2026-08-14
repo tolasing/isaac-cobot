@@ -24,7 +24,19 @@ cspace:
   acceleration_limits: [10, 10, 10, 10, 10, 10]
   jerk_limits: [500, 500, 500, 500, 500, 500]
 
-tool_frames: ["wrist3_link"]
+# The ISO tool flange, +99.0mm along wrist3_link's Z -- NOT wrist3_link's own origin, which sits
+# 53mm short of any of its geometry. This is the frame tools dock at, so it is what cuRobo plans.
+modifiers:
+  - add_frame:
+      frame_name: "tool_flange"
+      parent_frame_name: "wrist3_link"
+      joint_name: "tool_flange_joint"
+      joint_type: "FIXED"
+      fixed_transform:
+        position: [0.0, 0.0, 0.0990]
+        orientation: {w: 1.0, xyz: [0.0, 0.0, 0.0]}
+
+tool_frames: ["tool_flange"]
 
 collision:
   geometry: "auto_generated_collision_sphere_group"

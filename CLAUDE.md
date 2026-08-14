@@ -178,12 +178,6 @@ a belt in the GUI needs no code change either.
 
 Full investigation detail: `docs/mefron-history.md`.
 
-- **The draggable `/World/target`'s origin is not the tool-mating face.** It is an
-  internal reference to `{robot}/{ee_link}/visuals`, so its origin is
-  `wrist3_link`'s link frame, which is not where tools dock — dragging to a dock
-  pose is unintuitive. Note `build_teleop_target()` needs `ee_link` to have real
-  `visuals` geometry, so moving `ee_link` to a synthetic TCP frame would silently
-  produce an empty target. `docs/fr5-migration.md`.
 - **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
   unverified live.** `test_mefron_assembly_weld_headless.py
   --relationship=main_holder_on_main_holder_jig` welds cleanly (0.005m
@@ -254,6 +248,12 @@ Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
   `inf`, so IK fails for essentially any target. `robot.apply_home_pose()` stages
   `FR5_HOME_JOINT_POSITIONS` (cond 8.2) instead, and `fr5.yml`'s
   `retract_config` must be seeded from it too. `docs/fr5-migration.md`.
+- **The FR5's ee frame is `tool_flange`, not `wrist3_link`.** That link's origin
+  sits 53mm short of its own geometry; the flange is +99.0mm along its Z
+  (`FR5_TOOL_FLANGE_OFFSET`, corroborated by the 922mm published reach). cuRobo
+  gets it from `fr5.xrdf`'s `add_frame`; `robot.attach_tool_flange_frame()`
+  authors the matching live prim, because a synthetic frame has none and
+  grasp/screw code reads world poses off real prims. `docs/fr5-migration.md`.
 - **`UsdPhysics` angular quantities are degrees**, while the URDF, cuRobo and
   this repo's own constants are radians. `apply_home_pose()` converts.
 - **`PhysicsScene` required.** `SingleArticulation.initialize()` silently breaks

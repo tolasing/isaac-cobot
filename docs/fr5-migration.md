@@ -379,15 +379,51 @@ collision (`pgc140_base_link`'s collider is disabled; only the fingers collide,
 docked — a sweep suggesting otherwise was the probe re-authoring one wrist joint
 path over a live one, this repo's own stale-`body1` gotcha).
 
-### OPEN: the draggable target's origin is not the tool-mating face
+### RESOLVED: the ee frame is the tool flange, not wrist3_link's origin
 
-`motion.build_teleop_target()` makes `/World/target` an internal reference to
-`{robot}/{ee_link}/visuals`, so its origin is `wrist3_link`'s link frame. Observed
-in the GUI: that origin does not sit where tools actually dock, which makes
-dragging to a dock pose unintuitive. Not yet measured — see whether the flange
-face is offset from `wrist3_link`'s origin, and note that simply moving `ee_link`
-to a synthetic TCP frame would break `build_teleop_target()`, which needs
-`ee_link` to have real `visuals` geometry.
+The draggable target's origin sat nowhere near where tools dock. Measuring the
+imported geometry showed why, and turned up a second bug alongside it:
+
+```
+wrist3_link geometry   z = [+0.0532, +0.0990]   in its own frame
+link origin  z = 0     -> 53mm short of any of its own metal, in empty space
+outboard (tool) face   z = +0.0990
+male coupler was at    z = [0, +0.020]          -> floating clear of the wrist
+mate plane was at      z = 0                    -> 99mm inboard of the flange
+```
+
+Which face is outboard is settled two ways: it is 142mm from `wrist2_link`'s
+origin versus 115mm for the inboard face, and **0.820 + 0.099 = 0.919m matches the
+FR5's published 922mm reach**, which is quoted to the tool flange.
+
+`FR5_TOOL_FLANGE_OFFSET = 0.0990` now drives three things:
+
+1. **`fr5.xrdf` gains a `modifiers: add_frame`** for `tool_flange`, parented to
+   `wrist3_link` at `[0, 0, 0.0990]`, and `tool_frames` points at it. cuRobo
+   therefore plans the *flange*. Verified: `ee_link: tool_flange`, and FK moves
+   99.0mm off the old wrist3 position.
+2. **`robot.attach_tool_flange_frame()`** authors the same frame as a live child
+   Xform. Necessary because the XRDF frame is synthetic and has no prim, while
+   grasp/screw code reads the ee's *world pose* off a real one —
+   `teleop` now takes `_ee_link_prim_path` from `config.FR5_EE_FRAME_PRIM_PATH`
+   rather than `{robot}/{ee_link}`.
+3. **`TOOL_CHANGER_MALE_LOCAL_POSITION`** puts the coupler on the flange, so its
+   inner face — the mate plane — lands there too. Verified 10.0mm from the flange,
+   i.e. exactly half the cylinder height.
+
+`build_teleop_target()` needed care: `ee_link` is now a frame with no geometry, and
+the `dobot` branch already recorded that a synthetic ee silently yields an
+empty-bbox target. It now references **`wrist3_link`'s** visuals into a child
+`ee_visual` Xform offset by `-FR5_TOOL_FLANGE_OFFSET`, so the mesh still draws
+around the wrist while the target's origin is the dock face. Verified non-empty.
+
+Cross-check that it is right: the old target sat at world z=1.386 at the home
+pose; the new one is at 1.287, exactly 99mm lower, with the tool pointing down.
+`plan_single` still succeeds and `test_mefron_teleop_headless.py` still passes.
+
+**Every grasp/dock/screw offset is now flange-relative.** Doing this before any of
+them were re-derived was deliberate — they were all still `[0,0,0]` placeholders,
+so it cost nothing; after a re-derivation it would have invalidated all of them.
 
 ### Still Franka-shaped
 
