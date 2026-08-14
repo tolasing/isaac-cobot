@@ -38,6 +38,11 @@ def _fresh_arm_state() -> dict:
         # first; applied once that lift plan finishes executing.
         "pending_final_pose": None,
         "obstacles": None,
+        # Last seen SurfaceGripper open/closed state, to spot the transition that stales the
+        # articulation handles. Manager-owned, so it is polled rather than driven from the keypress.
+        "surface_gripper_closed": False,
+        # step_index at which to check whether a V grab actually took -- see _step_arm().
+        "suction_grip_deadline": None,
         # Ramped gripper setpoint state -- see config.GRIPPER_CLOSE_SPEED.
         "gripper_setpoint": None,
         "last_gripper_time": None,
@@ -201,6 +206,32 @@ def _step_arm(arm: dict, step_index: int, tensor_args) -> None:
                     _invalidate_articulation_handles(state)
                 cube_position, cube_orientation = compute_part_target_pose(approach_relationship)
                 target.set_world_pose(position=cube_position, orientation=cube_orientation)
+
+    # V/L: the SurfaceGripper's own manager authors and removes its attachment joint live mid-Play,
+    # which silently stales the cached articulation handles -- the arm then stops responding while
+    # apply_action() keeps succeeding. Gated on the state TRANSITION, not the keypress: the manager
+    # grabs asynchronously, once a body comes within maxGripDistance.
+    if surface_gripper_control is not None:
+        surface_gripper_closed = surface_gripper_control.is_closed()
+        if surface_gripper_closed != state["surface_gripper_closed"]:
+            state["surface_gripper_closed"] = surface_gripper_closed
+            _invalidate_articulation_handles(state)
+
+        # A grab that finds nothing still engages the D6, which cost 0.30 rad of travel -> 0.0000
+        # back when body1 was unset (== the world). Reopen anyway. See docs/fr5-migration.md.
+        if surface_gripper_control.consume_attach_request():
+            state["suction_grip_deadline"] = step_index + config._SUCTION_GRIP_SETTLE_FRAMES
+        if state["suction_grip_deadline"] is not None and step_index >= state["suction_grip_deadline"]:
+            state["suction_grip_deadline"] = None
+            if not surface_gripper_closed:
+                print(
+                    "[mefron] suction found nothing within "
+                    f"{config.SURFACE_GRIPPER_MAX_GRIP_DISTANCE}m -- reopening so the wrist isn't "
+                    "pinned to the world. Approach closer and press "
+                    f"{config.SUCTION_ATTACH_KEY} again.",
+                    flush=True,
+                )
+                surface_gripper_control.open()
 
     # One-shot O/L release weld. Both flags are consumed unconditionally so a stale one can't fire
     # later; the proximity gate lives in assembly.weld_part_at_assembly_pose().

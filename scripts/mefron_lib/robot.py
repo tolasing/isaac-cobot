@@ -233,9 +233,18 @@ def attach_surface_gripper_physics(prim_path: str = config.ROBOT_PRIM_PATH) -> s
 
     joint = UsdPhysics.Joint.Define(stage, joint_path)
     joint.CreateBody0Rel().SetTargets([hand_path])
+    # body1 MUST NOT be left unset: that means the WORLD, and when the manager engages the
+    # constraint on V the wrist is pinned there (measured 0.30 rad of travel -> 0.0000). The
+    # suction tool co-moves with body0 -- V/L are gated on it being docked. docs/fr5-migration.md.
+    joint.CreateBody1Rel().SetTargets([config.TOOL_CHANGE_TARGETS["suction"]["baked_tool_prim_path"]])
     joint.CreateExcludeFromArticulationAttr().Set(True)
     joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*config.SURFACE_GRIPPER_LOCAL_POSITION))
     joint.CreateLocalRot0Attr().Set(Gf.Quatf(*config.SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ))
+    # Body1's frame must land on the SAME point, or the constraint carries a permanent violation and
+    # saturates the moment it engages. The docked tool's origin is the flange, so the cup is
+    # SUCTION_TOOL_REACH out along its Z -- exactly where localPos0 puts body0's frame.
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, config.SUCTION_TOOL_REACH))
+    joint.CreateLocalRot1Attr().Set(Gf.Quatf(*config.SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ))
 
     joint_prim = joint.GetPrim()
     # Not robot_schema.ApplyAttachmentPointAPI(): it passes the Enum's Python identifier rather than

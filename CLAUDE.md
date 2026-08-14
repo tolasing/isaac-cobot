@@ -41,7 +41,9 @@ load time, *not* a `.yml` — and the full pipeline runs with teleop planning an
 following, confirmed live. **Step 3, the gripper, is in progress:** the dockable
 gripper tool is now a **PGC-140** hand-placed at `/World/cr5_pgc140_gripper`, and
 C/O drive its fingers — **open/closed are INVERTED** vs the Franka (0.000 open,
-0.025 closed). **`Y` docks it and the arm moves with it on**, confirmed live.
+0.025 closed). **`Y` docks it and the arm moves with it on**, confirmed live, as
+are `J`/`B`/`K`'s three PGC-140 grasps and `U`/`V`/`L`'s suction (`V` from a
+hand-jogged pose — `N`'s own is too deep, see open issues).
 The grasp/screw/tool-changer harnesses still fail. Every
 hand-jogged pose the swap invalidates is marked `STALE`/`UNVERIFIED` in
 `config.py` rather than converted. Sequence, prior art on the `dobot` branch, and
@@ -178,6 +180,13 @@ a belt in the GUI needs no code change either.
 
 Full investigation detail: `docs/mefron-history.md`.
 
+- **`N` seats the suction cup ~8mm too deep into the screen.** `V` works from a
+  hand-jogged pose but not from `N`'s. The FR5's attach point reaches 110mm past
+  `tool_flange`; the Franka's reached 100mm past `panda_hand`, so the re-jogged
+  approach pose (which landed within 2mm of the Franka's) buries the cup.
+  `suction_gripper_approach_on_screen`'s local z still needs the standoff put
+  back, and `SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code
+  references** — it is hand-baked into that pose. `docs/fr5-migration.md`.
 - **`main_holder_on_main_holder_jig`'s ride check fails in the harness,
   unverified live.** `test_mefron_assembly_weld_headless.py
   --relationship=main_holder_on_main_holder_jig` welds cleanly (0.005m
@@ -294,6 +303,14 @@ Full root-cause detail: `docs/mefron-history.md` unless noted otherwise.
 - **A jointed body's own enabled collision can fight the joint.** Overlapping
   colliders at both ends reach a contact-separation equilibrium short of the
   joint's target instead of converging. `docs/tool-changer.md`'s gotcha 2.
+- **A surface-gripper attachment point needs an explicit `body1`.** Left unset it
+  means the **world**, so a failed `V` grab welded `wrist3_link` there and froze
+  the arm (measured 0.30 rad of travel -> 0.0000) until `L`. Bind it to the docked
+  suction tool with **coincident frames** — `localPos0` 0.209 on `wrist3_link`,
+  `localPos1` 0.110 on the tool — the shape NVIDIA's own
+  `SurfaceGripper_gantry.usda` uses (`Gripper_Cones` ↔ `Gantry_x`). Setting the
+  body without matching `localPos1` leaves a permanent 110mm violation and freezes
+  it just the same. `docs/fr5-migration.md`.
 - **Redefining a `Joint` prim in place leaves PhysX solving against the stale
   `body1`,** even though USD reads correct. Use a fresh path per target.
 - **Live-importing two robots into the same file-backed stage isn't safe,** no

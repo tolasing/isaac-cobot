@@ -1,0 +1,20 @@
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /World/backpanel_support
+gripper_frame: /World/cr5_pgc140_gripper
+
+grasps:
+   "grasp_0":
+      confidence: 1.0
+      position: [0.00048712954034304157, 0.03761336187585098, 0.1371934131683295]
+      orientation: {w: -5.0363299207175494e-05, xyz: [0.008577736078510801, 0.9999569654464722, -0.0035337179271092353]}
+      cspace_position:
+         pgc140_finger1_joint: 0.025 #589069187641144
+         pgc140_finger2_joint: 0.025 #586455896496773
+      pregrasp_cspace_position:
+         pgc140_finger1_joint: 0.015
+         pgc140_finger2_joint: 0.015
+
+
+

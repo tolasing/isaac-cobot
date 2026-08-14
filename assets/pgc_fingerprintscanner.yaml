@@ -1,0 +1,18 @@
+format: isaac_grasp
+format_version: 1.0
+
+object_frame: /World/finger_print_scanner
+gripper_frame: /World/cr5_pgc140_gripper
+
+grasps:
+   "grasp_0":
+      confidence: 1.0
+      position: [0.006935646668808886, 0.0006504102242572416, -0.13699924996013071]
+      orientation: {w: 0.9994357529405732, xyz: [0.023577200388228702, -0.023917305004520092, 0.0005038722889885974]}
+      cspace_position:
+         pgc140_finger1_joint: 0.017871897667646408
+         pgc140_finger2_joint: 0.017833298072218895
+      pregrasp_cspace_position:
+         pgc140_finger1_joint: 0.015
+         pgc140_finger2_joint: 0.015
+

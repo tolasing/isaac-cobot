@@ -69,6 +69,8 @@ _TELEOP_SETTLE_FRAMES = 20
 _TELEOP_OBSTACLE_RESCAN_INTERVAL = 1000
 _POSE_DELTA_THRESHOLD = 1.0e-3
 _STATIC_JOINT_VELOCITY_THRESHOLD = 0.5
+# Frames to let the SurfaceGripper's manager settle before judging whether a V grab took.
+_SUCTION_GRIP_SETTLE_FRAMES = 30
 
 # World-frame Z height P holds while aligning X/Y/orientation before descending -- see CLAUDE.md's
 # open issues (not yet relationship-relative).
@@ -112,8 +114,8 @@ HIGH_FRICTION_PRIM_PATHS = ["/World/finger_print_scanner"]
 
 # Grasp Editor-exported poses, keyed by object name and wired to a key in
 # keyboard.build_gripper_keyboard_control(). Finger widths are read from the yaml live.
-# STALE: all four yamls are keyed to panda_hand/panda_finger_joint1 and must be re-exported
-# against the PGC-140 in the Grasp Editor (step 3). See docs/fr5-migration.md.
+# Three are re-exported against the PGC-140. Only main_holder (G) is STALE -- still keyed to
+# panda_hand/panda_finger_joint1, so G raises KeyError until it is re-exported.
 GRASP_TARGETS = {
     "main_holder": {
         "key": "G",
@@ -123,19 +125,21 @@ GRASP_TARGETS = {
     },
     "finger_print_scanner": {
         "key": "J",
-        "yaml_path": REPO_ROOT / "assets" / "finger_print_scanner.yaml",
+        "yaml_path": REPO_ROOT / "assets" / "pgc_fingerprintscanner.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/finger_print_scanner",
     },
+    # PGC-140 grasps: gripper_frame is the tool root, which coincides with pgc140_base_link and so
+    # with the flange once docked -- no conversion needed.
     "backpanel_support": {
         "key": "B",
-        "yaml_path": REPO_ROOT / "assets" / "backpanel_support2.yaml",
+        "yaml_path": REPO_ROOT / "assets" / "pgc_backpanelsupport.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/backpanel_support",
     },
     "main_holder_back_cover": {
         "key": "K",
-        "yaml_path": REPO_ROOT / "assets" / "main_holder_back_cover.yaml",
+        "yaml_path": REPO_ROOT / "assets" / "pgc_main_holder_back_cover.yaml",
         "grasp_name": "grasp_0",
         "part_prim_path": "/World/main_holder_back_cover",
     },
@@ -195,15 +199,17 @@ ASSEMBLY_RELATIONSHIPS = {
     },
     # An APPROACH target in screen's own live frame, not a mount pose -- mount_prim_path ==
     # part_prim_path on purpose. Derivation and the 2026-08-06 re-derive: docs/mefron-history.md.
+    # Re-jogged against the FR5 2026-08-14, cup on the screen. Landed within ~2mm of the Franka's
+    # own value: panda_hand and tool_flange are both the tool MATE PLANE, so the frames coincide.
     "suction_gripper_approach_on_screen": {
         "part_prim_path": "/World/screen",
         "mount_prim_path": "/World/screen",
-        "local_position": [0.00028, -0.00024, -0.11558],
+        "local_position": [0.0004351868885375872, 0.0006265233779021496, -0.11745762908001614],
         "local_orientation_wxyz": [
-            0.9999999973427276,
-            2.989584746736537e-05,
-            -4.272515434410521e-05,
-            5.094452340128793e-05,
+            0.9999927291330012,
+            -0.0037552243116191365,
+            0.00066173194631794,
+            4.563258598413431e-05,
         ],
     },
     # Same derivation as suction_gripper_approach_on_screen above.
@@ -410,9 +416,11 @@ SCREW_PLACE_KEY = "KEY_6"
 # above -- the joint rides panda_hand permanently, whichever tool is docked.
 SURFACE_GRIPPER_JOINT_PRIM_NAME = "SurfaceGripperJoint"
 SURFACE_GRIPPER_PRIM_NAME = "SurfaceGripper"
-# The joint's frame on the wrist's side. PRE-ATC value, and now also pre-FR5 -- needs re-deriving
-# by hand-jog. See docs/tool-changer.md and docs/fr5-migration.md.
-SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, 0.1]
+# Cup tip to mate plane, measured off suction_gripper_with_tool_female's own geometry (110mm long,
+# its coupler taking the first 10mm). Not hand-jogged; verify the attach point lands on the cup.
+SUCTION_TOOL_REACH = 0.110
+# The joint's frame on the wrist's side. Was 0.1 -- 1mm past the flange, i.e. 109mm short of the cup.
+SURFACE_GRIPPER_LOCAL_POSITION = [0.0, 0.0, FR5_TOOL_FLANGE_OFFSET + SUCTION_TOOL_REACH]
 SURFACE_GRIPPER_LOCAL_ORIENTATION_WXYZ = [1.0, 0.0, 0.0, 0.0]
 # isaac:maxGripDistance -- how far the attachment point searches. Schema default 0.01m, widened
 # for first-pass teleop-approach tolerance.

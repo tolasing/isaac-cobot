@@ -425,6 +425,107 @@ pose; the new one is at 1.287, exactly 99mm lower, with the tool pointing down.
 them were re-derived was deliberate — they were all still `[0,0,0]` placeholders,
 so it cost nothing; after a re-derivation it would have invalidated all of them.
 
+### The suction attach (`V`) pinned the arm to the world
+
+**Symptom:** `V` froze the arm completely — it stopped following the target, and
+only `L` freed it. Worked on the Franka.
+
+`robot.attach_surface_gripper_physics()` authors a D6 with **`body0 = wrist3_link`
+and `body1` never set**. In UsdPhysics an unset `body1` means the **world**, and
+the joint locks `transX`/`transY` (`low > high`). Isaac's SurfaceGripper manager
+binds `body1` on a successful grab; on a **failed** one it engages the constraint
+anyway. Measured: `close_gripper()` took arm travel from **0.3000 rad to
+0.0000**, with `status = GripperStatus.Open` — nothing grabbed, wrist welded to
+the world.
+
+**Nothing about the joint changed from `atc`.** The diff is two lines, and
+`body1`, the locked axes and the drives are identical. What changed is where the
+attach point lands:
+
+| | frame | `SURFACE_GRIPPER_LOCAL_POSITION = 0.1` lands |
+|---|---|---|
+| Franka | `panda_hand` (spans z −0.026…0.066, fingertips ≈0.10) | at the TCP — grabs succeeded |
+| FR5 | `wrist3_link` | **1mm past the flange**, 109mm short of the cup |
+
+So on the FR5 nothing was ever within `SURFACE_GRIPPER_MAX_GRIP_DISTANCE` (0.03)
+and every `V` was a failed grab. Fixed by putting the attach point on the cup:
+`FR5_TOOL_FLANGE_OFFSET + SUCTION_TOOL_REACH` = 0.099 + 0.110 = **0.209**, the
+110mm measured off `suction_gripper_with_tool_female`'s own geometry.
+
+**Moving the attach point alone was not enough — `body1` had to be bound too.**
+Isaac's manager rebinds `body1` on a successful grab, so an unset one is only
+harmless while grabs succeed; that is the whole reason the Franka never showed
+this. NVIDIA's own reference authoring settles the intended shape — in
+`SurfaceGripper_gantry.usda` every `IsaacAttachmentPointAPI` joint is authored
+`body0 = Gripper_Cones`, `body1 = Gantry_x` (the body the gripper is *mounted*
+on), with **coincident frames** (`localPos1 = (…, ±0.15007496)`). Never unset.
+
+The equivalent pair here is `wrist3_link` ↔ the docked suction tool, which does
+carry `RigidBodyAPI` (applied at runtime by `spawn_dockable_tool()`; the FR5 has
+no body at the flange at all — `tool_flange` is a bare `Xform`). Both frames must
+land on the same point or the constraint carries a permanent violation and
+saturates the instant it engages:
+
+```
+localPos0 = (0, 0, 0.209)   on wrist3_link   -- FR5_TOOL_FLANGE_OFFSET + SUCTION_TOOL_REACH
+localPos1 = (0, 0, 0.110)   on the tool      -- its origin IS the flange, so cup = SUCTION_TOOL_REACH
+```
+
+Setting the body while leaving `localPos1` at identity was measured live and
+froze the arm exactly as before — a 110mm standing violation. Confirmed working
+live 2026-08-14 with both.
+
+**The approach poses.** They place the *ee frame* relative to the part and were
+jogged against `panda_hand`, so they were expected to be badly off. Re-jogged
+against the FR5 with the cup on the screen, `suction_gripper_approach_on_screen`
+came out **within ~2mm** of the Franka's value:
+
+```
+old (panda_hand) : [ 0.00028, -0.00024, -0.11558]
+new (tool_flange): [ 0.00044,  0.00063, -0.11746]
+```
+
+They nearly coincide because `panda_hand` and `tool_flange` are both the **tool
+mate plane** — the ATC's coupler sat on `panda_hand` and now sits on the flange.
+
+But near-coincident is wrong here, and `N` still seats the cup too deep (open
+issue). The attach point is 110mm past `tool_flange` where the Franka's was 100mm
+past `panda_hand`, so the same flange pose buries the cup ~8mm further in:
+
+```
+Franka: -0.11558 + 0.100 = -0.0156   <- cup standoff that worked
+FR5:    -0.11746 + 0.110 = -0.0075   <- ~8mm deeper
+```
+
+Reproducing the Franka's proven standoff wants local z ≈ **-0.1256**. Not
+applied — poses in this repo are hand-jogged in the GUI, not computed.
+`SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code references** at all; it
+is documentation for a value baked into that pose by hand.
+`suction_gripper_approach_on_pcb_assembly` has the same 10mm issue and has not
+been re-jogged.
+
+**Guard added regardless.** `teleop._step_arm()` now checks
+`_SUCTION_GRIP_SETTLE_FRAMES` (30) after a `V`, and if the manager still reports
+Open it reopens the gripper and logs why. A failed grab becomes a no-op instead of
+an unrecoverable-looking freeze.
+
+Two dead ends, both reverted — **do not repeat**:
+
+- *Invalidating the articulation handles on the open/close transition.* The
+  handles were never stale; the arm was physically pinned. (The transition check
+  was kept anyway — the manager does author a joint mid-Play, and `L` needs it.)
+- *Rejecting `body1 = suction tool` as over-constraining.* It looks like a
+  duplicate of the ATC's own dock constraint between the same two bodies, and a
+  probe appeared to confirm it — but that probe docked from the rack, which
+  freezes the arm on its own (see below) and did so in the control run too. The
+  binding is in fact required, and is what NVIDIA's reference does.
+
+**Headless probes repeatedly misled here.** They cannot dock the way the GUI does:
+creating the dock joint while the tool is still at its rack makes PhysX snap
+disjointed bodies together, which freezes the arm by itself and masks whatever is
+being tested. For anything involving docking or the surface gripper, the GUI is
+the source of truth.
+
 ### Still Franka-shaped
 
 The four `GRASP_TARGETS` yamls remain keyed to `panda_hand` /

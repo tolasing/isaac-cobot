@@ -174,8 +174,10 @@ class SurfaceGripperKeyboardControl:
         self.gripper_prim_path = gripper_prim_path
         self._interface = surface_gripper.acquire_surface_gripper_interface()
         self._release_requested = False
+        self._attach_requested = False
 
     def close(self) -> None:
+        self._attach_requested = True
         self._interface.close_gripper(self.gripper_prim_path)
 
     def open(self) -> None:
@@ -188,6 +190,13 @@ class SurfaceGripperKeyboardControl:
     def consume_release_request(self) -> bool:
         requested = self._release_requested
         self._release_requested = False
+        return requested
+
+    def consume_attach_request(self) -> bool:
+        """Lets the teleop loop check, a few frames later, whether the grab actually took -- a
+        failed one leaves the wrist welded to the world. See docs/fr5-migration.md."""
+        requested = self._attach_requested
+        self._attach_requested = False
         return requested
 
     def is_closed(self) -> bool:
