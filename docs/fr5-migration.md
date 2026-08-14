@@ -511,9 +511,9 @@ The pcb_assembly pose approaches from the part's **+Z** — its quaternion is a
 ~180° flip, so its raise is `+0.01`, the opposite sign. Both cups land well inside
 `SURFACE_GRIPPER_MAX_GRIP_DISTANCE` (0.03).
 
-`N` confirmed live 2026-08-14. **`M` is not**: unlike the screen pose it was never
-re-jogged for the FR5 at all, so it still carries the Franka's own jog with only
-this raise on top.
+Both confirmed live 2026-08-14. Note `M` was never re-jogged for the FR5 at all —
+unlike the screen pose it is still the Franka's own jog with only this raise on
+top, so it is the first thing to re-derive if suction ever drifts.
 
 `SURFACE_GRIPPER_APPROACH_CLEARANCE` (0.01) has **no code references** at all; it
 is documentation for a value baked into those poses by hand.
