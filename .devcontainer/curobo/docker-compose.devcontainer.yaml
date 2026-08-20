@@ -2,8 +2,11 @@ name: isaac-cobot-curobo-devcontainer
 
 services:
   isaac-cobot-curobo:
-    image: isaac-cobot-curobo
+    image: isaac-cobot-curobo-realsense
     container_name: isaac-cobot-curobo
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
     environment:
       - ISAACSIM_PATH=/isaac-sim
       - OMNI_KIT_ALLOW_ROOT=1
